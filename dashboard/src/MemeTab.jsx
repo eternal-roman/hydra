@@ -508,7 +508,7 @@ export default function MemeTab() {
           case "position_update":
             setMidPrice(msg.price ?? 0);
             setObi(msg.obi ?? 0);
-            if (msg.entry) setPosition(p => p ? { ...p } : null);
+            if (msg.entry) setPosition(p => p ? { ...p, ...msg.entry } : msg.entry);
             break;
           case "order_placed":
             if (msg.side === "buy") {
