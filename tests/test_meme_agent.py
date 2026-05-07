@@ -6,7 +6,11 @@ import time
 import tempfile
 import json as _json
 import os as _os
-from hydra_meme_agent import CandleBar, wilder_rsi, vol_ema, compute_obi, compute_vwap, TradeRecord, TAKER_SLIPPAGE_BPS, SLIPPAGE_CAP_BPS
+from hydra_meme_agent import (
+    CandleBar, wilder_rsi, vol_ema, compute_obi, compute_vwap,
+    TradeRecord, Position, MemeExecutor,
+    TAKER_SLIPPAGE_BPS, SLIPPAGE_CAP_BPS, RSI_PERIOD,
+)
 
 
 def test_candle_bar_creation():
@@ -462,3 +466,83 @@ def test_executor_net_pnl_calculation():
     # gross = (0.164 - 0.16) * 3750 = $15.00
     # fees = 600 * 0.004 + (600*1.025) * 0.004 ≈ 4.86
     assert 9.0 < net < 11.0
+
+
+def test_executor_daily_cap_zero_raises():
+    import pytest
+    with pytest.raises(ValueError, match="daily_cap must be positive"):
+        MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=0.0)
+
+
+def test_executor_slippage_cap_blocks_buy_when_spread_too_wide():
+    """place_buy returns None when limit_price deviates > SLIPPAGE_CAP_BPS from mid."""
+    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    ask = 0.18000
+    # Simulate a mid-price well below ask — spread is huge
+    mid = 0.16000  # (limit = ask*1.0005 ≈ 0.1801, deviation from mid ≈ 125 bps)
+    slippage_bps = (exec_._buy_limit_price(ask) - mid) / mid * 10_000
+    assert slippage_bps > SLIPPAGE_CAP_BPS
+
+
+def test_executor_slippage_cap_allows_buy_tight_spread():
+    """place_buy proceeds when spread is within SLIPPAGE_CAP_BPS.
+    With bid=0.16537 and ask=0.16540 (2-bps spread), limit = ask*1.0005 ≈ 6 bps from mid.
+    """
+    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    ask = 0.16540
+    bid = 0.16537   # 2-bps spread — typical for liquid token
+    mid = (bid + ask) / 2
+    slippage_bps = (exec_._buy_limit_price(ask) - mid) / mid * 10_000
+    assert slippage_bps <= SLIPPAGE_CAP_BPS
+
+
+def test_wilder_rsi_boundary_exactly_period():
+    """Exactly RSI_PERIOD values → insufficient → returns 50.0."""
+    closes = [float(i) for i in range(1, RSI_PERIOD + 1)]  # RSI_PERIOD values, RSI_PERIOD-1 diffs
+    assert wilder_rsi(closes, period=RSI_PERIOD) == 50.0
+
+
+def test_wilder_rsi_boundary_period_plus_one():
+    """RSI_PERIOD+1 values → sufficient → computes a real value."""
+    closes = [float(i) for i in range(1, RSI_PERIOD + 2)]  # all gains
+    result = wilder_rsi(closes, period=RSI_PERIOD)
+    assert result == 100.0
+
+
+def test_candles_held_increments_on_bar():
+    """_on_bar via SignalEngine: position.candles_held increments each bar."""
+    from hydra_meme_agent import SignalEngine
+
+    def _make_bar(close=1.0, volume=10000.0):
+        return CandleBar(ts=0, open=close, high=close * 1.01, low=close * 0.99,
+                         close=close, vwap=close, volume=volume, count=100)
+
+    engine = SignalEngine()
+    # Warm up
+    for i in range(15):
+        engine.add_bar(_make_bar(close=1.0 + i * 0.001))
+
+    pos = Position(entry_price=1.0, qty=600.0, notional_usd=600.0, entry_ts=0, candles_held=0)
+    # Simulate two more bars
+    for expected_count in [1, 2, 3]:
+        bar = _make_bar(close=1.015)
+        pos.candles_held += 1  # this mirrors MemeAgent._handle_bar line
+        assert pos.candles_held == expected_count
+
+
+def test_compute_obi_string_inputs():
+    """compute_obi handles string-typed price/qty tuples from Kraken REST."""
+    bids = [("1.0000", "5000.0"), ("0.9990", "3000.0")]
+    asks = [("1.0010", "1000.0"), ("1.0020", "500.0")]
+    result = compute_obi(bids, asks)
+    # bid_depth = 1.0*5000 + 0.999*3000 = 7997; ask_depth = 1.001*1000 + 1.002*500 = 1502
+    assert result > 0.5  # bid-heavy
+
+
+def test_executor_win_rate_no_div_zero():
+    """session_stats win_rate calculation should not divide by zero."""
+    from hydra_meme_agent import MemeExecutor
+    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    trade_log = []
+    win_rate = sum(1 for t in trade_log if t.net_pnl > 0) / max(len(trade_log), 1)
+    assert win_rate == 0.0

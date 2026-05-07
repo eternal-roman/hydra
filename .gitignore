@@ -79,6 +79,14 @@ hydra_thesis_processed/
 hydra_thesis_pending/
 hydra_thesis_evidence_archive/
 
+# APEX meme engine runtime state (v2.21+)
+hydra_meme_session.json
+hydra_meme_session.json.tmp
+hydra_meme_journal.json
+hydra_meme_journal.json.tmp
+hydra_meme_watchlist.json
+hydra_meme_watchlist.json.tmp
+
 # Temporary / Junk / Scratch
 *.diff
 *.patch

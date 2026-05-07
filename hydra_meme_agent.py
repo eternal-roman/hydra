@@ -442,6 +442,8 @@ class MemeExecutor:
     """Places taker limit orders and tracks position + daily P&L."""
 
     def __init__(self, pair: str, position_size: float, daily_cap: float):
+        if daily_cap <= 0:
+            raise ValueError(f"daily_cap must be positive, got {daily_cap}")
         self.pair = pair
         self.position_size = position_size
         self.daily_cap = daily_cap
@@ -476,11 +478,15 @@ class MemeExecutor:
         exit_fee = exit_notional * TAKER_FEE_RATE
         return gross - entry_fee - exit_fee
 
-    def place_buy(self, ask: float) -> Optional[Position]:
+    def place_buy(self, ask: float, mid: Optional[float] = None) -> Optional[Position]:
         """Place a taker BUY limit order. Returns Position on success, None on failure."""
         if self.is_halted():
             return None
         limit_price = self._buy_limit_price(ask)
+        if mid and mid > 0:
+            slippage_bps = (limit_price - mid) / mid * 10_000
+            if slippage_bps > SLIPPAGE_CAP_BPS:
+                return None
         qty = self._buy_qty(ask)
         result = _kraken_cli([
             "order", "buy",
@@ -501,9 +507,14 @@ class MemeExecutor:
             order_id=str(order_id),
         )
 
-    def place_sell(self, position: Position, bid: float, reason: str) -> dict:
+    def place_sell(self, position: Position, bid: float, reason: str,
+                   mid: Optional[float] = None) -> dict:
         """Place a taker SELL limit order. Returns trade record dict."""
         limit_price = self._sell_limit_price(bid)
+        if mid and mid > 0:
+            slippage_bps = (mid - limit_price) / mid * 10_000
+            if slippage_bps > SLIPPAGE_CAP_BPS:
+                limit_price = mid * (1 - SLIPPAGE_CAP_BPS / 10_000)
         result = _kraken_cli([
             "order", "sell",
             self.pair,
@@ -552,11 +563,16 @@ class OBIPoller:
         if now - self._last_poll < KRAKEN_REST_FLOOR:
             return
         self._last_poll = now
-        result = _kraken_cli(["orderbook", self._pair_nodash, "--count", str(OBI_LEVELS)])
+        result = _kraken_cli(["book", self._pair_nodash, "--depth", str(OBI_LEVELS)])
         if "error" in result:
             return
-        # Kraken orderbook response: {PAIR: {bids: [[price, qty, ts], ...], asks: [...]}}
-        book = result.get(self._pair_nodash) or result.get(self.pair) or {}
+        # Kraken book response: {PAIR: {bids: [[price, qty, ts], ...], asks: [...]}}
+        # Key may be Kraken-normalized (e.g. XBTUSDT) — fall back to first key.
+        book = (result.get(self._pair_nodash)
+                or result.get(self.pair)
+                or (next(iter(result.values())) if result else {}))
+        if not isinstance(book, dict):
+            return
         bids = book.get("bids", [])
         asks = book.get("asks", [])
         if bids and asks:
@@ -585,10 +601,14 @@ class OBIPoller:
 
     def ask_wall_usd(self) -> float:
         """Compute top-3 ask levels total USD depth (for ask_wall_clear gate)."""
-        result = _kraken_cli(["orderbook", self._pair_nodash, "--count", "3"])
+        result = _kraken_cli(["book", self._pair_nodash, "--depth", "3"])
         if "error" in result:
             return 999_999.0
-        book = result.get(self._pair_nodash) or result.get(self.pair) or {}
+        book = (result.get(self._pair_nodash)
+                or result.get(self.pair)
+                or (next(iter(result.values())) if result else {}))
+        if not isinstance(book, dict):
+            return 999_999.0
         asks = book.get("asks", [])
         return sum(float(a[0]) * float(a[1]) for a in asks[:3])
 
@@ -683,11 +703,11 @@ class MemeAgent:
         self._detector = CompetitionDetector(watchlist_path)
         self._candle_agg = CandleAggregator(pair, self._on_bar)
         self._position: Optional[Position] = None
+        self._exit_lock: asyncio.Lock = asyncio.Lock()
         self._session_path = session_path
         self._journal_path = journal_path
         self._trade_log: list[TradeRecord] = []
         self._engine_state = "warmup"
-        self._last_competition_scan = 0.0
 
     # ── WebSocket server ──
 
@@ -723,9 +743,13 @@ class MemeAgent:
         except Exception:
             pass
 
-    # ── Bar callback (from CandleAggregator, called in WS thread) ──
+    # ── Bar callback (from CandleAggregator, scheduled into event loop) ──
 
     def _on_bar(self, bar: CandleBar) -> None:
+        """Called by CandleAggregator; schedules async work into the event loop."""
+        asyncio.ensure_future(self._handle_bar(bar))
+
+    async def _handle_bar(self, bar: CandleBar) -> None:
         self._signal_engine.add_bar(bar)
         if not self._signal_engine.is_warmed_up():
             self._engine_state = "warmup"
@@ -733,55 +757,72 @@ class MemeAgent:
         self._engine_state = "running"
         # Broadcast signal state
         gates = self._signal_engine.evaluate_entry_gates(
-            bar, self._obi_poller.obi, self._obi_poller.ask_wall_usd()
+            bar, self._obi_poller.obi, await asyncio.to_thread(self._obi_poller.ask_wall_usd)
         )
-        self._broadcast_sync({"type": "signal_state", "gates": gates,
-                               "pair": self.pair, "ts": bar.ts})
+        await self._broadcast({"type": "signal_state", "gates": gates,
+                                "pair": self.pair, "ts": bar.ts})
         # Bar-close exit check
         if self._position is not None:
             self._position.candles_held += 1
             reason = self._signal_engine.evaluate_exit_bar(self._position, bar)
             if reason:
-                self._exit_position(reason)
+                await self._exit_position(reason)
                 return
         # Entry check (only when no position)
         if self._position is None and not self._executor.is_halted():
             if gates["all_pass"]:
-                pos = self._executor.place_buy(self._obi_poller.best_ask)
+                mid = self._obi_poller.mid_price or None
+                pos = await asyncio.to_thread(
+                    self._executor.place_buy, self._obi_poller.best_ask, mid
+                )
                 if pos:
                     self._position = pos
-                    self._broadcast_sync({"type": "order_placed",
-                                          "side": "buy",
-                                          "price": pos.entry_price,
-                                          "qty": pos.qty})
+                    await self._broadcast({"type": "order_placed",
+                                           "side": "buy",
+                                           "price": pos.entry_price,
+                                           "qty": pos.qty})
 
-    def _exit_position(self, reason: str) -> None:
-        if self._position is None:
-            return
-        result = self._executor.place_sell(
-            self._position, self._obi_poller.best_bid, reason
-        )
-        record: TradeRecord = result["record"]
-        self._trade_log.append(record)
-        append_journal(record, self._journal_path)
-        self._broadcast_sync({"type": "trade_closed",
+    async def _exit_position(self, reason: str) -> None:
+        """Exit current position. Lock prevents double-exit from concurrent OBI/bar tasks."""
+        async with self._exit_lock:
+            if self._position is None:
+                return
+            result = self._executor.place_sell(
+                self._position, self._obi_poller.best_bid, reason,
+                mid=self._obi_poller.mid_price or None,
+            )
+            record: TradeRecord = result["record"]
+            self._trade_log.append(record)
+            await asyncio.to_thread(append_journal, record, self._journal_path)
+            self._position = None
+        await self._broadcast({"type": "trade_closed",
                                "net_pnl": record.net_pnl,
                                "exit_reason": reason,
-                               "entry": record.entry_price,
-                               "exit": record.exit_price})
-        self._position = None
+                               "entry_price": record.entry_price,
+                               "exit_price": record.exit_price,
+                               "hold_candles": record.hold_candles})
         if self._executor.is_halted():
             self._engine_state = "halted"
-            self._broadcast_sync({"type": "engine_halted",
+            await self._broadcast({"type": "engine_halted",
                                    "reason": "daily_cap",
                                    "daily_pnl": self._executor._daily_pnl})
-        self._broadcast_sync({
+        win_count = sum(1 for t in self._trade_log if t.net_pnl > 0)
+        await self._broadcast({
             "type": "session_stats",
             "session_pnl": self._executor._daily_pnl,
+            "daily_loss": self._executor._daily_loss,
             "trade_count": len(self._trade_log),
-            "win_rate": sum(1 for t in self._trade_log if t.net_pnl > 0) / len(self._trade_log),
+            "win_rate": win_count / max(len(self._trade_log), 1),
             "daily_cap_remaining": self._executor.daily_cap + self._executor._daily_loss,
         })
+        state = SessionState(
+            pair=self.pair,
+            engine_state=self._engine_state,
+            session_pnl=self._executor._daily_pnl,
+            daily_pnl=self._executor._daily_pnl,
+            trade_count=len(self._trade_log),
+        )
+        await asyncio.to_thread(save_session, state, self._session_path)
 
     # ── 10-second OBI loop ──
 
@@ -797,62 +838,79 @@ class MemeAgent:
                     self._position, self._obi_poller.mid_price, self._obi_poller.obi
                 )
                 if reason:
-                    self._exit_position(reason)
+                    await self._exit_position(reason)
             if self._position is not None:
+                pos = self._position
                 await self._broadcast({
                     "type": "position_update",
                     "price": self._obi_poller.mid_price,
                     "obi": self._obi_poller.obi,
-                    "entry": self._position.entry_price,
-                    "unrealised_pnl": (self._obi_poller.mid_price - self._position.entry_price)
-                                      * self._position.qty,
+                    "entry": {
+                        "entry_price": pos.entry_price,
+                        "qty": pos.qty,
+                        "candles_held": pos.candles_held,
+                        "notional_usd": pos.notional_usd,
+                        "entry_ts": pos.entry_ts,
+                    },
+                    "unrealised_pnl": (self._obi_poller.mid_price - pos.entry_price) * pos.qty,
                 })
             await asyncio.sleep(OBI_POLL_INTERVAL)
+
+    async def _run_competition_scan(self) -> None:
+        """Single competition scan pass: fetch ticker for all watchlist tokens."""
+        tokens = self._detector.get_all_tokens()
+        last_call = 0.0
+        for token in tokens:
+            elapsed = time.time() - last_call
+            if elapsed < KRAKEN_REST_FLOOR:
+                await asyncio.sleep(KRAKEN_REST_FLOOR - elapsed)
+            pair_nodash = token["pair"].replace("/", "")
+            result = await asyncio.to_thread(_kraken_cli, ["ticker", pair_nodash])
+            last_call = time.time()
+            if "error" in result:
+                continue
+            # Kraken ticker key may be normalized — fall back to first key.
+            ticker_data = (result.get(pair_nodash)
+                           or result.get(token["pair"])
+                           or (next(iter(result.values())) if result else {}))
+            if not isinstance(ticker_data, dict):
+                continue
+            # Kraken ticker: v[1] = 24h volume
+            vol_str = ticker_data.get("v", [None, None])[1]
+            if not vol_str:
+                continue
+            volume = float(vol_str)
+            if self._detector._get_baseline(token["pair"]) is None:
+                self._detector._set_baseline(token["pair"], volume)
+                continue
+            self._detector._update_baseline(token["pair"], volume)
+            if (not self._detector._is_suppressed(token["pair"])
+                    and self._detector._is_anomaly(token["pair"], volume)):
+                comp_type = self._detector.infer_competition_type(token["pair"])
+                token_obj = self._detector._find_token(token["pair"]) or {}
+                await self._broadcast({
+                    "type": "competition_alert",
+                    "pair": token["pair"],
+                    "volume": volume,
+                    "baseline": self._detector._get_baseline(token["pair"]),
+                    "ratio": volume / self._detector._get_baseline(token["pair"]),
+                    "competition_type": comp_type,
+                    "competition_type_confirmed": token_obj.get("competition_type_confirmed", False),
+                })
+        # Broadcast full token list after scan
+        await self._broadcast({
+            "type": "watchlist_update",
+            "tokens": self._detector.get_all_tokens(),
+        })
 
     # ── 15-minute competition scan loop ──
 
     async def _competition_loop(self) -> None:
+        # Run one scan immediately on startup so Discover view is populated
+        await self._run_competition_scan()
         while True:
             await asyncio.sleep(COMPETITION_SCAN_INTERVAL)
-            tokens = self._detector.get_all_tokens()
-            last_call = 0.0
-            for token in tokens:
-                elapsed = time.time() - last_call
-                if elapsed < KRAKEN_REST_FLOOR:
-                    await asyncio.sleep(KRAKEN_REST_FLOOR - elapsed)
-                pair_nodash = token["pair"].replace("/", "")
-                result = await asyncio.to_thread(
-                    _kraken_cli, ["ticker", pair_nodash]
-                )
-                last_call = time.time()
-                if "error" in result:
-                    continue
-                ticker_data = result.get(pair_nodash) or result.get(token["pair"]) or {}
-                # Kraken ticker: v[1] = 24h volume
-                vol_str = ticker_data.get("v", [None, None])[1]
-                if not vol_str:
-                    continue
-                volume = float(vol_str)
-                if self._detector._get_baseline(token["pair"]) is None:
-                    self._detector._set_baseline(token["pair"], volume)
-                    continue
-                self._detector._update_baseline(token["pair"], volume)
-                if (not self._detector._is_suppressed(token["pair"])
-                        and self._detector._is_anomaly(token["pair"], volume)):
-                    comp_type = self._detector.infer_competition_type(token["pair"])
-                    await self._broadcast({
-                        "type": "competition_alert",
-                        "pair": token["pair"],
-                        "volume": volume,
-                        "baseline": self._detector._get_baseline(token["pair"]),
-                        "ratio": volume / self._detector._get_baseline(token["pair"]),
-                        "competition_type": comp_type,
-                    })
-            # Broadcast full token list after scan
-            await self._broadcast({
-                "type": "watchlist_update",
-                "tokens": self._detector.get_all_tokens(),
-            })
+            await self._run_competition_scan()
 
     # ── Main run ──
 

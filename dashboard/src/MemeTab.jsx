@@ -510,7 +510,10 @@ export default function MemeTab() {
           case "position_update":
             setMidPrice(msg.price ?? 0);
             setObi(msg.obi ?? 0);
-            if (msg.entry) setPosition(p => p ? { ...p, ...msg.entry } : msg.entry);
+            // msg.entry is a full position object {entry_price, qty, candles_held, ...}
+            if (msg.entry && typeof msg.entry === "object") {
+              setPosition(p => p ? { ...p, ...msg.entry } : msg.entry);
+            }
             break;
           case "order_placed":
             if (msg.side === "buy") {
@@ -521,7 +524,12 @@ export default function MemeTab() {
             break;
           case "trade_closed":
             setPosition(null);
-            setTrades(prev => [...prev, msg]);
+            // backend sends entry_price/exit_price; alias for TradeLog which reads entry_price/exit_price
+            setTrades(prev => [...prev, {
+              ...msg,
+              entry_price: msg.entry_price ?? msg.entry,
+              exit_price: msg.exit_price ?? msg.exit,
+            }]);
             break;
           case "session_stats":
             setSessionStats(msg);
