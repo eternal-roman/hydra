@@ -1,6 +1,6 @@
 # HYDRA Backtest & Experimentation Platform — Design Spec
 
-**Status:** SHIPPED (live since v2.10.0; current v2.14.2)
+**Status:** SHIPPED (live since v2.10.0)
 **Target version:** v2.10.0
 **Author:** Claude Opus 4.6 (design) + eternal-roman (review)
 **Date:** 2026-04-16
