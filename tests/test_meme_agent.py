@@ -741,3 +741,19 @@ def test_reentry_cooldown_blocks_immediate_reentry():
     """Agent should not enter within REENTRY_COOLDOWN_BARS of last exit."""
     from hydra_meme_agent import REENTRY_COOLDOWN_BARS
     assert REENTRY_COOLDOWN_BARS == 2
+
+
+def test_executor_daily_reset():
+    """Daily loss and halt state reset when the day changes."""
+    exec_ = MemeExecutor("PLAY/USD", position_size=300.0, daily_cap=30.0)
+    exec_.record_pnl(-31.0)
+    assert exec_.is_halted() is True
+    # Should NOT reset if same day
+    exec_.maybe_reset_daily()
+    assert exec_.is_halted() is True
+    # Force the tracked date to yesterday
+    exec_._last_reset_date = "2026-05-06"
+    exec_.maybe_reset_daily()
+    assert exec_.is_halted() is False
+    assert exec_._daily_loss == 0.0
+    assert exec_._daily_pnl == 0.0

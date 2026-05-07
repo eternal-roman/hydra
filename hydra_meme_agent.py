@@ -589,6 +589,7 @@ class MemeExecutor:
         self._daily_pnl: float = 0.0
         self._daily_loss: float = 0.0
         self._halted: bool = False
+        self._last_reset_date: str = time.strftime("%Y-%m-%d", time.gmtime())
         self._pair_nodash = pair.replace("/", "")
 
     def is_halted(self) -> bool:
@@ -600,6 +601,14 @@ class MemeExecutor:
             self._daily_loss += net_pnl
         if self._daily_loss <= -self.daily_cap:
             self._halted = True
+
+    def maybe_reset_daily(self) -> None:
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        if today != self._last_reset_date:
+            self._daily_pnl = 0.0
+            self._daily_loss = 0.0
+            self._halted = False
+            self._last_reset_date = today
 
     def _buy_limit_price(self, ask: float) -> float:
         return ask * (1 + TAKER_SLIPPAGE_BPS / 10_000)
@@ -992,6 +1001,7 @@ class MemeAgent:
             return
         self._signal_engine.add_bar(bar)
         self._bar_count += 1
+        self._executor.maybe_reset_daily()
         # Broadcast bar so frontend chart updates on every close
         await self._broadcast({
             "type": "bar_update",
