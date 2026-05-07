@@ -730,3 +730,14 @@ def test_apex_ws_port_no_collision():
     """APEX port must not collide with hydra_ws_server.next_agent_port."""
     from hydra_meme_agent import WS_PORT
     assert WS_PORT >= 8770, f"WS_PORT={WS_PORT} collides with hydra_ws_server agent port range (8766+)"
+
+
+def test_reentry_cooldown_constant():
+    from hydra_meme_agent import REENTRY_COOLDOWN_BARS
+    assert REENTRY_COOLDOWN_BARS >= 2
+
+
+def test_reentry_cooldown_blocks_immediate_reentry():
+    """Agent should not enter within REENTRY_COOLDOWN_BARS of last exit."""
+    from hydra_meme_agent import REENTRY_COOLDOWN_BARS
+    assert REENTRY_COOLDOWN_BARS == 2

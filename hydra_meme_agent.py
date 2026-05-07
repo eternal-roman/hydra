@@ -63,6 +63,7 @@ COMPETITION_ANOMALY_RATIO = 5.0
 COMPETITION_EMA_ALPHA = 1 / 7
 
 EXTENSION_MAX_PCT = 0.20  # block entry when price is >20% above slow EMA
+REENTRY_COOLDOWN_BARS = 2  # bars to wait after exit before re-entering
 
 COMPETITION_SEED_PAIRS = [
     # Meme tokens
@@ -873,6 +874,8 @@ class MemeAgent:
             total_pnl = sum(t.net_pnl for t in self._trade_log)
             print(f"[APEX] Loaded {len(self._trade_log)} trades from journal (net P&L: ${total_pnl:+.2f})")
         self._engine_state = "warmup"
+        self._last_exit_bar_count: int = -REENTRY_COOLDOWN_BARS
+        self._bar_count: int = 0
 
     # ── History seed ──
 
@@ -988,6 +991,7 @@ class MemeAgent:
         if os.environ.get("HYDRA_APEX_DISABLED") == "1":
             return
         self._signal_engine.add_bar(bar)
+        self._bar_count += 1
         # Broadcast bar so frontend chart updates on every close
         await self._broadcast({
             "type": "bar_update",
@@ -1019,7 +1023,8 @@ class MemeAgent:
                 return
         # Entry check (only when no position, no pending sell, and OBI data is fresh)
         if (self._position is None and not self._executor.is_halted()
-                and not self._sell_pending_reason and not self._obi_poller.is_stale):
+                and not self._sell_pending_reason and not self._obi_poller.is_stale
+                and (self._bar_count - self._last_exit_bar_count) >= REENTRY_COOLDOWN_BARS):
             if gates["all_pass"]:
                 mid = self._obi_poller.mid_price or None
                 pos = await asyncio.to_thread(
@@ -1066,6 +1071,7 @@ class MemeAgent:
             self._position = None
             self._sell_pending_reason = None
             self._sell_retry_count = 0
+            self._last_exit_bar_count = self._bar_count
         await self._broadcast({"type": "trade_closed",
                                "net_pnl": record.net_pnl,
                                "exit_reason": reason,
