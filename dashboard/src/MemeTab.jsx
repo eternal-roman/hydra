@@ -15,7 +15,8 @@ const C = {
   sans: "Space Grotesk, system-ui, sans-serif",
 };
 
-const APEX_WS = "ws://localhost:8770";
+const APEX_WS_BASE = 8770;
+const APEX_WS_RANGE = 10; // scan 8770-8779
 const APEX_DAILY_CAP_USD = 30;
 const POSITION_SIZE_USD = 300;
 
@@ -973,133 +974,154 @@ export default function MemeTab() {
   const reconnectRef = useRef(null);
   const connectRef = useRef(null);
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    const ws = new WebSocket(APEX_WS);
-    wsRef.current = ws;
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => {
-      setConnected(false);
-      reconnectRef.current = setTimeout(() => connectRef.current?.(), 5000);
-    };
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        switch (msg.type) {
-          case "initial_state":
-            setEngineState(msg.engine_state ?? "idle");
-            if (msg.pair) setEnginePair(msg.pair);
-            if (msg.position) setPosition(msg.position);
-            if (msg.trades) setTrades(msg.trades);
-            if (msg.session_pnl != null || msg.trade_count != null) {
-              setSessionStats({
-                session_pnl: msg.session_pnl ?? 0,
-                daily_loss: msg.daily_loss ?? 0,
-                trade_count: msg.trade_count ?? 0,
-                win_rate: msg.win_rate ?? 0,
-              });
-            }
-            break;
-          case "warmup_progress":
-            setEngineState("warmup");
-            break;
-          case "candle_history":
-            setBars(msg.bars ?? []);
-            break;
-          case "bar_update":
-            if (msg.bar) setBars(prev => {
-              const deduped = prev.filter(b => b.ts !== msg.bar.ts);
-              return [...deduped, msg.bar].slice(-100);
+  const portRef = useRef(null);
+
+  const onMessage = useCallback((evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      switch (msg.type) {
+        case "initial_state":
+          setEngineState(msg.engine_state ?? "idle");
+          if (msg.pair) setEnginePair(msg.pair);
+          if (msg.position) setPosition(msg.position);
+          if (msg.trades) setTrades(msg.trades);
+          if (msg.session_pnl != null || msg.trade_count != null) {
+            setSessionStats({
+              session_pnl: msg.session_pnl ?? 0,
+              daily_loss: msg.daily_loss ?? 0,
+              trade_count: msg.trade_count ?? 0,
+              win_rate: msg.win_rate ?? 0,
             });
-            break;
-          case "ticker":
-            setMidPrice(msg.price ?? 0);
-            setObi(msg.obi ?? 0);
-            setSpreadBps(msg.spread_bps ?? 0);
-            break;
-          case "signal_state":
-            setGates(msg.gates);
-            setEngineState("running");
-            if (msg.gates?.all_pass) setSubView("trading");
-            break;
-          case "position_update":
-            setMidPrice(msg.price ?? 0);
-            setObi(msg.obi ?? 0);
-            setSpreadBps(msg.spread_bps ?? 0);
-            if (msg.entry && typeof msg.entry === "object") {
-              setPosition(p => p ? { ...p, ...msg.entry } : msg.entry);
-            }
-            break;
-          case "order_placed":
-            if (msg.side === "buy") {
-              setPosition({ entry_price: msg.price, qty: msg.qty,
-                            notional_usd: POSITION_SIZE_USD,
-                            entry_ts: Date.now() / 1000, candles_held: 0,
-                            entry_mode: msg.entry_mode ?? "momentum",
-                            peak_price: msg.price });
-              setSubView("trading");
-            }
-            break;
-          case "trade_closed":
-            setPosition(null);
-            setTrades(prev => [...prev, {
-              ...msg,
-              entry_price: msg.entry_price ?? msg.entry,
-              exit_price: msg.exit_price ?? msg.exit,
-            }]);
-            break;
-          case "session_stats":
-            setSessionStats(msg);
-            break;
-          case "engine_halted":
-            setEngineState("halted");
-            setPosition(null);
-            break;
-          case "engine_state":
-            setEngineState(msg.state ?? "idle");
-            break;
-          case "competition_alert":
-            setPendingAlert(msg);
-            break;
-          case "scan_started":
-            setScanInProgress(true);
-            break;
-          case "token_update":
-            if (msg.pair) {
-              setTokens(prev => {
-                const idx = prev.findIndex(t => t.pair === msg.pair);
-                if (idx >= 0) {
-                  const next = [...prev];
-                  next[idx] = { ...next[idx], ...msg };
-                  return next;
-                }
-                return [...prev, msg];
-              });
-            }
-            break;
-          case "watchlist_update":
-            setTokens(msg.tokens ?? []);
-            setLastScanTs(Date.now() / 1000);
-            setScanInProgress(false);
-            break;
-          default:
-            break;
-        }
-      } catch (e) {
-        console.error("[APEX] parse error", e);
+          }
+          break;
+        case "warmup_progress":
+          setEngineState("warmup");
+          break;
+        case "candle_history":
+          setBars(msg.bars ?? []);
+          break;
+        case "bar_update":
+          if (msg.bar) setBars(prev => {
+            const deduped = prev.filter(b => b.ts !== msg.bar.ts);
+            return [...deduped, msg.bar].slice(-100);
+          });
+          break;
+        case "ticker":
+          setMidPrice(msg.price ?? 0);
+          setObi(msg.obi ?? 0);
+          setSpreadBps(msg.spread_bps ?? 0);
+          break;
+        case "signal_state":
+          setGates(msg.gates);
+          setEngineState("running");
+          if (msg.gates?.all_pass) setSubView("trading");
+          break;
+        case "position_update":
+          setMidPrice(msg.price ?? 0);
+          setObi(msg.obi ?? 0);
+          setSpreadBps(msg.spread_bps ?? 0);
+          if (msg.entry && typeof msg.entry === "object") {
+            setPosition(p => p ? { ...p, ...msg.entry } : msg.entry);
+          }
+          break;
+        case "order_placed":
+          if (msg.side === "buy") {
+            setPosition({ entry_price: msg.price, qty: msg.qty,
+                          notional_usd: POSITION_SIZE_USD,
+                          entry_ts: Date.now() / 1000, candles_held: 0,
+                          entry_mode: msg.entry_mode ?? "momentum",
+                          peak_price: msg.price });
+            setSubView("trading");
+          }
+          break;
+        case "trade_closed":
+          setPosition(null);
+          setTrades(prev => [...prev, {
+            ...msg,
+            entry_price: msg.entry_price ?? msg.entry,
+            exit_price: msg.exit_price ?? msg.exit,
+          }]);
+          break;
+        case "session_stats":
+          setSessionStats(msg);
+          break;
+        case "engine_halted":
+          setEngineState("halted");
+          setPosition(null);
+          break;
+        case "engine_state":
+          setEngineState(msg.state ?? "idle");
+          break;
+        case "competition_alert":
+          setPendingAlert(msg);
+          break;
+        case "scan_started":
+          setScanInProgress(true);
+          break;
+        case "token_update":
+          if (msg.pair) {
+            setTokens(prev => {
+              const idx = prev.findIndex(t => t.pair === msg.pair);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = { ...next[idx], ...msg };
+                return next;
+              }
+              return [...prev, msg];
+            });
+          }
+          break;
+        case "watchlist_update":
+          setTokens(msg.tokens ?? []);
+          setLastScanTs(Date.now() / 1000);
+          setScanInProgress(false);
+          break;
+        default:
+          break;
       }
-    };
+    } catch (e) {
+      console.error("[APEX] parse error", e);
+    }
   }, []);
 
+  const tryPort = useCallback((port) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const timeout = setTimeout(() => { ws.close(); }, 2000);
+    ws.onopen = () => {
+      clearTimeout(timeout);
+      wsRef.current = ws;
+      portRef.current = port;
+      setConnected(true);
+      ws.onclose = () => {
+        setConnected(false);
+        wsRef.current = null;
+        reconnectRef.current = setTimeout(() => connectRef.current?.(), 3000);
+      };
+      ws.onmessage = onMessage;
+    };
+    ws.onerror = () => {
+      clearTimeout(timeout);
+      ws.close();
+      const next = port + 1;
+      if (next < APEX_WS_BASE + APEX_WS_RANGE) {
+        setTimeout(() => tryPort(next), 100);
+      } else {
+        reconnectRef.current = setTimeout(() => connectRef.current?.(), 5000);
+      }
+    };
+  }, [onMessage]);
+
   useEffect(() => {
-    connectRef.current = connect;
-    connect();
+    const doConnect = () => tryPort(APEX_WS_BASE);
+    connectRef.current = doConnect;
+    doConnect();
     return () => {
       clearTimeout(reconnectRef.current);
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [connect]);
+  }, [tryPort]);
 
   function handleStartEngine(pair) {
     setPendingAlert(null);

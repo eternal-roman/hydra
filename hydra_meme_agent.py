@@ -34,7 +34,8 @@ if os.path.exists(_env_path):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-WS_PORT = 8770
+WS_PORT_BASE = 8770
+WS_PORT_RANGE = 10  # try 8770-8779
 CANDLE_INTERVAL = 5          # minutes
 WARMUP_BARS = 15
 CANDLE_BUFFER_SIZE = 100
@@ -1472,8 +1473,22 @@ class MemeAgent:
             print("[APEX] Kill switch HYDRA_APEX_DISABLED=1 — not starting")
             return
         await self._seed_history()
-        server = await websockets.serve(self._ws_handler, "127.0.0.1", WS_PORT)
-        print(f"[APEX] WebSocket server on ws://localhost:{WS_PORT}")
+        server = None
+        ws_port = None
+        for port in range(WS_PORT_BASE, WS_PORT_BASE + WS_PORT_RANGE):
+            try:
+                server = await websockets.serve(
+                    self._ws_handler, "127.0.0.1", port,
+                    reuse_address=True,
+                )
+                ws_port = port
+                break
+            except OSError:
+                continue
+        if server is None:
+            print(f"[APEX] FATAL: could not bind WS on ports {WS_PORT_BASE}-{WS_PORT_BASE + WS_PORT_RANGE - 1}")
+            return
+        print(f"[APEX] WebSocket server on ws://127.0.0.1:{ws_port}")
         if test_fire:
             await self._test_fire()
         print(f"[APEX] Trading {self.pair} | State: {self._engine_state}")

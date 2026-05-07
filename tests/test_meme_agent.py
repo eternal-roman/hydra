@@ -729,8 +729,8 @@ def test_sell_max_retries_constant():
 
 def test_apex_ws_port_no_collision():
     """APEX port must not collide with hydra_ws_server.next_agent_port."""
-    from hydra_meme_agent import WS_PORT
-    assert WS_PORT >= 8770, f"WS_PORT={WS_PORT} collides with hydra_ws_server agent port range (8766+)"
+    from hydra_meme_agent import WS_PORT_BASE
+    assert WS_PORT_BASE >= 8770, f"WS_PORT_BASE={WS_PORT_BASE} collides with hydra_ws_server agent port range (8766+)"
 
 
 def test_reentry_cooldown_constant():
