@@ -260,6 +260,7 @@ declare done only when phase 2 is clean. Drive full cycle via `/audit`.
 
 ## Windows / WSL gotchas
 
+- **Use Bash for all shell commands, never PowerShell** — Git Bash is available and reliable; PowerShell has encoding issues (cp1252), quoting differences, and inconsistent behavior with Python tooling on this project. Subagents and parallel workers must also use Bash. Only use PowerShell if a command explicitly requires it (e.g., Windows-specific registry access).
 - Use UTF-8 explicitly; cp1252 crashes on Unicode (dashboard regime emoji + console portfolio block share the theme — both crash on cp1252)
 - `time.time()` has ~15ms Windows resolution; in BaseStream heartbeat or `RESTART_COOLDOWN_S=30s` it silently miscounts — use `time.perf_counter()`
 - Escape parentheses in `.bat` files inside if-blocks — cmd parser drops branches silently
