@@ -6,6 +6,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.23.0] — 2026-05-07
+
+APEX Meme Discover — runtime pair switching, warm-start seed history, competition-only token filter, tab state persistence.
+
+### Added
+- **Runtime pair switching:** full teardown/rebuild of CandleAggregator, OBIPoller, SignalEngine, MemeExecutor when toggling tokens via WS `switch_pair` message; concurrent switch guard prevents corruption
+- **Warm-start via seed history:** fetches 100 recent 5-min candles from Kraken OHLC REST API per token on switch, enabling instant trading readiness (15 bars needed for warmup)
+- **Position safety on pair switch:** aborts switch if open position cannot be exited; resumes previous pair with error broadcast
+- **Error recovery on failed switch:** if new pair precision query fails, resumes previous pair in warmup/running state instead of leaving engine dead
+- **Watchlist pruning:** `CompetitionDetector._load_or_bootstrap` filters persisted watchlist to current `COMPETITION_SEED_PAIRS`, preventing stale token accumulation across restarts
+- **Vol Surge legend:** Discover tab explains the volume anomaly ratio with color-coded thresholds (2-4× elevated, 4-5× warming, ≥5× competition alert)
+
+### Changed
+- **Discover token list trimmed to 6 competition tokens:** WIF, POPCAT, BONK, PEPE, PLAY, LION (was 18 including non-meme assets)
+- **"Anomaly" → "Vol Surge":** column header and color coding clarified with inline legend
+- **Toggle works for all tokens:** removed restriction that only CLI-started pair was toggleable
+- **Tab state persists:** Discover toggle state survives unmount/remount on tab switch (state lifted to parent)
+- **Triple-layer token filtering:** backend scan, frontend `token_update`, and `watchlist_update` handlers all reject non-seed tokens
+- **Idle guard moved above `add_bar`:** prevents stale bars from contaminating new signal engine during pair switch
+- **`stop_engine` broadcasts `pair: None`:** clears frontend engine pair on stop
+
+### Fixed
+- **H1:** Position abandoned on failed sell during pair switch — now aborts switch and resumes old pair
+- **H2:** `win_rate` sent as percentage (0-100) instead of fraction (0-1) in `initial_state` broadcast
+- **M1:** Concurrent switch corruption — guard rejects overlapping `_switch_pair` calls
+- **M2:** Old-pair bars contaminating new signal engine during switch window
+- **M3:** Error recovery left engine dead after failed pair precision query
+
+---
+
 ## [2.22.0] — 2026-05-07
 
 APEX Meme Engine V3 — dual-mode entry strategy, trailing stop, ATR volatility gate, WS port resilience.

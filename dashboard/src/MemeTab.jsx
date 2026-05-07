@@ -21,13 +21,7 @@ const APEX_DAILY_CAP_USD = 30;
 const POSITION_SIZE_USD = 300;
 
 const SEED_PAIRS = [
-  // Meme tokens
   "WIF/USD", "POPCAT/USD", "BONK/USD", "PEPE/USD", "PLAY/USD", "LION/USD",
-  // Gaming / metaverse
-  "SAND/USD", "MANA/USD", "ENJ/USD", "CHZ/USD",
-  // Newer ecosystem tokens Kraken actively promotes
-  "NEAR/USD", "APT/USD", "OP/USD", "ARB/USD", "INJ/USD",
-  "TIA/USD", "SEI/USD", "PYTH/USD",
 ];
 
 // ─── Candle Chart (hero element) ─────────────────────────────────────────────
@@ -608,21 +602,15 @@ function ScanCountdown({ lastScanTs }) {
 
 // ─── Discover View ────────────────────────────────────────────────────────────
 
-function DiscoverView({ tokens, onStartEngine, enginePair, connected, lastScanTs, wsRef, sessionStats, dailyCap, scanInProgress }) {
+function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, lastScanTs, wsRef, sessionStats, dailyCap, scanInProgress }) {
   const [levers, setLevers] = useState({});
-  const [activeToken, setActiveToken] = useState(enginePair);
 
-  useEffect(() => { setActiveToken(enginePair); }, [enginePair]);
-
-  function handleToggle(pair, posSize) {
-    if (activeToken === pair) {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: "stop_engine" }));
-      }
-      setActiveToken(null);
+  function handleToggle(pair) {
+    if (!connected) return;
+    if (enginePair === pair) {
+      onStop();
     } else {
-      setActiveToken(pair);
-      onStartEngine(pair, posSize);
+      onStartEngine(pair);
     }
   }
 
@@ -633,8 +621,8 @@ function DiscoverView({ tokens, onStartEngine, enginePair, connected, lastScanTs
   }
 
   function ratioColor(r) {
-    if (!r || r < 3) return C.muted;
-    if (r >= 7) return C.danger;
+    if (!r || r < 2) return C.muted;
+    if (r >= 5) return C.danger;
     if (r >= 4) return C.warn;
     return C.blue;
   }
@@ -696,13 +684,27 @@ function DiscoverView({ tokens, onStartEngine, enginePair, connected, lastScanTs
         <OfflineBanner />
       )}
 
+      {/* Vol surge legend */}
+      {connected && (
+        <div style={{
+          fontFamily: C.mono, fontSize: 11, color: C.muted, marginBottom: 10,
+          padding: "6px 16px", display: "flex", gap: 16, alignItems: "center",
+        }}>
+          <span>Vol Surge = 24h volume / 7-day baseline</span>
+          <span style={{ color: C.border }}>·</span>
+          <span><span style={{ color: C.blue }}>2-4×</span> elevated</span>
+          <span><span style={{ color: C.warn }}>4-5×</span> warming</span>
+          <span><span style={{ color: C.danger }}>≥5×</span> competition alert</span>
+        </div>
+      )}
+
       {/* Competition table */}
       <div style={{ background: C.panel, borderRadius: 8, border: `1px solid ${C.border}`,
                     marginBottom: 12, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: C.mono }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-              {["Token", "Vol 24h", "7d Baseline", "Anomaly", "Type", "Capital", "Trade"].map(h => (
+              {["Token", "Vol 24h", "7d Baseline", "Vol Surge", "Type", "Capital", "Trade"].map(h => (
                 <th key={h} style={{
                   padding: "12px 14px", textAlign: "left", fontSize: 13,
                   color: C.muted, fontWeight: 400, textTransform: "uppercase",
@@ -714,10 +716,9 @@ function DiscoverView({ tokens, onStartEngine, enginePair, connected, lastScanTs
           <tbody>
             {displayTokens.map((token, idx) => {
               const isAnomaly = (token.anomaly_ratio ?? 0) >= 5;
-              const isActive = activeToken === token.pair;
-              const isEnginePair = enginePair === token.pair;
+              const isActive = enginePair === token.pair;
               const capOk = hasCapital;
-              const canToggle = connected && capOk && isEnginePair;
+              const canToggle = connected && capOk;
               const evenRow = idx % 2 === 0;
 
               return (
@@ -744,7 +745,7 @@ function DiscoverView({ tokens, onStartEngine, enginePair, connected, lastScanTs
                   <td style={{ padding: "12px 14px", fontFamily: C.mono, fontSize: 15,
                                 color: C.muted }}>{fmtVol(token.baseline_volume_7d)}</td>
                   <td style={{ padding: "12px 14px" }}>
-                    {token.anomaly_ratio >= 3 ? (
+                    {token.anomaly_ratio != null ? (
                       <span style={{
                         padding: "3px 10px", borderRadius: 4, fontFamily: C.mono,
                         fontSize: 14, fontWeight: 700,
@@ -773,13 +774,12 @@ function DiscoverView({ tokens, onStartEngine, enginePair, connected, lastScanTs
                   </td>
                   <td style={{ padding: "10px 12px" }}>
                     <button
-                      onClick={() => canToggle && handleToggle(token.pair, levers[token.pair] ?? POSITION_SIZE_USD)}
+                      onClick={() => canToggle && handleToggle(token.pair)}
                       disabled={!canToggle}
                       title={!connected ? "Connect APEX engine first"
-                           : !isEnginePair ? `Restart APEX with --pair ${token.pair} to trade`
-                           : !capOk ? "Insufficient capital"
+                           : !capOk ? "Daily cap exhausted"
                            : isActive ? "Stop trading this token"
-                           : "Start trading this token"}
+                           : "Switch to this token"}
                       style={{
                         display: "inline-flex", alignItems: "center", justifyContent: "center",
                         gap: 8, width: 90, padding: "8px 0", borderRadius: 6, border: "none",
@@ -807,7 +807,7 @@ function DiscoverView({ tokens, onStartEngine, enginePair, connected, lastScanTs
                           transition: "left 0.2s",
                         }} />
                       </div>
-                      {isActive ? "ON" : !isEnginePair ? "—" : "OFF"}
+                      {isActive ? "ON" : "OFF"}
                     </button>
                   </td>
                 </tr>
@@ -858,7 +858,7 @@ function DiscoverView({ tokens, onStartEngine, enginePair, connected, lastScanTs
         }}>
           {[
             ["Available", `$${capRemaining.toFixed(2)}`, capRemaining > 0 ? C.accent : C.danger],
-            ["Locked", activeToken ? `$${POSITION_SIZE_USD}` : "$0", C.text],
+            ["Locked", enginePair ? `$${POSITION_SIZE_USD}` : "$0", C.text],
             ["Daily Cap", `$${dailyCap.toFixed(0)}`, C.muted],
             ["Used Today", `$${capUsed.toFixed(2)}`, capUsed > 0 ? C.danger : C.muted],
           ].map(([l, v, color]) => (
@@ -983,8 +983,8 @@ export default function MemeTab() {
         case "initial_state":
           setEngineState(msg.engine_state ?? "idle");
           if (msg.pair) setEnginePair(msg.pair);
-          if (msg.position) setPosition(msg.position);
-          if (msg.trades) setTrades(msg.trades);
+          setPosition(msg.position ?? null);
+          setTrades(msg.trades ?? []);
           if (msg.session_pnl != null || msg.trade_count != null) {
             setSessionStats({
               session_pnl: msg.session_pnl ?? 0,
@@ -1051,6 +1051,7 @@ export default function MemeTab() {
           break;
         case "engine_state":
           setEngineState(msg.state ?? "idle");
+          if (msg.pair !== undefined) setEnginePair(msg.pair);
           break;
         case "competition_alert":
           setPendingAlert(msg);
@@ -1059,7 +1060,7 @@ export default function MemeTab() {
           setScanInProgress(true);
           break;
         case "token_update":
-          if (msg.pair) {
+          if (msg.pair && SEED_PAIRS.includes(msg.pair)) {
             setTokens(prev => {
               const idx = prev.findIndex(t => t.pair === msg.pair);
               if (idx >= 0) {
@@ -1067,12 +1068,12 @@ export default function MemeTab() {
                 next[idx] = { ...next[idx], ...msg };
                 return next;
               }
-              return [...prev, msg];
+              return prev;
             });
           }
           break;
         case "watchlist_update":
-          setTokens(msg.tokens ?? []);
+          setTokens((msg.tokens ?? []).filter(t => SEED_PAIRS.includes(t.pair)));
           setLastScanTs(Date.now() / 1000);
           setScanInProgress(false);
           break;
@@ -1124,9 +1125,14 @@ export default function MemeTab() {
   }, [tryPort]);
 
   function handleStartEngine(pair) {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "switch_pair", pair }));
+    }
     setPendingAlert(null);
     setEnginePair(pair);
     setEngineState("warmup");
+    setBars([]);
+    setGates(null);
     setSubView("trading");
   }
 
@@ -1135,7 +1141,10 @@ export default function MemeTab() {
       wsRef.current.send(JSON.stringify({ type: "stop_engine" }));
     }
     setEngineState("idle");
+    setEnginePair(null);
     setPosition(null);
+    setBars([]);
+    setGates(null);
   }
 
   function handleDismiss(pair) {
@@ -1194,6 +1203,7 @@ export default function MemeTab() {
         <DiscoverView
           tokens={tokens}
           onStartEngine={handleStartEngine}
+          onStop={handleStop}
           enginePair={enginePair}
           connected={connected}
           lastScanTs={lastScanTs}

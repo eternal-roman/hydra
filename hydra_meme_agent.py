@@ -79,13 +79,7 @@ BOUNCE_RSI_EXIT = 50         # exit bounce when RSI recovers above 50
 BOUNCE_TIME_STOP = 8         # 8-bar timeout for bounce trades
 
 COMPETITION_SEED_PAIRS = [
-    # Meme tokens
     "WIF/USD", "POPCAT/USD", "BONK/USD", "PEPE/USD", "PLAY/USD", "LION/USD",
-    # Gaming / metaverse tokens
-    "SAND/USD", "MANA/USD", "ENJ/USD", "CHZ/USD",
-    # Newer ecosystem tokens Kraken actively promotes
-    "NEAR/USD", "APT/USD", "OP/USD", "ARB/USD", "INJ/USD",
-    "TIA/USD", "SEI/USD", "PYTH/USD",
 ]
 
 
@@ -403,9 +397,24 @@ class CompetitionDetector:
         self._data: dict = self._load_or_bootstrap()
 
     def _load_or_bootstrap(self) -> dict:
+        seed_set = set(COMPETITION_SEED_PAIRS)
         if os.path.exists(self._path):
             with open(self._path) as f:
-                return json.load(f)
+                data = json.load(f)
+            old_pairs = {t["pair"] for t in data.get("tokens", [])}
+            data["tokens"] = [t for t in data.get("tokens", []) if t["pair"] in seed_set]
+            for p in COMPETITION_SEED_PAIRS:
+                if not any(t["pair"] == p for t in data["tokens"]):
+                    data["tokens"].append({
+                        "pair": p, "baseline_volume_7d": None, "last_updated": None,
+                        "competition_type": None, "competition_type_confirmed": False,
+                        "alert_suppressed_until": None,
+                    })
+            new_pairs = {t["pair"] for t in data["tokens"]}
+            if old_pairs != new_pairs:
+                print(f"[APEX] Watchlist synced: {len(old_pairs)} → {len(new_pairs)} tokens")
+                self._save(data)
+            return data
         data = {
             "tokens": [
                 {
@@ -967,6 +976,8 @@ class MemeAgent:
                  journal_path: str = "hydra_meme_journal.json",
                  watchlist_path: str = "hydra_meme_watchlist.json"):
         self.pair = pair
+        self._position_size = position_size
+        self._daily_cap = daily_cap
         self._clients: set = set()
         self._signal_engine = SignalEngine()
         self._obi_poller = OBIPoller(pair)
@@ -1066,6 +1077,12 @@ class MemeAgent:
                            "low": b.low, "close": b.close, "volume": b.volume,
                            "vwap": b.vwap} for b in bars],
             }))
+        tokens = self._detector.get_all_tokens()
+        if any(t.get("current_volume") is not None for t in tokens):
+            await websocket.send(json.dumps({
+                "type": "watchlist_update",
+                "tokens": tokens,
+            }))
         try:
             async for raw in websocket:
                 try:
@@ -1078,7 +1095,11 @@ class MemeAgent:
                         if self._position is not None:
                             await self._exit_position("manual_stop")
                         self._engine_state = "idle"
-                        await self._broadcast({"type": "engine_state", "state": "idle"})
+                        await self._broadcast({"type": "engine_state", "state": "idle", "pair": None})
+                    elif msg.get("type") == "switch_pair":
+                        new_pair = msg.get("pair")
+                        if new_pair:
+                            asyncio.ensure_future(self._switch_pair(new_pair))
                     elif msg.get("type") == "scan_now":
                         asyncio.ensure_future(self._run_competition_scan())
                 except Exception:
@@ -1094,6 +1115,94 @@ class MemeAgent:
         data = json.dumps(msg)
         await asyncio.gather(*[c.send(data) for c in list(self._clients)],
                              return_exceptions=True)
+
+    # ── Pair switching ──
+
+    async def _switch_pair(self, new_pair: str) -> None:
+        """Tear down current pair infrastructure and rebuild for new_pair."""
+        if self._engine_state == "switching":
+            return
+        if new_pair == self.pair and self._engine_state != "idle":
+            return
+        if new_pair == self.pair and self._engine_state == "idle":
+            self._engine_state = "warmup" if not self._signal_engine.is_warmed_up() else "running"
+            await self._broadcast({
+                "type": "engine_state", "state": self._engine_state, "pair": self.pair,
+            })
+            return
+        self._engine_state = "switching"
+        print(f"[APEX] Switching {self.pair} → {new_pair}")
+        if self._position is not None:
+            await self._exit_position("pair_switch")
+            if self._position is not None:
+                print(f"[APEX] WARNING: position on {self.pair} could not be closed — "
+                      f"qty={self._position.qty} @ entry {self._position.entry_price}. "
+                      f"Close manually on Kraken before switching.")
+                self._engine_state = "running"
+                self._candle_agg = CandleAggregator(self.pair, self._on_bar)
+                task = asyncio.create_task(self._candle_agg.run())
+                task.add_done_callback(self._task_error_cb)
+                await self._broadcast({
+                    "type": "engine_state", "state": "running", "pair": self.pair,
+                })
+                return
+        self._candle_agg.stop()
+        old_daily_pnl = self._executor._daily_pnl
+        old_daily_loss = self._executor._daily_loss
+        try:
+            price_dec, lot_dec, ordermin, costmin = await asyncio.to_thread(
+                _query_pair_precision, new_pair
+            )
+        except Exception as e:
+            print(f"[APEX] Switch failed — cannot query {new_pair}: {e}")
+            self._engine_state = "warmup" if not self._signal_engine.is_warmed_up() else "running"
+            self._candle_agg = CandleAggregator(self.pair, self._on_bar)
+            task = asyncio.create_task(self._candle_agg.run())
+            task.add_done_callback(self._task_error_cb)
+            await self._broadcast({
+                "type": "engine_state", "state": self._engine_state, "pair": self.pair,
+            })
+            return
+        self.pair = new_pair
+        self._signal_engine = SignalEngine()
+        self._obi_poller = OBIPoller(new_pair)
+        print(f"[APEX] {new_pair}: price_decimals={price_dec}  lot_decimals={lot_dec}  "
+              f"ordermin={ordermin}  costmin=${costmin}")
+        self._executor = MemeExecutor(new_pair, self._position_size, self._daily_cap,
+                                      price_dec, lot_dec, ordermin, costmin)
+        self._executor._daily_pnl = old_daily_pnl
+        self._executor._daily_loss = old_daily_loss
+        self._candle_agg = CandleAggregator(new_pair, self._on_bar)
+        self._position = None
+        self._sell_pending_reason = None
+        self._sell_retry_count = 0
+        self._bar_count = 0
+        self._last_exit_bar_count = -REENTRY_COOLDOWN_BARS
+        self._engine_state = "warmup"
+        await self._seed_history()
+        bars = self._signal_engine._bars
+        if bars:
+            await self._broadcast({
+                "type": "candle_history",
+                "bars": [{"ts": b.ts, "open": b.open, "high": b.high,
+                           "low": b.low, "close": b.close, "volume": b.volume,
+                           "vwap": b.vwap} for b in bars],
+            })
+        task = asyncio.create_task(self._candle_agg.run())
+        task.add_done_callback(self._task_error_cb)
+        win_count = sum(1 for t in self._trade_log if t.net_pnl > 0)
+        await self._broadcast({
+            "type": "initial_state",
+            "pair": self.pair,
+            "engine_state": self._engine_state,
+            "position": None,
+            "trades": [],
+            "session_pnl": self._executor._daily_pnl,
+            "daily_loss": self._executor._daily_loss,
+            "trade_count": len(self._trade_log),
+            "win_rate": win_count / max(len(self._trade_log), 1),
+        })
+        print(f"[APEX] Switched to {new_pair} — warmup in progress")
 
     # ── Bar callback (from CandleAggregator, scheduled into event loop) ──
 
@@ -1112,6 +1221,8 @@ class MemeAgent:
 
     async def _handle_bar(self, bar: CandleBar) -> None:
         if os.environ.get("HYDRA_APEX_DISABLED") == "1":
+            return
+        if self._engine_state in ("idle", "switching"):
             return
         self._signal_engine.add_bar(bar)
         self._bar_count += 1
@@ -1296,8 +1407,9 @@ class MemeAgent:
             await asyncio.sleep(OBI_POLL_INTERVAL)
 
     async def _run_competition_scan(self) -> None:
-        """Single competition scan pass: fetch ticker for all watchlist tokens."""
-        tokens = self._detector.get_all_tokens()
+        """Single competition scan pass: fetch ticker for seed-list tokens only."""
+        seed_set = set(COMPETITION_SEED_PAIRS)
+        tokens = [t for t in self._detector.get_all_tokens() if t["pair"] in seed_set]
         await self._broadcast({"type": "scan_started", "token_count": len(tokens)})
         last_call = 0.0
         for token in tokens:
