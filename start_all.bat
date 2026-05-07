@@ -7,6 +7,13 @@ echo  HYDRA - Starting All Services
 echo ========================================
 echo.
 
+:: Kick the CBP memory sidecar first (idempotent; no-op if already up).
+if not defined CBP_RUNNER_DIR set "CBP_RUNNER_DIR=%~dp0..\cbp-runner"
+if exist "%CBP_RUNNER_DIR%\supervisor.py" (
+    echo [%date% %time%] Bringing up CBP sidecar
+    start "CBP Runner Sidecar" cmd /c "cd /d %CBP_RUNNER_DIR% && python supervisor.py"
+)
+
 :: Start dashboard in a new window
 start "HYDRA Dashboard" cmd /c start_dashboard.bat
 
@@ -16,7 +23,4 @@ timeout /t 3 /nobreak >nul
 :: Start agent in a new window
 start "HYDRA Agent" cmd /c start_hydra.bat
 
-:: Start APEX meme engine in a new window
-start "APEX Meme Engine" cmd /c start_meme.bat
-
-echo All services launched. Close the windows to stop.
+echo Both services launched. Close the windows to stop.

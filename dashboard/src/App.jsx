@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 import ResearchTab from "./components/ResearchTab";
-import MemeTab from "./MemeTab";
 
 // ═══════════════════════════════════════════════════════════════
 // HYDRA Live Dashboard — Connects to hydra_agent.py WebSocket
@@ -901,7 +900,8 @@ function FeatureFlagBanner({ flag, note }) {
 function TabSwitcher({ activeTab, onChange, backtestRunning }) {
   const tabs = [
     { key: "LIVE",     label: "LIVE",     color: COLORS.accent },
-    { key: "MEME",     label: "MEME",     color: "#8b5cf6" },
+    { key: "RESEARCH", label: "RESEARCH", color: COLORS.blue },
+    { key: "THESIS",   label: "THESIS",   color: COLORS.warn },
     { key: "SETTINGS", label: "SETTINGS", color: COLORS.text },
   ];
   return (
@@ -3796,9 +3796,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
 
         return (
           <>
-            {activeTab === "MEME" && (
-              <MemeTab />
-            )}
             {activeTab === "SETTINGS" && (
               <div style={{ padding: "16px 24px" }}>
                 <SettingsSurface wsSend={sendMessage} />
