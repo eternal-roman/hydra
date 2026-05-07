@@ -991,7 +991,7 @@ class MemeAgent:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="APEX Meme Engine")
     p.add_argument("--pair", required=True, help="Trading pair e.g. PLAY/USD")
-    p.add_argument("--position-size", type=float, default=600.0)
+    p.add_argument("--position-size", type=float, default=300.0)
     p.add_argument("--daily-cap", type=float, default=30.0)
     p.add_argument("--session-path", default="hydra_meme_session.json")
     p.add_argument("--journal-path", default="hydra_meme_journal.json")

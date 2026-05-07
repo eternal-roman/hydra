@@ -17,7 +17,7 @@ const C = {
 
 const APEX_WS = "ws://localhost:8766";
 const APEX_DAILY_CAP_USD = 30;
-const POSITION_SIZE_USD = 600;
+const POSITION_SIZE_USD = 300;
 
 const SEED_PAIRS = [
   "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD",
@@ -235,7 +235,7 @@ function PositionPanel({ position, midPrice }) {
           ["Entry", position.entry_price.toFixed(6)],
           ["Mid", midPrice.toFixed(6)],
           ["Qty", position.qty?.toFixed(2) ?? "—"],
-          ["Notional", `$${(position.notional_usd ?? 600).toFixed(0)}`],
+          ["Notional", `$${(position.notional_usd ?? 300).toFixed(0)}`],
         ].map(([l, v]) => (
           <div key={l}>
             <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted }}>{l}</div>
@@ -750,7 +750,7 @@ function DiscoverView({ tokens, onStartEngine, onDismiss, enginePair, connected,
             </span>
           </div>
           <input
-            type="range" min={600} max={3000} step={100}
+            type="range" min={300} max={3000} step={100}
             value={levers[token.pair] ?? POSITION_SIZE_USD}
             onChange={e => setLevers(l => ({ ...l, [token.pair]: Number(e.target.value) }))}
             style={{ width: "100%", accentColor: C.purple, marginBottom: 6 }}
@@ -839,7 +839,7 @@ function CompetitionModal({ alert, onStart, onDismiss }) {
         </div>
         <div style={{ padding: "10px 12px", background: "#0f1923", borderRadius: 8,
                       marginBottom: 16, fontFamily: C.mono, fontSize: 11, color: C.muted }}>
-          Strategy: $600 position · +2.5% target · −1.3% stop · 5-min candles · max 3 candles held
+          Strategy: $300 position · +2.5% target · −1.3% stop · 5-min candles · max 3 candles held
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <button
