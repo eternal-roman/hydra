@@ -167,6 +167,21 @@ def compute_vwap(bars: list[CandleBar]) -> float:
     return total_pv / total_v if total_v > 0.0 else 0.0
 
 
+EMA_TREND_FAST = 8
+EMA_TREND_SLOW = 21
+
+
+def ema(values: list[float], period: int) -> float:
+    """Standard EMA with alpha = 2/(period+1). Returns 0.0 for empty input."""
+    if not values:
+        return 0.0
+    alpha = 2.0 / (period + 1)
+    result = values[0]
+    for v in values[1:]:
+        result = alpha * v + (1 - alpha) * result
+    return result
+
+
 # ─── Signal Engine ─────────────────────────────────────────────────────────────
 
 class SignalEngine:
@@ -210,11 +225,18 @@ class SignalEngine:
         obi: float,
         ask_wall_usd: float,
     ) -> dict:
-        """Evaluate all 5 entry gates. Returns dict with gate booleans + all_pass."""
+        """Evaluate all 6 entry gates. Returns dict with gate booleans + all_pass."""
         vol_baseline = self.vol_ema_baseline
         # bar is already in self._bars (add_bar called before evaluate); don't duplicate
-        rsi = wilder_rsi([b.close for b in self._bars])
+        closes = [b.close for b in self._bars]
+        rsi = wilder_rsi(closes)
         vwap = self.session_vwap
+
+        trend_aligned = True
+        if len(self._bars) >= EMA_TREND_SLOW:
+            ema_fast = ema(closes, EMA_TREND_FAST)
+            ema_slow = ema(closes, EMA_TREND_SLOW)
+            trend_aligned = ema_fast > ema_slow
 
         gates = {
             "volume_spike": latest_bar.volume > VOLUME_SPIKE_MULTIPLIER * vol_baseline,
@@ -222,12 +244,14 @@ class SignalEngine:
             "vwap_align": latest_bar.close > vwap if vwap > 0 else False,
             "rsi_window": RSI_ENTRY_LOW <= rsi <= RSI_ENTRY_HIGH,
             "ask_wall_clear": ask_wall_usd < ASK_WALL_USD_LIMIT,
+            "trend_aligned": trend_aligned,
             "rsi_value": round(rsi, 1),
             "vwap_value": round(vwap, 8),
             "vol_ema_value": round(vol_baseline, 2),
         }
         gates["all_pass"] = all(gates[k] for k in
-                                ["volume_spike", "obi", "vwap_align", "rsi_window", "ask_wall_clear"])
+                                ["volume_spike", "obi", "vwap_align", "rsi_window",
+                                 "ask_wall_clear", "trend_aligned"])
         return gates
 
     def evaluate_exit_bar(self, position, latest_bar: CandleBar) -> Optional[str]:

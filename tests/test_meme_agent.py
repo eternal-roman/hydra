@@ -347,6 +347,52 @@ def test_competition_detector_ema_update():
         assert abs(updated - 3_200_000) < 1000
 
 
+def test_ema_simple():
+    """EMA with alpha = 2/(period+1)."""
+    from hydra_meme_agent import ema
+    values = [1.0, 2.0, 3.0, 4.0, 5.0]
+    result = ema(values, period=3)
+    # alpha = 0.5: 1.0 -> 1.5 -> 2.25 -> 3.125 -> 4.0625
+    assert abs(result - 4.0625) < 0.001
+
+
+def test_ema_single_value():
+    from hydra_meme_agent import ema
+    assert ema([42.0], period=5) == 42.0
+
+
+def test_ema_empty():
+    from hydra_meme_agent import ema
+    assert ema([], period=5) == 0.0
+
+
+def test_entry_gate_trend_filter_blocks_downtrend():
+    """EMA trend filter blocks entry when fast EMA < slow EMA (downtrend)."""
+    eng = SignalEngine()
+    for i in range(25):
+        eng.add_bar(_make_bar(close=1.0 - i * 0.01, volume=1000.0, ts=i * 300))
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=0.76, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=100.0,
+    )
+    assert gates["trend_aligned"] is False
+    assert gates["all_pass"] is False
+
+
+def test_entry_gate_trend_filter_passes_uptrend():
+    """EMA trend filter passes when fast EMA > slow EMA (uptrend)."""
+    eng = SignalEngine()
+    for i in range(25):
+        eng.add_bar(_make_bar(close=1.0 + i * 0.01, volume=1000.0, ts=i * 300))
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=1.25, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=100.0,
+    )
+    assert gates["trend_aligned"] is True
+
+
 def test_competition_detector_alert_suppression():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "watchlist.json")
