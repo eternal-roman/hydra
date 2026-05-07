@@ -141,7 +141,11 @@ def compute_obi(
 
 
 def compute_vwap(bars: list[CandleBar]) -> float:
-    """VWAP across all provided bars. Returns 0.0 for empty list."""
+    """Close-price VWAP across all provided bars (close * volume weighted).
+
+    Uses close price, not typical price (H+L+C)/3 — intentional for
+    compatibility with Kraken OHLC candle format. Returns 0.0 for empty list.
+    """
     total_pv = sum(b.close * b.volume for b in bars)
     total_v = sum(b.volume for b in bars)
     return total_pv / total_v if total_v > 0.0 else 0.0
