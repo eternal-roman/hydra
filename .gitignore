@@ -110,3 +110,6 @@ hydra_order_journal.json.backup-*
 
 # Visual brainstorm sessions
 .superpowers/
+
+# Superpowers plans/specs (ephemeral implementation artifacts)
+docs/superpowers/
