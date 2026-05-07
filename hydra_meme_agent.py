@@ -435,6 +435,17 @@ def save_session(state: SessionState, path: str) -> None:
     os.replace(tmp, path)
 
 
+def load_session_state(path: str) -> Optional[dict]:
+    """Load session state from file. Returns dict or None."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 _journal_lock = threading.Lock()
 
 
@@ -882,6 +893,13 @@ class MemeAgent:
                 self._executor.record_pnl(t.net_pnl)
             total_pnl = sum(t.net_pnl for t in self._trade_log)
             print(f"[APEX] Loaded {len(self._trade_log)} trades from journal (net P&L: ${total_pnl:+.2f})")
+        prev_session = load_session_state(session_path)
+        if prev_session and prev_session.get("open_position"):
+            op = prev_session["open_position"]
+            print(f"[APEX] WARNING: previous session had open position -- "
+                  f"qty={op.get('qty')} {pair} @ entry {op.get('entry_price')}")
+            print(f"[APEX] WARNING: verify on Kraken that position is closed before continuing")
+            print(f"[APEX] WARNING: engine will trade normally -- close stale position manually if needed")
         self._engine_state = "warmup"
         self._last_exit_bar_count: int = -REENTRY_COOLDOWN_BARS
         self._bar_count: int = 0

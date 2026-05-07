@@ -757,3 +757,39 @@ def test_executor_daily_reset():
     assert exec_.is_halted() is False
     assert exec_._daily_loss == 0.0
     assert exec_._daily_pnl == 0.0
+
+
+def test_load_session_detects_orphaned_position():
+    """If session has open_position, load_session_state returns it."""
+    from hydra_meme_agent import SessionState, save_session, load_session_state
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "session.json")
+        state = SessionState(
+            pair="PLAY/USD",
+            engine_state="running",
+            open_position={"entry_price": 0.16, "qty": 1875.0,
+                           "notional_usd": 300.0, "entry_ts": 1000,
+                           "order_id": "ABC123"},
+        )
+        save_session(state, path)
+        loaded = load_session_state(path)
+        assert loaded is not None
+        assert loaded.get("open_position") is not None
+
+
+def test_load_session_returns_none_for_missing_file():
+    from hydra_meme_agent import load_session_state
+    result = load_session_state("/nonexistent/path.json")
+    assert result is None
+
+
+def test_load_session_returns_none_for_corrupt_file():
+    from hydra_meme_agent import load_session_state
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "corrupt.json")
+        with open(path, "w") as f:
+            f.write("{bad json")
+        result = load_session_state(path)
+        assert result is None
