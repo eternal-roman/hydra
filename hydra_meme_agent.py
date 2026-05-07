@@ -34,7 +34,8 @@ if os.path.exists(_env_path):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-WS_PORT = 8766
+WS_PORT_BASE = 8770
+WS_PORT_RANGE = 10  # try 8770-8779
 CANDLE_INTERVAL = 5          # minutes
 WARMUP_BARS = 15
 CANDLE_BUFFER_SIZE = 100
@@ -51,16 +52,31 @@ RSI_EXHAUST = 82
 VOLUME_SPIKE_MULTIPLIER = 1.8
 VOLUME_DEATH_MULTIPLIER = 0.4
 ASK_WALL_USD_LIMIT = 500.0
-PROFIT_TARGET_PCT = 0.025    # 2.5%
-HARD_STOP_PCT = -0.013       # -1.3%
+PROFIT_TARGET_PCT = 0.030    # 3.0%
+HARD_STOP_PCT = -0.010       # -1.0%
 TIME_STOP_CANDLES = 3
 OBI_LEVELS = 5
 TAKER_SLIPPAGE_BPS = 5       # 0.05% — limit at ask+0.05% for BUY
 SLIPPAGE_CAP_BPS = 10        # 0.10% — reject if book moves more
 SELL_MAX_RETRIES = 5         # abandon after N failed sell attempts
+TRAILING_ACTIVATE_PCT = 0.015  # activate trailing stop after 1.5% unrealised gain
+TRAILING_OFFSET_PCT = 0.010   # trail 1.0% below peak
 
 COMPETITION_ANOMALY_RATIO = 5.0
 COMPETITION_EMA_ALPHA = 1 / 7
+
+EXTENSION_MAX_PCT = 0.10  # block entry when price is >10% above slow EMA
+REENTRY_COOLDOWN_BARS = 2  # bars to wait after exit before re-entering
+ATR_MIN_PCT = 0.015  # minimum ATR(5) as fraction of price to enter (1.5%)
+
+# Bounce-mode entry thresholds
+BOUNCE_RSI_THRESHOLD = 25    # enter bounce when RSI < 25 (deeply oversold)
+BOUNCE_VOL_SPIKE_MULT = 2.0  # require 2x vol EMA (capitulation selling)
+BOUNCE_MAX_EMA50_DIST = -0.15  # reject if price >15% below EMA(50) (freefall)
+BOUNCE_PROFIT_PCT = 0.020    # 2.0% profit target for bounce trades
+BOUNCE_STOP_PCT = -0.012     # -1.2% stop for bounce trades
+BOUNCE_RSI_EXIT = 50         # exit bounce when RSI recovers above 50
+BOUNCE_TIME_STOP = 8         # 8-bar timeout for bounce trades
 
 COMPETITION_SEED_PAIRS = [
     # Meme tokens
@@ -95,6 +111,8 @@ class Position:
     entry_ts: int
     candles_held: int = 0
     order_id: str = ""
+    peak_price: float = 0.0
+    entry_mode: str = "momentum"  # "momentum" or "bounce"
 
 
 @dataclass
@@ -167,6 +185,37 @@ def compute_vwap(bars: list[CandleBar]) -> float:
     return total_pv / total_v if total_v > 0.0 else 0.0
 
 
+EMA_TREND_FAST = 8
+EMA_TREND_SLOW = 21
+
+
+def ema(values: list[float], period: int) -> float:
+    """Standard EMA with alpha = 2/(period+1). Returns 0.0 for empty input."""
+    if not values:
+        return 0.0
+    alpha = 2.0 / (period + 1)
+    result = values[0]
+    for v in values[1:]:
+        result = alpha * v + (1 - alpha) * result
+    return result
+
+
+def atr_pct(bars: list, period: int = 5) -> float:
+    """ATR as a fraction of current price. Returns 0.0 when insufficient data."""
+    if len(bars) < period + 1:
+        return 0.0
+    trs = []
+    for i in range(len(bars) - period, len(bars)):
+        prev_close = bars[i - 1].close
+        tr = max(bars[i].high - bars[i].low,
+                 abs(bars[i].high - prev_close),
+                 abs(bars[i].low - prev_close))
+        trs.append(tr)
+    atr_val = sum(trs) / len(trs)
+    price = bars[-1].close
+    return atr_val / price if price > 0 else 0.0
+
+
 # ─── Signal Engine ─────────────────────────────────────────────────────────────
 
 class SignalEngine:
@@ -210,37 +259,98 @@ class SignalEngine:
         obi: float,
         ask_wall_usd: float,
     ) -> dict:
-        """Evaluate all 5 entry gates. Returns dict with gate booleans + all_pass."""
+        """Evaluate dual-mode entry gates. Returns dict with gate booleans + entry_mode.
+
+        Mode A (momentum): uptrend + RSI sweet-spot + volume spike + extension guard
+        Mode B (bounce): deeply oversold + capitulation volume + not in freefall
+        """
         vol_baseline = self.vol_ema_baseline
-        # bar is already in self._bars (add_bar called before evaluate); don't duplicate
-        rsi = wilder_rsi([b.close for b in self._bars])
+        closes = [b.close for b in self._bars]
+        rsi = wilder_rsi(closes)
         vwap = self.session_vwap
 
+        ema_fast_val = ema(closes, EMA_TREND_FAST) if len(self._bars) >= EMA_TREND_FAST else 0
+        ema_slow_val = ema(closes, EMA_TREND_SLOW) if len(self._bars) >= EMA_TREND_SLOW else 0
+        ema50_val = ema(closes, 50) if len(self._bars) >= 50 else ema_slow_val
+
+        trend_aligned = ema_fast_val > ema_slow_val if ema_slow_val > 0 else True
+        extension = (latest_bar.close - ema_slow_val) / ema_slow_val if ema_slow_val > 0 else 0
+        not_extended = extension <= EXTENSION_MAX_PCT
+
+        cur_atr_pct = atr_pct(self._bars)
+        vol_regime_pass = cur_atr_pct >= ATR_MIN_PCT
+
+        # Momentum gate checks
+        mom_volume = latest_bar.volume > VOLUME_SPIKE_MULTIPLIER * vol_baseline
+        mom_obi = obi > OBI_ENTRY_THRESHOLD
+        mom_vwap = latest_bar.close > vwap if vwap > 0 else False
+        mom_rsi = RSI_ENTRY_LOW <= rsi <= RSI_ENTRY_HIGH
+        mom_wall = ask_wall_usd < ASK_WALL_USD_LIMIT
+        mom_pass = all([mom_volume, mom_obi, mom_vwap, mom_rsi,
+                        mom_wall, trend_aligned, not_extended, vol_regime_pass])
+
+        # Bounce gate checks
+        ema50_dist = (latest_bar.close - ema50_val) / ema50_val if ema50_val > 0 else -1
+        bounce_rsi = rsi < BOUNCE_RSI_THRESHOLD and rsi > 0
+        bounce_vol = latest_bar.volume > BOUNCE_VOL_SPIKE_MULT * vol_baseline
+        bounce_floor = ema50_dist > BOUNCE_MAX_EMA50_DIST
+        bounce_pass = all([bounce_rsi, bounce_vol, bounce_floor, vol_regime_pass])
+
+        entry_mode = "none"
+        if mom_pass:
+            entry_mode = "momentum"
+        elif bounce_pass:
+            entry_mode = "bounce"
+
         gates = {
-            "volume_spike": latest_bar.volume > VOLUME_SPIKE_MULTIPLIER * vol_baseline,
-            "obi": obi > OBI_ENTRY_THRESHOLD,
-            "vwap_align": latest_bar.close > vwap if vwap > 0 else False,
-            "rsi_window": RSI_ENTRY_LOW <= rsi <= RSI_ENTRY_HIGH,
-            "ask_wall_clear": ask_wall_usd < ASK_WALL_USD_LIMIT,
+            "volume_spike": mom_volume,
+            "obi": mom_obi,
+            "vwap_align": mom_vwap,
+            "rsi_window": mom_rsi,
+            "ask_wall_clear": mom_wall,
+            "trend_aligned": trend_aligned,
+            "not_extended": not_extended,
+            "vol_regime": vol_regime_pass,
+            "bounce_rsi": bounce_rsi,
+            "bounce_vol": bounce_vol,
+            "bounce_floor": bounce_floor,
             "rsi_value": round(rsi, 1),
             "vwap_value": round(vwap, 8),
             "vol_ema_value": round(vol_baseline, 2),
+            "atr_pct": round(cur_atr_pct, 4),
+            "ema50_dist": round(ema50_dist, 4),
+            "extension_pct": round(extension, 4),
+            "entry_mode": entry_mode,
+            "all_pass": entry_mode != "none",
         }
-        gates["all_pass"] = all(gates[k] for k in
-                                ["volume_spike", "obi", "vwap_align", "rsi_window", "ask_wall_clear"])
         return gates
 
     def evaluate_exit_bar(self, position, latest_bar: CandleBar) -> Optional[str]:
-        """Bar-close exit triggers: RSI exhaust, time stop, volume death.
+        """Bar-close exit triggers: mode-aware RSI exit, time stop, volume death, trailing stop.
 
         position is a Position dataclass. Returns exit reason string or None.
         """
-        # bar is already in self._bars (add_bar called before evaluate); don't duplicate
         rsi = wilder_rsi([b.close for b in self._bars])
-        if rsi > RSI_EXHAUST:
-            return "rsi_exhaust"
-        if position.candles_held >= TIME_STOP_CANDLES:
-            return "time_stop"
+
+        if position.entry_mode == "bounce":
+            if rsi > BOUNCE_RSI_EXIT:
+                return "rsi_exit"
+            if position.candles_held >= BOUNCE_TIME_STOP:
+                return "time_stop"
+        else:
+            if rsi > RSI_EXHAUST:
+                return "rsi_exhaust"
+            if position.candles_held >= TIME_STOP_CANDLES:
+                return "time_stop"
+
+        # Trailing stop (both modes): if peak gain >= activation, trail from peak
+        if position.peak_price > 0 and position.entry_price > 0:
+            peak_pct = (position.peak_price - position.entry_price) / position.entry_price
+            if peak_pct >= TRAILING_ACTIVATE_PCT:
+                trail_level = position.peak_price * (1 - TRAILING_OFFSET_PCT)
+                if latest_bar.close <= trail_level:
+                    return "trailing_stop"
+
         vol_baseline = self.vol_ema_baseline
         if vol_baseline > 0 and latest_bar.volume < VOLUME_DEATH_MULTIPLIER * vol_baseline:
             return "volume_death"
@@ -252,15 +362,31 @@ class SignalEngine:
         mid_price: float,
         obi: float,
     ) -> Optional[str]:
-        """10-second exit triggers: profit target, hard stop, book fade.
+        """10-second exit triggers: mode-aware profit target, hard stop, trailing, book fade.
 
         position is a Position dataclass. Returns exit reason string or None.
         """
         pct_change = (mid_price - position.entry_price) / position.entry_price
-        if pct_change >= PROFIT_TARGET_PCT:
-            return "profit_target"
-        if pct_change <= HARD_STOP_PCT:
-            return "hard_stop"
+
+        if position.entry_mode == "bounce":
+            if pct_change >= BOUNCE_PROFIT_PCT:
+                return "profit_target"
+            if pct_change <= BOUNCE_STOP_PCT:
+                return "hard_stop"
+        else:
+            if pct_change >= PROFIT_TARGET_PCT:
+                return "profit_target"
+            if pct_change <= HARD_STOP_PCT:
+                return "hard_stop"
+
+        # Trailing stop check on mid-price
+        if position.peak_price > 0 and position.entry_price > 0:
+            peak_pct = (position.peak_price - position.entry_price) / position.entry_price
+            if peak_pct >= TRAILING_ACTIVATE_PCT:
+                trail_level = position.peak_price * (1 - TRAILING_OFFSET_PCT)
+                if mid_price <= trail_level:
+                    return "trailing_stop"
+
         if obi < OBI_BOOK_FADE:
             return "book_fade"
         return None
@@ -400,6 +526,17 @@ def save_session(state: SessionState, path: str) -> None:
     os.replace(tmp, path)
 
 
+def load_session_state(path: str) -> Optional[dict]:
+    """Load session state from file. Returns dict or None."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 _journal_lock = threading.Lock()
 
 
@@ -519,6 +656,7 @@ def _cancel_order(txid: str) -> dict:
 # ─── Meme Executor ─────────────────────────────────────────────────────────────
 
 TAKER_FEE_RATE = 0.004   # 0.40% taker fee on competition tokens
+MAKER_FEE_RATE = 0.0016  # 0.16% maker fee — for backtest comparison only (not used in live orders)
 
 
 def _query_pair_precision(pair: str) -> tuple[int, int, float, float]:
@@ -554,6 +692,7 @@ class MemeExecutor:
         self._daily_pnl: float = 0.0
         self._daily_loss: float = 0.0
         self._halted: bool = False
+        self._last_reset_date: str = time.strftime("%Y-%m-%d", time.gmtime())
         self._pair_nodash = pair.replace("/", "")
 
     def is_halted(self) -> bool:
@@ -565,6 +704,14 @@ class MemeExecutor:
             self._daily_loss += net_pnl
         if self._daily_loss <= -self.daily_cap:
             self._halted = True
+
+    def maybe_reset_daily(self) -> None:
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        if today != self._last_reset_date:
+            self._daily_pnl = 0.0
+            self._daily_loss = 0.0
+            self._halted = False
+            self._last_reset_date = today
 
     def _buy_limit_price(self, ask: float) -> float:
         return ask * (1 + TAKER_SLIPPAGE_BPS / 10_000)
@@ -582,7 +729,8 @@ class MemeExecutor:
         exit_fee = exit_notional * TAKER_FEE_RATE
         return gross - entry_fee - exit_fee
 
-    def place_buy(self, ask: float, mid: Optional[float] = None) -> Optional[Position]:
+    def place_buy(self, ask: float, mid: Optional[float] = None,
+                  entry_mode: str = "momentum") -> Optional[Position]:
         """Place a taker BUY limit order. Returns Position on success, None on failure."""
         if self.is_halted():
             return None
@@ -620,6 +768,8 @@ class MemeExecutor:
             notional_usd=actual_price * actual_qty,
             entry_ts=int(time.time()),
             order_id=str(order_id),
+            peak_price=actual_price,
+            entry_mode=entry_mode,
         )
 
     def place_sell(self, position: Position, bid: float, reason: str,
@@ -838,7 +988,16 @@ class MemeAgent:
                 self._executor.record_pnl(t.net_pnl)
             total_pnl = sum(t.net_pnl for t in self._trade_log)
             print(f"[APEX] Loaded {len(self._trade_log)} trades from journal (net P&L: ${total_pnl:+.2f})")
+        prev_session = load_session_state(session_path)
+        if prev_session and prev_session.get("open_position"):
+            op = prev_session["open_position"]
+            print(f"[APEX] WARNING: previous session had open position -- "
+                  f"qty={op.get('qty')} {pair} @ entry {op.get('entry_price')}")
+            print(f"[APEX] WARNING: verify on Kraken that position is closed before continuing")
+            print(f"[APEX] WARNING: engine will trade normally -- close stale position manually if needed")
         self._engine_state = "warmup"
+        self._last_exit_bar_count: int = -REENTRY_COOLDOWN_BARS
+        self._bar_count: int = 0
 
     # ── History seed ──
 
@@ -880,7 +1039,8 @@ class MemeAgent:
             p = self._position
             pos_data = {"entry_price": p.entry_price, "qty": p.qty,
                         "notional_usd": p.notional_usd, "entry_ts": p.entry_ts,
-                        "candles_held": p.candles_held}
+                        "candles_held": p.candles_held,
+                        "entry_mode": p.entry_mode, "peak_price": p.peak_price}
         win_count = sum(1 for t in self._trade_log if t.net_pnl > 0)
         await websocket.send(json.dumps({
             "type": "initial_state",
@@ -954,6 +1114,8 @@ class MemeAgent:
         if os.environ.get("HYDRA_APEX_DISABLED") == "1":
             return
         self._signal_engine.add_bar(bar)
+        self._bar_count += 1
+        self._executor.maybe_reset_daily()
         # Broadcast bar so frontend chart updates on every close
         await self._broadcast({
             "type": "bar_update",
@@ -976,27 +1138,42 @@ class MemeAgent:
         )
         await self._broadcast({"type": "signal_state", "gates": gates,
                                 "pair": self.pair, "ts": bar.ts})
-        # Bar-close exit check
+        # Bar-close exit check + peak tracking
         if self._position is not None:
             self._position.candles_held += 1
+            if bar.high > self._position.peak_price:
+                self._position.peak_price = bar.high
             reason = self._signal_engine.evaluate_exit_bar(self._position, bar)
             if reason:
                 await self._exit_position(reason)
                 return
         # Entry check (only when no position, no pending sell, and OBI data is fresh)
         if (self._position is None and not self._executor.is_halted()
-                and not self._sell_pending_reason and not self._obi_poller.is_stale):
+                and not self._sell_pending_reason and not self._obi_poller.is_stale
+                and (self._bar_count - self._last_exit_bar_count) >= REENTRY_COOLDOWN_BARS):
             if gates["all_pass"]:
+                entry_mode = gates.get("entry_mode", "momentum")
                 mid = self._obi_poller.mid_price or None
                 pos = await asyncio.to_thread(
-                    self._executor.place_buy, self._obi_poller.best_ask, mid
+                    self._executor.place_buy, self._obi_poller.best_ask, mid,
+                    entry_mode,
                 )
                 if pos:
                     self._position = pos
                     await self._broadcast({"type": "order_placed",
                                            "side": "buy",
                                            "price": pos.entry_price,
-                                           "qty": pos.qty})
+                                           "qty": pos.qty,
+                                           "entry_mode": entry_mode})
+                    await asyncio.to_thread(save_session, SessionState(
+                        pair=self.pair, engine_state=self._engine_state,
+                        session_pnl=self._executor._daily_pnl,
+                        daily_pnl=self._executor._daily_pnl,
+                        trade_count=len(self._trade_log),
+                        open_position={"entry_price": pos.entry_price, "qty": pos.qty,
+                                       "notional_usd": pos.notional_usd, "entry_ts": pos.entry_ts,
+                                       "order_id": pos.order_id},
+                    ), self._session_path)
 
     async def _exit_position(self, reason: str) -> None:
         """Exit current position. Lock prevents double-exit from concurrent OBI/bar tasks."""
@@ -1032,6 +1209,7 @@ class MemeAgent:
             self._position = None
             self._sell_pending_reason = None
             self._sell_retry_count = 0
+            self._last_exit_bar_count = self._bar_count
         await self._broadcast({"type": "trade_closed",
                                "net_pnl": record.net_pnl,
                                "exit_reason": reason,
@@ -1078,6 +1256,8 @@ class MemeAgent:
                 if self._sell_pending_reason and self._position is not None and mid > 0:
                     await self._exit_position(self._sell_pending_reason)
                 if self._position is not None and self._engine_state == "running" and mid > 0:
+                    if mid > self._position.peak_price:
+                        self._position.peak_price = mid
                     reason = self._signal_engine.evaluate_exit_intracandle(
                         self._position, mid, self._obi_poller.obi
                     )
@@ -1099,6 +1279,8 @@ class MemeAgent:
                             "candles_held": pos.candles_held,
                             "notional_usd": pos.notional_usd,
                             "entry_ts": pos.entry_ts,
+                            "entry_mode": pos.entry_mode,
+                            "peak_price": pos.peak_price,
                         },
                         "unrealised_pnl": (mid - pos.entry_price) * pos.qty if mid > 0 else 0.0,
                     })
@@ -1234,7 +1416,8 @@ class MemeAgent:
         buy_result = await asyncio.to_thread(
             _kraken_cli,
             ["order", "buy", self.pair, qfmt.format(qty),
-             "--type", "limit", "--price", pfmt.format(limit_buy), "--yes"],
+             "--type", "limit", "--price", pfmt.format(limit_buy),
+             "--yes"],
         )
         if "error" in buy_result:
             print(f"[APEX] TEST-FIRE: BUY FAILED — {buy_result}")
@@ -1254,7 +1437,8 @@ class MemeAgent:
         sell_result = await asyncio.to_thread(
             _kraken_cli,
             ["order", "sell", self.pair, qfmt.format(qty),
-             "--type", "limit", "--price", pfmt.format(limit_sell), "--yes"],
+             "--type", "limit", "--price", pfmt.format(limit_sell),
+             "--yes"],
         )
         if "error" in sell_result:
             print(f"[APEX] TEST-FIRE: SELL FAILED — {sell_result}")
@@ -1296,8 +1480,22 @@ class MemeAgent:
             print("[APEX] Kill switch HYDRA_APEX_DISABLED=1 — not starting")
             return
         await self._seed_history()
-        server = await websockets.serve(self._ws_handler, "localhost", WS_PORT)
-        print(f"[APEX] WebSocket server on ws://localhost:{WS_PORT}")
+        server = None
+        ws_port = None
+        for port in range(WS_PORT_BASE, WS_PORT_BASE + WS_PORT_RANGE):
+            try:
+                server = await websockets.serve(
+                    self._ws_handler, "127.0.0.1", port,
+                    reuse_address=True,
+                )
+                ws_port = port
+                break
+            except OSError:
+                continue
+        if server is None:
+            print(f"[APEX] FATAL: could not bind WS on ports {WS_PORT_BASE}-{WS_PORT_BASE + WS_PORT_RANGE - 1}")
+            return
+        print(f"[APEX] WebSocket server on ws://127.0.0.1:{ws_port}")
         if test_fire:
             await self._test_fire()
         print(f"[APEX] Trading {self.pair} | State: {self._engine_state}")

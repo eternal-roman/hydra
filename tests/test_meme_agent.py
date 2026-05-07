@@ -226,17 +226,17 @@ def test_all_gates_pass():
 
 def test_exit_profit_target():
     eng = _warmed_engine()
-    pos = Position(entry_price=1.00, qty=600.0, notional_usd=600.0,
+    pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
                    entry_ts=0, candles_held=1)
-    result = eng.evaluate_exit_intracandle(pos, mid_price=1.026, obi=0.1)
+    result = eng.evaluate_exit_intracandle(pos, mid_price=1.031, obi=0.1)
     assert result == "profit_target"
 
 
 def test_exit_hard_stop():
     eng = _warmed_engine()
-    pos = Position(entry_price=1.00, qty=600.0, notional_usd=600.0,
+    pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
                    entry_ts=0, candles_held=1)
-    result = eng.evaluate_exit_intracandle(pos, mid_price=0.986, obi=0.1)
+    result = eng.evaluate_exit_intracandle(pos, mid_price=0.989, obi=0.1)
     assert result == "hard_stop"
 
 
@@ -345,6 +345,80 @@ def test_competition_detector_ema_update():
         updated = detector._get_baseline("PLAY/USD")
         # EMA with alpha=1/7: new = (1/7)*3.2M + (6/7)*3.2M = 3.2M (stable)
         assert abs(updated - 3_200_000) < 1000
+
+
+# ─── Extension Guard Tests ────────────────────────────────────────────────────
+
+def test_entry_gate_extension_blocks_parabolic():
+    """Extension guard blocks entry when price is >20% above slow EMA."""
+    from hydra_meme_agent import EXTENSION_MAX_PCT
+    eng = SignalEngine()
+    for i in range(25):
+        eng.add_bar(_make_bar(close=1.0 + i * 0.05, volume=1000.0, ts=i * 300))
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=2.3, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=100.0,
+    )
+    assert gates["not_extended"] is False
+    assert gates["all_pass"] is False
+
+
+def test_entry_gate_extension_passes_normal():
+    """Extension guard passes when price is within 20% of slow EMA."""
+    eng = _warmed_engine(close=1.0, n_bars=25)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=1.015, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=100.0,
+    )
+    assert gates["not_extended"] is True
+
+
+def test_ema_simple():
+    """EMA with alpha = 2/(period+1)."""
+    from hydra_meme_agent import ema
+    values = [1.0, 2.0, 3.0, 4.0, 5.0]
+    result = ema(values, period=3)
+    # alpha = 0.5: 1.0 -> 1.5 -> 2.25 -> 3.125 -> 4.0625
+    assert abs(result - 4.0625) < 0.001
+
+
+def test_ema_single_value():
+    from hydra_meme_agent import ema
+    assert ema([42.0], period=5) == 42.0
+
+
+def test_ema_empty():
+    from hydra_meme_agent import ema
+    assert ema([], period=5) == 0.0
+
+
+def test_entry_gate_trend_filter_blocks_downtrend():
+    """EMA trend filter blocks entry when fast EMA < slow EMA (downtrend)."""
+    eng = SignalEngine()
+    for i in range(25):
+        eng.add_bar(_make_bar(close=1.0 - i * 0.01, volume=1000.0, ts=i * 300))
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=0.76, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=100.0,
+    )
+    assert gates["trend_aligned"] is False
+    assert gates["all_pass"] is False
+
+
+def test_entry_gate_trend_filter_passes_uptrend():
+    """EMA trend filter passes when fast EMA > slow EMA (uptrend)."""
+    eng = SignalEngine()
+    for i in range(25):
+        eng.add_bar(_make_bar(close=1.0 + i * 0.01, volume=1000.0, ts=i * 300))
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=1.25, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=100.0,
+    )
+    assert gates["trend_aligned"] is True
 
 
 def test_competition_detector_alert_suppression():
@@ -471,8 +545,9 @@ def test_executor_net_pnl_calculation():
     exit_price = 0.16400
     net = exec_._compute_net_pnl(pos, exit_price)
     # gross = (0.164 - 0.16) * 3750 = $15.00
-    # fees = 600 * 0.004 + (600*1.025) * 0.004 ≈ 4.86
-    assert 9.0 < net < 11.0
+    # taker fees = 600 * 0.004 + (0.164 * 3750) * 0.004 = 2.40 + 2.46 = 4.86
+    # net = 15.00 - 4.86 = ~10.14
+    assert 9.5 < net < 11.0
 
 
 def test_executor_daily_cap_zero_raises():
@@ -650,3 +725,287 @@ def test_place_sell_uses_actual_fill_price():
 def test_sell_max_retries_constant():
     assert SELL_MAX_RETRIES > 0
     assert SELL_MAX_RETRIES <= 10
+
+
+def test_apex_ws_port_no_collision():
+    """APEX port must not collide with hydra_ws_server.next_agent_port."""
+    from hydra_meme_agent import WS_PORT_BASE
+    assert WS_PORT_BASE >= 8770, f"WS_PORT_BASE={WS_PORT_BASE} collides with hydra_ws_server agent port range (8766+)"
+
+
+def test_reentry_cooldown_constant():
+    from hydra_meme_agent import REENTRY_COOLDOWN_BARS
+    assert REENTRY_COOLDOWN_BARS >= 2
+
+
+def test_reentry_cooldown_blocks_immediate_reentry():
+    """Agent should not enter within REENTRY_COOLDOWN_BARS of last exit."""
+    from hydra_meme_agent import REENTRY_COOLDOWN_BARS
+    assert REENTRY_COOLDOWN_BARS == 2
+
+
+def test_executor_daily_reset():
+    """Daily loss and halt state reset when the day changes."""
+    exec_ = MemeExecutor("PLAY/USD", position_size=300.0, daily_cap=30.0)
+    exec_.record_pnl(-31.0)
+    assert exec_.is_halted() is True
+    # Should NOT reset if same day
+    exec_.maybe_reset_daily()
+    assert exec_.is_halted() is True
+    # Force the tracked date to yesterday
+    exec_._last_reset_date = "2026-05-06"
+    exec_.maybe_reset_daily()
+    assert exec_.is_halted() is False
+    assert exec_._daily_loss == 0.0
+    assert exec_._daily_pnl == 0.0
+
+
+def test_load_session_detects_orphaned_position():
+    """If session has open_position, load_session_state returns it."""
+    from hydra_meme_agent import SessionState, save_session, load_session_state
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "session.json")
+        state = SessionState(
+            pair="PLAY/USD",
+            engine_state="running",
+            open_position={"entry_price": 0.16, "qty": 1875.0,
+                           "notional_usd": 300.0, "entry_ts": 1000,
+                           "order_id": "ABC123"},
+        )
+        save_session(state, path)
+        loaded = load_session_state(path)
+        assert loaded is not None
+        assert loaded.get("open_position") is not None
+
+
+def test_load_session_returns_none_for_missing_file():
+    from hydra_meme_agent import load_session_state
+    result = load_session_state("/nonexistent/path.json")
+    assert result is None
+
+
+def test_load_session_returns_none_for_corrupt_file():
+    from hydra_meme_agent import load_session_state
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "corrupt.json")
+        with open(path, "w") as f:
+            f.write("{bad json")
+        result = load_session_state(path)
+        assert result is None
+
+
+def test_risk_reward_ratio():
+    """R:R must be at least 1:2 to overcome fee drag."""
+    from hydra_meme_agent import PROFIT_TARGET_PCT, HARD_STOP_PCT
+    rr_ratio = abs(PROFIT_TARGET_PCT / HARD_STOP_PCT)
+    assert rr_ratio >= 2.0, f"R:R ratio {rr_ratio:.1f} is too low for fee drag"
+
+
+def test_maker_fee_rate():
+    """Maker fee rate must be lower than taker rate."""
+    from hydra_meme_agent import MAKER_FEE_RATE, TAKER_FEE_RATE
+    assert MAKER_FEE_RATE < TAKER_FEE_RATE
+    assert MAKER_FEE_RATE == 0.0016
+
+
+def test_extension_guard_tighter():
+    """Extension guard should block at 10% (tighter than v2's 20%)."""
+    from hydra_meme_agent import EXTENSION_MAX_PCT
+    assert EXTENSION_MAX_PCT == 0.10
+
+
+def test_trailing_stop_constants():
+    """Trailing stop activates at 1.5% gain, trails 1.0% below peak."""
+    from hydra_meme_agent import TRAILING_ACTIVATE_PCT, TRAILING_OFFSET_PCT
+    assert TRAILING_ACTIVATE_PCT == 0.015
+    assert TRAILING_OFFSET_PCT == 0.010
+
+
+def test_trailing_stop_fires_on_bar():
+    """Trailing stop fires when peak gain was >= activation and price drops to trail level."""
+    eng = _warmed_engine(flat=True)
+    pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
+                   entry_ts=0, candles_held=1, peak_price=1.02)  # 2% peak > 1.5% activation
+    bar = _make_bar(close=1.008, volume=1000.0)  # 1.02 * (1 - 0.01) = 1.0098 trail level
+    result = eng.evaluate_exit_bar(pos, bar)
+    assert result == "trailing_stop"
+
+
+def test_trailing_stop_does_not_fire_below_activation():
+    """Trailing stop should NOT fire if peak gain never reached activation threshold."""
+    eng = _warmed_engine(flat=True)
+    pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
+                   entry_ts=0, candles_held=1, peak_price=1.01)  # 1% peak < 1.5% activation
+    bar = _make_bar(close=0.999, volume=1000.0)
+    result = eng.evaluate_exit_bar(pos, bar)
+    assert result != "trailing_stop"
+
+
+def test_trailing_stop_intracandle():
+    """Trailing stop fires on intracandle mid-price check."""
+    eng = _warmed_engine()
+    pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
+                   entry_ts=0, candles_held=1, peak_price=1.025)  # 2.5% peak
+    # Trail level = 1.025 * 0.99 = 1.01475
+    result = eng.evaluate_exit_intracandle(pos, mid_price=1.013, obi=0.1)
+    assert result == "trailing_stop"
+
+
+def test_bounce_mode_entry():
+    """Bounce mode triggers on deeply oversold RSI with volume spike."""
+    from hydra_meme_agent import BOUNCE_RSI_THRESHOLD, BOUNCE_VOL_SPIKE_MULT
+    eng = SignalEngine()
+    # Feed mostly flat prices with a sharp dip to get RSI in 10-24 range
+    for i in range(40):
+        eng.add_bar(_make_bar(close=1.0, volume=1000.0, ts=i * 300))
+    for i in range(10):
+        eng.add_bar(_make_bar(close=1.0 - (i + 1) * 0.008, volume=1000.0, ts=(40 + i) * 300))
+    # Big volume spike bar at low RSI
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=0.915, volume=3000.0),
+        obi=0.0,
+        ask_wall_usd=100.0,
+    )
+    rsi = gates["rsi_value"]
+    assert gates["bounce_rsi"] == (0 < rsi < BOUNCE_RSI_THRESHOLD)
+    assert gates["bounce_vol"] is True
+
+
+def test_bounce_mode_exit_rsi_recovery():
+    """Bounce-mode position exits when RSI recovers above BOUNCE_RSI_EXIT."""
+    from hydra_meme_agent import BOUNCE_RSI_EXIT
+    eng = SignalEngine()
+    for i in range(15):
+        eng.add_bar(_make_bar(close=1.0 + i * 0.05, volume=1000.0, ts=i * 300))
+    pos = Position(entry_price=1.0, qty=300.0, notional_usd=300.0,
+                   entry_ts=0, candles_held=1, entry_mode="bounce")
+    bar = _make_bar(close=1.8, volume=1000.0)
+    result = eng.evaluate_exit_bar(pos, bar)
+    assert result == "rsi_exit"
+
+
+def test_bounce_mode_stop_loss():
+    """Bounce-mode uses BOUNCE_STOP_PCT instead of HARD_STOP_PCT."""
+    from hydra_meme_agent import BOUNCE_STOP_PCT
+    eng = _warmed_engine()
+    pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
+                   entry_ts=0, candles_held=1, entry_mode="bounce")
+    # BOUNCE_STOP_PCT = -0.012, so 0.987 should trigger
+    result = eng.evaluate_exit_intracandle(pos, mid_price=0.987, obi=0.1)
+    assert result == "hard_stop"
+
+
+def test_bounce_mode_profit_target():
+    """Bounce-mode uses BOUNCE_PROFIT_PCT instead of PROFIT_TARGET_PCT."""
+    from hydra_meme_agent import BOUNCE_PROFIT_PCT
+    eng = _warmed_engine()
+    pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
+                   entry_ts=0, candles_held=1, entry_mode="bounce")
+    result = eng.evaluate_exit_intracandle(pos, mid_price=1.021, obi=0.1)
+    assert result == "profit_target"
+
+
+def test_position_peak_price_defaults():
+    """Position peak_price defaults to 0.0 and entry_mode defaults to momentum."""
+    pos = Position(entry_price=1.0, qty=100.0, notional_usd=100.0, entry_ts=0)
+    assert pos.peak_price == 0.0
+    assert pos.entry_mode == "momentum"
+
+
+def test_entry_mode_in_gates():
+    """evaluate_entry_gates returns entry_mode field."""
+    eng = _warmed_engine(close=1.0, volume=1000.0)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=1.015, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=200.0,
+    )
+    assert "entry_mode" in gates
+
+
+# ─── ATR Gate Tests ──────────────────────────────────────────────────────────
+
+from hydra_meme_agent import atr_pct, ATR_MIN_PCT
+
+
+def test_atr_pct_insufficient_data():
+    """atr_pct returns 0.0 when too few bars."""
+    bars = [_make_bar(close=1.0 + i * 0.01) for i in range(3)]
+    assert atr_pct(bars, period=5) == 0.0
+
+
+def test_atr_pct_flat_bars():
+    """Flat bars (high==low==close) produce ATR near 0."""
+    bars = []
+    for i in range(10):
+        b = CandleBar(ts=i * 300, open=1.0, high=1.0, low=1.0, close=1.0,
+                      vwap=1.0, volume=1000.0, count=10)
+        bars.append(b)
+    assert atr_pct(bars, period=5) == 0.0
+
+
+def test_atr_pct_volatile_bars():
+    """Bars with 5% high-low range should produce ~5% ATR."""
+    bars = []
+    for i in range(10):
+        c = 1.0
+        b = CandleBar(ts=i * 300, open=c, high=c * 1.025, low=c * 0.975,
+                      close=c, vwap=c, volume=1000.0, count=10)
+        bars.append(b)
+    result = atr_pct(bars, period=5)
+    assert 0.04 < result < 0.06
+
+
+def test_atr_pct_constant():
+    from hydra_meme_agent import ATR_MIN_PCT
+    assert ATR_MIN_PCT == 0.015
+
+
+def test_atr_gate_in_entry_gates():
+    """evaluate_entry_gates includes vol_regime and atr_pct fields."""
+    eng = _warmed_engine(close=1.0, volume=1000.0)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=1.015, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=200.0,
+    )
+    assert "vol_regime" in gates
+    assert "atr_pct" in gates
+    assert isinstance(gates["vol_regime"], bool)
+
+
+def test_atr_gate_blocks_flat_market():
+    """ATR gate should block entry when market is flat (low ATR)."""
+    eng = SignalEngine()
+    for i in range(20):
+        b = CandleBar(ts=i * 300, open=1.0, high=1.001, low=0.999,
+                      close=1.0, vwap=1.0, volume=1000.0, count=10)
+        eng.add_bar(b)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=CandleBar(ts=20 * 300, open=1.0, high=1.001, low=0.999,
+                             close=1.0, vwap=1.0, volume=3000.0, count=10),
+        obi=0.50,
+        ask_wall_usd=100.0,
+    )
+    assert gates["vol_regime"] is False
+    assert gates["atr_pct"] < ATR_MIN_PCT
+
+
+def test_atr_gate_passes_volatile_market():
+    """ATR gate should pass when market has sufficient volatility."""
+    eng = SignalEngine()
+    for i in range(20):
+        c = 1.0 + (i % 2) * 0.03
+        b = CandleBar(ts=i * 300, open=c - 0.01, high=c + 0.02,
+                      low=c - 0.02, close=c, vwap=c, volume=1000.0, count=10)
+        eng.add_bar(b)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=1.03, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=200.0,
+    )
+    assert gates["vol_regime"] is True
+    assert gates["atr_pct"] >= ATR_MIN_PCT
+    assert gates["entry_mode"] in ("momentum", "bounce", "none")

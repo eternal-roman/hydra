@@ -6,6 +6,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.22.0] — 2026-05-07
+
+APEX Meme Engine V3 — dual-mode entry strategy, trailing stop, ATR volatility gate, WS port resilience.
+
+### Added
+- **Dual-mode entry:** momentum (uptrend + RSI 45-78 + vol spike) and bounce (RSI <25 + capitulation vol + not freefall) modes with separate stop/target/timeout parameters
+- **Trailing stop:** activates at 1.5% unrealised gain, trails 1.0% below peak price; fires on both bar-close and intracandle mid-price checks
+- **ATR volatility regime gate:** blocks entries when ATR(5) < 1.5% of price — filters flat/dead markets
+- **EMA trend filter:** EMA(8) > EMA(21) required for momentum entries (blocks downtrend entries)
+- **Parabolic extension guard:** blocks entries when price is >10% above EMA(21)
+- **2-bar re-entry cooldown:** prevents whipsaw re-entries after exits
+- **Daily loss cap midnight reset:** UTC-based daily P&L and halt state reset
+- **Session state on position open:** saves immediately after BUY fill for orphaned position detection on crash recovery
+- **WS port range scanning:** server tries ports 8770-8779 with `reuse_address`; dashboard auto-discovers active port — eliminates EADDRINUSE crashes
+- **Orphaned position warning:** startup checks previous session for unreleased positions
+- 72h backtest tooling (`tools/backtest_meme_72h.py`) with sensitivity analysis and v1/v2/v3 comparison
+- 34 new tests (103 total) covering ATR gate, trailing stop, bounce mode, extension guard, EMA trend, daily reset, session persistence
+
+### Changed
+- Profit target widened to +3.0% (momentum) / +2.0% (bounce) from +2.5%
+- Hard stop tightened to -1.0% (momentum) / -1.2% (bounce) from -1.3%
+- R:R ratio improved to 3:1 (momentum) and 1.67:1 (bounce)
+- Position size reduced to $300 from $600
+- Entry gates expanded from 5 to 8 (added ATR, EMA trend, extension guard)
+- WS protocol enriched with `entry_mode`, `peak_price` fields on position broadcasts
+- Dashboard: mode-aware PositionPanel, 8-gate display with values, trailing stop level indicator
+
+### Fixed
+- **Critical:** `--oflags post` on limit orders with taker-style pricing caused all orders to be rejected by Kraken (price above ask / below bid crosses spread — post-only rejects crossing orders). Reverted to taker execution; maker optimization deferred to future PR with proper bid-based pricing
+- WS server bound to `127.0.0.1` instead of `localhost` (IPv6 resolution issues on Windows)
+- WS port moved to 8770+ range to avoid collision with main `hydra_ws_server` port range (8766+)
+
+---
+
 ## [2.21.1] — 2026-05-07
 
 APEX Meme Engine bug fixes — critical CLI crash, fill verification, shutdown safety.
