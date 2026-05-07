@@ -18,6 +18,15 @@ const C = {
 const APEX_WS = "ws://localhost:8766";
 const APEX_DAILY_CAP_USD = 30;
 
+const SEED_PAIRS = [
+  "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD",
+  "DOT/USD", "LINK/USD", "AVAX/USD", "ATOM/USD", "NEAR/USD",
+  "FIL/USD", "APT/USD", "OP/USD", "ARB/USD", "INJ/USD",
+  "TIA/USD", "SEI/USD", "PYTH/USD", "WIF/USD", "POPCAT/USD",
+  "BONK/USD", "PEPE/USD", "PLAY/USD", "LION/USD",
+  "MATIC/USD", "SAND/USD", "MANA/USD", "ENJ/USD", "CHZ/USD",
+];
+
 function GateDot({ pass, label, value }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
@@ -28,6 +37,57 @@ function GateDot({ pass, label, value }) {
       }} />
       <span style={{ fontFamily: C.mono, fontSize: 11, color: C.muted, minWidth: 100 }}>{label}</span>
       <span style={{ fontFamily: C.mono, fontSize: 11, color: C.text }}>{value ?? "—"}</span>
+    </div>
+  );
+}
+
+function OfflineBanner() {
+  return (
+    <div style={{
+      padding: "12px 16px", borderRadius: 8, marginBottom: 16,
+      background: "#1c0a0a", border: `1px solid ${C.danger}40`,
+      display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+    }}>
+      <span style={{ fontFamily: C.mono, fontSize: 11, fontWeight: 700,
+                     color: C.danger, flexShrink: 0 }}>APEX OFFLINE</span>
+      <span style={{ fontFamily: C.mono, fontSize: 11, color: C.muted }}>
+        Run{" "}
+        <code style={{ color: C.text, background: "#27272a", padding: "1px 6px",
+                       borderRadius: 4 }}>start_meme.bat</code>
+        {" "}to connect the competition scanner.
+      </span>
+    </div>
+  );
+}
+
+function WatchlistSeed() {
+  return (
+    <div>
+      <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted, marginBottom: 12,
+                    textTransform: "uppercase", letterSpacing: "0.1em" }}>
+        Watching {SEED_PAIRS.length} pairs · live anomaly scan on connect
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8 }}>
+        {SEED_PAIRS.map(pair => {
+          const base = pair.split("/")[0];
+          return (
+            <div key={pair} style={{
+              padding: "8px 12px", background: C.panel, borderRadius: 6,
+              border: `1px solid ${C.border}`,
+            }}>
+              <div style={{ fontFamily: C.mono, fontSize: 13, fontWeight: 700, color: C.text }}>
+                {base}
+              </div>
+              <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted, marginTop: 1 }}>
+                {pair}
+              </div>
+              <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted, marginTop: 6 }}>
+                vol: —
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -210,8 +270,20 @@ function TradeLog({ trades }) {
   );
 }
 
-function TradingView({ state, dailyCap }) {
+function TradingView({ state, dailyCap, connected }) {
   const { gates, position, midPrice, obi, engineState, sessionStats, trades } = state;
+  if (!connected) {
+    return (
+      <div>
+        <OfflineBanner />
+        <div style={{ padding: 32, textAlign: "center", fontFamily: C.mono, fontSize: 12,
+                      color: C.muted, background: C.panel, borderRadius: 8,
+                      border: `1px solid ${C.border}` }}>
+          Live signals, gates, and position tracking appear here once APEX is connected.
+        </div>
+      </div>
+    );
+  }
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
@@ -300,7 +372,7 @@ function TierBar({ sharePct }) {
   );
 }
 
-function DiscoverView({ tokens, onStartEngine, onDismiss, enginePair }) {
+function DiscoverView({ tokens, onStartEngine, onDismiss, enginePair, connected }) {
   const [levers, setLevers] = useState({});
 
   function getShares(token, posSize) {
@@ -323,12 +395,14 @@ function DiscoverView({ tokens, onStartEngine, onDismiss, enginePair }) {
 
   return (
     <div>
-      {anomalous.length === 0 && (
+      {!connected && <OfflineBanner />}
+      {anomalous.length === 0 && connected && (
         <div style={{ padding: 24, textAlign: "center", fontFamily: C.mono,
-                      fontSize: 12, color: C.muted }}>
+                      fontSize: 12, color: C.muted, marginBottom: 16 }}>
           No anomalies detected. Next scan in progress...
         </div>
       )}
+      {tokens.length === 0 && <WatchlistSeed />}
       {anomalous.map(token => {
         const posSize = levers[token.pair] ?? 600;
         const sharePct = getShares(token, posSize) * 100;
@@ -608,7 +682,7 @@ export default function MemeTab() {
       </div>
 
       {subView === "trading" && (
-        <TradingView state={tradingState} dailyCap={APEX_DAILY_CAP_USD} />
+        <TradingView state={tradingState} dailyCap={APEX_DAILY_CAP_USD} connected={connected} />
       )}
       {subView === "discover" && (
         <DiscoverView
@@ -616,6 +690,7 @@ export default function MemeTab() {
           onStartEngine={handleStartEngine}
           onDismiss={handleDismiss}
           enginePair={enginePair}
+          connected={connected}
         />
       )}
 
