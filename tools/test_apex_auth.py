@@ -37,7 +37,8 @@ r3 = _kraken_cli(["order", "buy", "PLAY/USD", "100", "--type", "limit",
 print(f"Result: {json.dumps(r3, indent=2)[:500]}")
 
 # Test 4: actual order attempt (same as test-fire would do)
-if asks:
+# GUARDED: set APEX_TEST_REAL_ORDER=1 to enable real money execution
+if asks and os.environ.get("APEX_TEST_REAL_ORDER") == "1":
     ask = float(asks[0][0])
     qty = 5.0 / ask
     limit_price = ask * 1.0005
@@ -46,3 +47,5 @@ if asks:
     r4 = _kraken_cli(["order", "buy", "PLAY/USD", f"{qty:.8f}",
                        "--type", "limit", "--price", f"{limit_price:.8f}", "--yes"])
     print(f"Result: {json.dumps(r4, indent=2)[:500]}")
+elif asks:
+    print("\n=== Test 4: SKIPPED (set APEX_TEST_REAL_ORDER=1 to enable) ===")

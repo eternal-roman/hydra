@@ -399,40 +399,67 @@ def save_session(state: SessionState, path: str) -> None:
     os.replace(tmp, path)
 
 
+_journal_lock = threading.Lock()
+
+
 def append_journal(record: TradeRecord, path: str) -> None:
-    existing: list = []
-    if os.path.exists(path):
-        with open(path) as f:
-            existing = json.load(f)
-    existing.append(asdict(record))
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(existing, f, indent=2)
-    os.replace(tmp, path)
+    with _journal_lock:
+        existing: list = []
+        try:
+            if os.path.exists(path):
+                with open(path) as f:
+                    existing = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[APEX] Warning: journal read failed, appending to fresh list: {e}")
+        existing.append(asdict(record))
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(existing, f, indent=2)
+            os.replace(tmp, path)
+        except OSError as e:
+            print(f"[APEX] ERROR: journal write failed — trade record may be lost: {e}")
 
 
 def load_journal(path: str) -> list[TradeRecord]:
-    """Load trade records from journal file. Returns empty list if missing/corrupt."""
+    """Load trade records from journal file. Skips corrupt entries, keeps valid ones."""
     if not os.path.exists(path):
         return []
     try:
         with open(path) as f:
             entries = json.load(f)
-        return [TradeRecord(**e) for e in entries]
-    except Exception as e:
+    except (json.JSONDecodeError, OSError) as e:
         print(f"[APEX] Warning: could not load journal {path}: {e}")
         return []
+    records: list[TradeRecord] = []
+    for i, entry in enumerate(entries):
+        try:
+            records.append(TradeRecord(**entry))
+        except (TypeError, KeyError) as e:
+            print(f"[APEX] Warning: skipping corrupt journal entry {i}: {e}")
+    return records
 
 
 # ─── Kraken CLI ────────────────────────────────────────────────────────────────
+
+_cli_lock = threading.Lock()
+_cli_last_call: float = 0.0
+
 
 def _kraken_cli(args: list[str], timeout: int = 20) -> dict:
     """Execute a kraken CLI command via WSL and return parsed JSON.
 
     All args are shlex-quoted to prevent injection (matches hydra_kraken_cli.py pattern).
+    Global lock + 2s floor enforces rate limit across all concurrent callers.
     """
+    global _cli_last_call
+    with _cli_lock:
+        now = time.time()
+        wait = KRAKEN_REST_FLOOR - (now - _cli_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _cli_last_call = time.time()
     quoted = " ".join(shlex.quote(str(a)) for a in args)
-    cmd_str = "source ~/.cargo/env"
     api_key = os.environ.get("KRAKEN_API_KEY")
     api_secret = os.environ.get("KRAKEN_API_SECRET")
     if api_key and api_secret:
@@ -541,6 +568,7 @@ class MemeExecutor:
             qfmt.format(qty),
             "--type", "limit",
             "--price", pfmt.format(limit_price),
+            "--oflags", "post",
             "--yes",
         ])
         if "error" in result:
@@ -570,6 +598,7 @@ class MemeExecutor:
             qfmt.format(position.qty),
             "--type", "limit",
             "--price", pfmt.format(limit_price),
+            "--oflags", "post",
             "--yes",
         ])
         if "error" in result:
@@ -607,14 +636,15 @@ class OBIPoller:
         self._best_bid: float = 0.0
         self._best_ask: float = 0.0
         self._ask_wall: float = 999_999.0
-        self._last_poll: float = 0.0
+        self._last_success: float = 0.0
+
+    @property
+    def is_stale(self) -> bool:
+        """True if last successful poll was >60s ago."""
+        return self._last_success == 0.0 or (time.time() - self._last_success > 60)
 
     def poll(self) -> None:
-        """Fetch orderbook and update cached values. Enforces 2s floor."""
-        now = time.time()
-        if now - self._last_poll < KRAKEN_REST_FLOOR:
-            return
-        self._last_poll = now
+        """Fetch orderbook and update cached values."""
         result = _kraken_cli(["orderbook", self._pair_nodash, "--count", str(OBI_LEVELS)])
         if "error" in result:
             return
@@ -635,6 +665,7 @@ class OBIPoller:
             self._best_bid = float(bids[0][0])
             self._best_ask = float(asks[0][0])
             self._ask_wall = sum(float(a[0]) * float(a[1]) for a in asks[:3])
+            self._last_success = time.time()
 
     @property
     def obi(self) -> float:
@@ -861,7 +892,16 @@ class MemeAgent:
 
     def _on_bar(self, bar: CandleBar) -> None:
         """Called by CandleAggregator; schedules async work into the event loop."""
-        asyncio.ensure_future(self._handle_bar(bar))
+        task = asyncio.ensure_future(self._handle_bar(bar))
+        task.add_done_callback(self._task_error_cb)
+
+    @staticmethod
+    def _task_error_cb(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            print(f"[APEX] Task error: {exc}")
 
     async def _handle_bar(self, bar: CandleBar) -> None:
         if os.environ.get("HYDRA_APEX_DISABLED") == "1":
@@ -896,8 +936,9 @@ class MemeAgent:
             if reason:
                 await self._exit_position(reason)
                 return
-        # Entry check (only when no position and no pending sell retry)
-        if self._position is None and not self._executor.is_halted() and not self._sell_pending_reason:
+        # Entry check (only when no position, no pending sell, and OBI data is fresh)
+        if (self._position is None and not self._executor.is_halted()
+                and not self._sell_pending_reason and not self._obi_poller.is_stale):
             if gates["all_pass"]:
                 mid = self._obi_poller.mid_price or None
                 pos = await asyncio.to_thread(
@@ -1132,7 +1173,8 @@ class MemeAgent:
         buy_result = await asyncio.to_thread(
             _kraken_cli,
             ["order", "buy", self.pair, qfmt.format(qty),
-             "--type", "limit", "--price", pfmt.format(limit_buy), "--yes"],
+             "--type", "limit", "--price", pfmt.format(limit_buy),
+             "--oflags", "post", "--yes"],
         )
         if "error" in buy_result:
             print(f"[APEX] TEST-FIRE: BUY FAILED — {buy_result}")
@@ -1152,7 +1194,8 @@ class MemeAgent:
         sell_result = await asyncio.to_thread(
             _kraken_cli,
             ["order", "sell", self.pair, qfmt.format(qty),
-             "--type", "limit", "--price", pfmt.format(limit_sell), "--yes"],
+             "--type", "limit", "--price", pfmt.format(limit_sell),
+             "--oflags", "post", "--yes"],
         )
         if "error" in sell_result:
             print(f"[APEX] TEST-FIRE: SELL FAILED — {sell_result}")
@@ -1190,6 +1233,9 @@ class MemeAgent:
     # ── Main run ──
 
     async def run(self, test_fire: bool = False) -> None:
+        if os.environ.get("HYDRA_APEX_DISABLED") == "1":
+            print("[APEX] Kill switch HYDRA_APEX_DISABLED=1 — not starting")
+            return
         await self._seed_history()
         server = await websockets.serve(self._ws_handler, "localhost", WS_PORT)
         print(f"[APEX] WebSocket server on ws://localhost:{WS_PORT}")
@@ -1197,14 +1243,28 @@ class MemeAgent:
             await self._test_fire()
         print(f"[APEX] Trading {self.pair} | State: {self._engine_state}")
         try:
-            await asyncio.gather(
+            results = await asyncio.gather(
                 self._candle_agg.run(),
                 self._obi_loop(),
                 self._competition_loop(),
+                return_exceptions=True,
             )
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    task_names = ["candle_agg", "obi_loop", "competition_loop"]
+                    print(f"[APEX] Task {task_names[i]} crashed: {r}")
+        except asyncio.CancelledError:
+            print("[APEX] Shutting down...")
         finally:
+            save_session(SessionState(
+                pair=self.pair, engine_state="idle",
+                session_pnl=self._executor._daily_pnl,
+                daily_pnl=self._executor._daily_pnl,
+                trade_count=len(self._trade_log),
+            ), self._session_path)
             server.close()
             await server.wait_closed()
+            print("[APEX] Shutdown complete")
 
 
 # ─── Entry Point ───────────────────────────────────────────────────────────────
@@ -1224,6 +1284,8 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    if not os.environ.get("KRAKEN_API_KEY") or not os.environ.get("KRAKEN_API_SECRET"):
+        print("[APEX] WARNING: KRAKEN_API_KEY/SECRET not found — orders will fail")
     agent = MemeAgent(
         pair=args.pair,
         position_size=args.position_size,
