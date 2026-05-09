@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.24.1] — 2026-05-09
+
+Audit bugfixes: experiment persistence + worker pool memory leak.
+
+### Fixed
+- **Experiment reload data loss:** `thesis_override_json` was missing from `_CONFIG_FIELDS` in `hydra_experiments.py`, causing thesis overrides to be silently dropped when experiments were saved and reloaded.
+- **BacktestWorkerPool memory leak:** `_cancel_tokens` and `_status_cache` dicts grew unbounded with each submitted experiment. Added `_prune_terminal()` with 60s retention window, called via `finally` block in `_run_one()`.
+
+---
+
 ## [2.24.0] — 2026-05-08
 
 R11/QFE — Quant Force Exit: profit-capture gate override for force_hold.
