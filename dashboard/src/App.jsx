@@ -3980,7 +3980,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                     {/* Candlestick Chart */}
                     {(ps.candles && ps.candles.length > 5) && (
                       <div style={{ background: "#0d0d0f", borderRadius: 6, border: `1px solid ${COLORS.panelBorder}`, overflow: "hidden", margin: "0 -4px" }}>
-                        <CandleChart candles={ps.candles.slice(-80)} height={154} />
+                        <CandleChart candles={ps.candles.slice(-80)} height={231} />
                       </div>
                     )}
 
