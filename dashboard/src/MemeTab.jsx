@@ -16,13 +16,31 @@ const C = {
 };
 
 const APEX_WS_BASE = 8770;
-const APEX_WS_RANGE = 10; // scan 8770-8779
 const APEX_DAILY_CAP_USD = 30;
-const POSITION_SIZE_USD = 300;
 
 const SEED_PAIRS = [
-  "WIF/USD", "POPCAT/USD", "BONK/USD", "PEPE/USD", "PLAY/USD", "LION/USD",
+  "NIGHT/USD", "AAVE/USD", "AAVE/BTC",
 ];
+
+const PAIR_PROFILES = {
+  "NIGHT/USD": { atr: 0.3, volMult: 2.0, obi: 0.12, rsiLo: 30, rsiHi: 72,
+                 ext: 8, wall: 500, profitMom: 2.5, stopMom: -1.5,
+                 profitBounce: 1.8, stopBounce: -1.2, timeStopMom: 12, timeStopBounce: 10,
+                 trailActivate: 1.0, trailOffset: 0.6 },
+  "AAVE/USD": { atr: 0.2, volMult: 1.5, obi: 0.08, rsiLo: 32, rsiHi: 70,
+                ext: 6, wall: 2000, profitMom: 1.5, stopMom: -1.2,
+                profitBounce: 1.2, stopBounce: -1.0, timeStopMom: 14, timeStopBounce: 12,
+                trailActivate: 0.6, trailOffset: 0.4 },
+  "AAVE/BTC": { atr: 0.1, volMult: 1.8, obi: 0.10, rsiLo: 32, rsiHi: 68,
+                ext: 5, wall: 1500, profitMom: 1.2, stopMom: -1.0,
+                profitBounce: 1.0, stopBounce: -0.8, timeStopMom: 16, timeStopBounce: 14,
+                trailActivate: 0.5, trailOffset: 0.35 },
+};
+const DEFAULT_PAIR_PROFILE = { atr: 0.3, volMult: 1.5, obi: 0.20, rsiLo: 35, rsiHi: 72,
+                               ext: 8, wall: 500, profitMom: 2.0, stopMom: -1.2,
+                               profitBounce: 1.5, stopBounce: -1.0, timeStopMom: 12, timeStopBounce: 10,
+                               trailActivate: 0.8, trailOffset: 0.5 };
+function pairProfile(pair) { return PAIR_PROFILES[pair] || DEFAULT_PAIR_PROFILE; }
 
 // ─── Candle Chart (hero element) ─────────────────────────────────────────────
 
@@ -40,7 +58,42 @@ function useContainerWidth(fallback) {
   return [ref, w];
 }
 
-function CandleChart({ bars, height = 160 }) {
+const EXIT_REASON_LABELS = {
+  hard_stop: { label: "STOP", color: C.danger },
+  trailing_stop: { label: "TRAIL", color: C.warn },
+  profit_target: { label: "TARGET", color: C.accent },
+  time_stop: { label: "TIME", color: C.muted },
+  volume_death: { label: "VOL", color: C.muted },
+  stale_profit: { label: "STALE", color: C.warn },
+  end_of_data: { label: "EOD", color: C.muted },
+  test_fire: { label: "TEST", color: C.blue },
+};
+
+// Boolean entry gates (btc_risk_off is inverted: true = failing)
+const GATE_KEYS = [
+  "macro_trend", "vol_regime", "trend_aligned", "not_bleeding",
+  "volume_spike", "obi", "rsi_window", "vwap_align", "not_extended", "ask_wall_clear",
+];
+const TOTAL_GATES = GATE_KEYS.length + 1; // +1 for btc_risk_off (inverted)
+
+function countPassingGates(g) {
+  if (!g) return 0;
+  let passing = GATE_KEYS.filter(k => g[k] === true).length;
+  if (g.btc_risk_off === false) passing += 1;
+  return passing;
+}
+
+function findBarIndex(bars, ts, maxDist = 3600) {
+  if (!ts || !bars || bars.length === 0) return -1;
+  let best = -1, bestDist = Infinity;
+  for (let i = 0; i < bars.length; i++) {
+    const d = Math.abs(bars[i].ts - ts);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  return bestDist <= maxDist ? best : -1;
+}
+
+function CandleChart({ bars, height = 160, trades, position, pair }) {
   const [containerRef, cw] = useContainerWidth(CHART_FALLBACK_W);
 
   if (!bars || bars.length === 0) {
@@ -48,23 +101,68 @@ function CandleChart({ bars, height = 160 }) {
       <div ref={containerRef} style={{ width: "100%", height, display: "flex",
                     alignItems: "center", justifyContent: "center" }}>
         <span style={{ fontFamily: C.mono, fontSize: 11, color: C.muted }}>
-          Waiting for candles… (warmup: 15 bars)
+          Loading candle history…
         </span>
       </div>
     );
   }
   const priceGutter = 54;
-  const pad = { top: 10, bottom: 10, left: 6, right: priceGutter };
+  const pad = { top: 18, bottom: 18, left: 6, right: priceGutter };
   const innerW = cw - pad.left - pad.right;
   const innerH = height - pad.top - pad.bottom;
   const n = bars.length;
   const slotW = innerW / n;
   const candleW = Math.max(4, Math.min(slotW * 0.78, 20));
-  const minP = Math.min(...bars.map(b => b.low));
-  const maxP = Math.max(...bars.map(b => b.high));
+
+  // Compute price range — extend to include position levels if open
+  let minP = Math.min(...bars.map(b => b.low));
+  let maxP = Math.max(...bars.map(b => b.high));
+  if (position && position.entry_price > 0) {
+    const pp = pairProfile(pair);
+    const isBounce = (position.entry_mode ?? "momentum") === "bounce";
+    const stopPct = isBounce ? pp.stopBounce : pp.stopMom;
+    const targetPct = isBounce ? pp.profitBounce : pp.profitMom;
+    const stopPrice = position.entry_price * (1 + stopPct / 100);
+    const targetPrice = position.entry_price * (1 + targetPct / 100);
+    minP = Math.min(minP, stopPrice);
+    maxP = Math.max(maxP, targetPrice);
+  }
   const range = maxP - minP || minP * 0.01 || 1;
 
   function py(p) { return pad.top + innerH - ((p - minP) / range) * innerH; }
+
+  // Match trades to bar indices
+  const tradeMarkers = [];
+  if (trades && trades.length > 0 && bars.length > 0) {
+    trades.forEach((t, ti) => {
+      const entryIdx = findBarIndex(bars, t.entry_ts);
+      const exitIdx = findBarIndex(bars, t.exit_ts);
+      if (entryIdx >= 0) {
+        tradeMarkers.push({ type: "entry", barIdx: entryIdx, price: t.entry_price, trade: t, ti });
+      }
+      if (exitIdx >= 0) {
+        tradeMarkers.push({ type: "exit", barIdx: exitIdx, price: t.exit_price, trade: t, ti });
+      }
+    });
+  }
+
+  // Position level lines
+  let posLevels = null;
+  if (position && position.entry_price > 0) {
+    const pp = pairProfile(pair);
+    const isBounce = (position.entry_mode ?? "momentum") === "bounce";
+    const stopPct = isBounce ? pp.stopBounce : pp.stopMom;
+    const targetPct = isBounce ? pp.profitBounce : pp.profitMom;
+    const peakPct = position.peak_price > 0
+      ? ((position.peak_price - position.entry_price) / position.entry_price) * 100 : 0;
+    const trailActive = peakPct >= pp.trailActivate;
+    posLevels = {
+      entry: position.entry_price,
+      stop: position.entry_price * (1 + stopPct / 100),
+      target: position.entry_price * (1 + targetPct / 100),
+      trail: trailActive ? position.peak_price * (1 - pp.trailOffset / 100) : null,
+    };
+  }
 
   const gridSteps = [0, 0.25, 0.5, 0.75, 1];
   return (
@@ -86,6 +184,37 @@ function CandleChart({ bars, height = 160 }) {
           </g>
         );
       })}
+
+      {/* Position level lines — drawn behind candles */}
+      {posLevels && (
+        <g>
+          <line x1={pad.left} y1={py(posLevels.entry)} x2={pad.left + innerW} y2={py(posLevels.entry)}
+                stroke={C.purple} strokeWidth={1} strokeDasharray="4,3" opacity={0.7} />
+          <text x={pad.left + 4} y={py(posLevels.entry) - 3}
+                fontFamily={C.mono} fontSize={8} fill={C.purple} opacity={0.9}>ENTRY</text>
+
+          <line x1={pad.left} y1={py(posLevels.stop)} x2={pad.left + innerW} y2={py(posLevels.stop)}
+                stroke={C.danger} strokeWidth={1} strokeDasharray="4,3" opacity={0.6} />
+          <text x={pad.left + 4} y={py(posLevels.stop) + 10}
+                fontFamily={C.mono} fontSize={8} fill={C.danger} opacity={0.9}>STOP</text>
+
+          <line x1={pad.left} y1={py(posLevels.target)} x2={pad.left + innerW} y2={py(posLevels.target)}
+                stroke={C.accent} strokeWidth={1} strokeDasharray="4,3" opacity={0.6} />
+          <text x={pad.left + 4} y={py(posLevels.target) - 3}
+                fontFamily={C.mono} fontSize={8} fill={C.accent} opacity={0.9}>TARGET</text>
+
+          {posLevels.trail && (
+            <>
+              <line x1={pad.left} y1={py(posLevels.trail)} x2={pad.left + innerW} y2={py(posLevels.trail)}
+                    stroke={C.warn} strokeWidth={1} strokeDasharray="2,2" opacity={0.6} />
+              <text x={pad.left + 4} y={py(posLevels.trail) - 3}
+                    fontFamily={C.mono} fontSize={8} fill={C.warn} opacity={0.9}>TRAIL</text>
+            </>
+          )}
+        </g>
+      )}
+
+      {/* Candles */}
       {bars.map((b, i) => {
         const cx = pad.left + (i + 0.5) * slotW;
         const x = cx - candleW / 2;
@@ -102,6 +231,46 @@ function CandleChart({ bars, height = 160 }) {
           </g>
         );
       })}
+
+      {/* Trade entry/exit markers — drawn on top of candles */}
+      {tradeMarkers.map((m, mi) => {
+        const cx = pad.left + (m.barIdx + 0.5) * slotW;
+        const bar = bars[m.barIdx];
+        if (m.type === "entry") {
+          const markerY = py(bar.low) + 10;
+          return (
+            <g key={`entry-${m.ti}`}>
+              <polygon
+                points={`${cx - 5},${markerY + 8} ${cx + 5},${markerY + 8} ${cx},${markerY}`}
+                fill={C.accent} opacity={0.9} />
+              <text x={cx} y={markerY + 18} textAnchor="middle"
+                    fontFamily={C.mono} fontSize={7} fill={C.accent} fontWeight="700">
+                BUY
+              </text>
+            </g>
+          );
+        } else {
+          const reason = m.trade.exit_reason ?? m.trade.reason ?? "exit";
+          const meta = EXIT_REASON_LABELS[reason] ?? { label: reason.toUpperCase().slice(0, 6), color: C.muted };
+          const pnlColor = (m.trade.net_pnl ?? 0) >= 0 ? C.accent : C.danger;
+          const markerY = py(bar.high) - 10;
+          return (
+            <g key={`exit-${m.ti}`}>
+              <polygon
+                points={`${cx - 5},${markerY - 8} ${cx + 5},${markerY - 8} ${cx},${markerY}`}
+                fill={pnlColor} opacity={0.9} />
+              <text x={cx} y={markerY - 12} textAnchor="middle"
+                    fontFamily={C.mono} fontSize={7} fill={meta.color} fontWeight="700">
+                {meta.label}
+              </text>
+              <text x={cx} y={markerY - 21} textAnchor="middle"
+                    fontFamily={C.mono} fontSize={7} fill={pnlColor} fontWeight="700">
+                {(m.trade.net_pnl ?? 0) >= 0 ? `+$${(m.trade.net_pnl ?? 0).toFixed(2)}` : `-$${Math.abs(m.trade.net_pnl ?? 0).toFixed(2)}`}
+              </text>
+            </g>
+          );
+        }
+      })}
     </svg>
     </div>
   );
@@ -111,8 +280,8 @@ function VolumeHistogram({ bars, height = 44 }) {
   const [containerRef, cw] = useContainerWidth(CHART_FALLBACK_W);
 
   if (!bars || bars.length === 0) return <div ref={containerRef} />;
-  const priceGutter = 54;
-  const drawW = cw - priceGutter;
+  const padLeft = 6, priceGutter = 54;
+  const drawW = cw - padLeft - priceGutter;
   const maxVol = Math.max(...bars.map(b => b.volume)) || 1;
   const n = bars.length;
   const slotW = drawW / n;
@@ -124,7 +293,7 @@ function VolumeHistogram({ bars, height = 44 }) {
       <line x1={0} y1={0.5} x2={cw} y2={0.5}
             stroke={C.border} strokeWidth={0.5} />
       {bars.map((b, i) => {
-        const cx = 6 + (i + 0.5) * slotW;
+        const cx = padLeft + (i + 0.5) * slotW;
         const x = cx - candleW / 2;
         const barH = Math.max(1, (b.volume / maxVol) * (height - 6));
         return (
@@ -134,6 +303,59 @@ function VolumeHistogram({ bars, height = 44 }) {
         );
       })}
     </svg>
+    </div>
+  );
+}
+
+// ─── Gate Health Strip — thin timeline showing gate readiness per bar ────────
+
+function GateHealthStrip({ gateHistory, bars, height = 20 }) {
+  const [containerRef, cw] = useContainerWidth(CHART_FALLBACK_W);
+
+  if (!bars || bars.length === 0 || !gateHistory || gateHistory.length === 0) {
+    return <div ref={containerRef} />;
+  }
+  const padLeft = 6, priceGutter = 54;
+  const drawW = cw - padLeft - priceGutter;
+  const n = bars.length;
+  const slotW = drawW / n;
+  const candleW = Math.max(4, Math.min(slotW * 0.78, 20));
+
+  const barGates = bars.map(b => {
+    let best = null, bestDist = Infinity;
+    for (const snap of gateHistory) {
+      const d = Math.abs(snap.ts - b.ts);
+      if (d < bestDist) { bestDist = d; best = snap; }
+    }
+    return best && bestDist < 1800 ? best : null;
+  });
+
+  return (
+    <div ref={containerRef} style={{ width: "100%" }}>
+      <svg viewBox={`0 0 ${cw} ${height}`} width={cw} height={height}
+           style={{ display: "block" }}>
+        <line x1={0} y1={0.5} x2={cw} y2={0.5}
+              stroke={C.border} strokeWidth={0.3} />
+        {bars.map((b, i) => {
+          const snap = barGates[i];
+          if (!snap) return null;
+          const cx = padLeft + (i + 0.5) * slotW;
+          const x = cx - candleW / 2;
+          const ratio = snap.passing / TOTAL_GATES;
+          const color = snap.allPass ? C.accent
+                      : ratio >= 0.75 ? C.warn
+                      : ratio >= 0.5 ? `${C.warn}80`
+                      : `${C.muted}40`;
+          const barH = Math.max(2, ratio * (height - 4));
+          return (
+            <rect key={b.ts}
+              x={x} y={height - barH - 1} width={candleW} height={barH}
+              fill={color} rx={1} />
+          );
+        })}
+        <text x={4} y={height - 3} fontFamily={C.mono} fontSize={7}
+              fill={C.muted} opacity={0.6}>GATES</text>
+      </svg>
     </div>
   );
 }
@@ -163,199 +385,375 @@ function OBIGauge({ obi = 0 }) {
   );
 }
 
-// ─── Gate Dot ─────────────────────────────────────────────────────────────────
+// ─── Blocking Reason (human-readable gate failure) ───────────────────────────
 
-function GateDot({ pass, label, value }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0",
-                  borderBottom: `1px solid ${C.border}20` }}>
-      <div style={{
-        width: 9, height: 9, borderRadius: "50%",
-        background: pass ? C.accent : "#3f3f46",
-        boxShadow: pass ? `0 0 6px ${C.accent}80` : "none",
-        flexShrink: 0, transition: "all 0.3s",
-      }} />
-      <span style={{ fontFamily: C.mono, fontSize: 11, color: pass ? C.text : C.muted,
-                     minWidth: 90, flex: 1 }}>{label}</span>
-      <span style={{ fontFamily: C.mono, fontSize: 11,
-                     color: pass ? C.accent : C.muted }}>{value ?? "—"}</span>
-    </div>
-  );
-}
-
-function SignalBanner({ allPass, engineState }) {
-  if (engineState === "warmup") {
-    return (
-      <div style={{
-        padding: "12px 0", borderRadius: 8, textAlign: "center",
-        background: "#1c1917", border: `1px solid ${C.warn}30`,
-        fontFamily: C.mono, fontSize: 12, color: C.warn, marginTop: 10,
-      }}>
-        ⏳ WARMING UP ({15} bars req.)
-      </div>
-    );
-  }
-  if (engineState === "halted") {
-    return (
-      <div style={{
-        padding: "12px 0", borderRadius: 8, textAlign: "center",
-        background: "#1c0a0a", border: `1px solid ${C.danger}30`,
-        fontFamily: C.mono, fontSize: 12, color: C.danger, marginTop: 10,
-      }}>
-        ⛔ DAILY CAP HIT
-      </div>
-    );
-  }
+function BlockingReason({ text, detail, closest }) {
   return (
     <div style={{
-      padding: "12px 0", borderRadius: 8, textAlign: "center",
-      background: allPass ? `${C.accent}12` : "#18181b",
-      border: `1px solid ${allPass ? C.accent + "50" : C.border}`,
-      fontFamily: C.mono, fontSize: 16, fontWeight: 700,
-      color: allPass ? C.accent : C.muted,
-      marginTop: 10, transition: "all 0.3s ease",
-      boxShadow: allPass ? `0 0 20px ${C.accent}20` : "none",
+      display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0",
+      borderBottom: `1px solid ${C.border}20`,
     }}>
-      {allPass ? "⚡ BUY SIGNAL" : "— HOLD —"}
+      <span style={{ color: closest ? C.warn : C.danger, fontSize: 10, marginTop: 1,
+                     flexShrink: 0 }}>{closest ? "◎" : "✕"}</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontFamily: C.mono, fontSize: 11,
+                      color: closest ? C.warn : C.text }}>{text}</div>
+        {detail && (
+          <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted, marginTop: 1 }}>{detail}</div>
+        )}
+      </div>
     </div>
   );
 }
 
-// ─── Position Panel ───────────────────────────────────────────────────────────
+// ─── Exit Condition Row ──────────────────────────────────────────────────────
 
-function PositionPanel({ position, midPrice }) {
-  if (!position) {
+function ExitCondition({ label, progress, detail, color }) {
+  const pct = Math.max(0, Math.min(100, progress));
+  return (
+    <div style={{ padding: "6px 0", borderBottom: `1px solid ${C.border}20` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+        <span style={{ fontFamily: C.mono, fontSize: 11, color: C.text }}>{label}</span>
+        <span style={{ fontFamily: C.mono, fontSize: 10, color: color ?? C.muted }}>{detail}</span>
+      </div>
+      <div style={{ height: 4, background: "#27272a", borderRadius: 2, overflow: "hidden" }}>
+        <div style={{
+          height: "100%", width: `${pct}%`,
+          background: color ?? C.muted,
+          borderRadius: 2, transition: "width 0.4s ease",
+        }} />
+      </div>
+    </div>
+  );
+}
+
+// ─── Adaptive Sidebar ────────────────────────────────────────────────────────
+// Single panel that changes based on engine state:
+//   No position → why not trading (blocking gates as sentences)
+//   Position open → position details + exit condition proximity
+
+function buildBlockingReasons(gates, pp, obi) {
+  if (!gates) return [];
+  const reasons = [];
+
+  if (!gates.macro_trend) {
+    reasons.push({ text: "Macro downtrend", detail: "EMA50 declining — pair in bearish regime", key: "macro" });
+  }
+  if (gates.btc_risk_off) {
+    reasons.push({ text: "BTC risk-off",
+      detail: gates.btc_rsi != null ? `BTC RSI ${gates.btc_rsi} — dumping` : "BTC selling pressure",
+      key: "btc" });
+  }
+  if (!gates.vol_regime) {
+    const cur = gates.atr_pct != null ? (gates.atr_pct * 100).toFixed(2) : "?";
+    reasons.push({ text: "Market too quiet",
+      detail: `ATR ${cur}% < ${pp.atr}% min — not enough volatility to trade`, key: "atr" });
+  }
+  if (!gates.trend_aligned) {
+    reasons.push({ text: "Trend not aligned", detail: "Fast EMA below slow EMA", key: "trend" });
+  }
+  if (!gates.not_bleeding) {
+    reasons.push({ text: "Consecutive red bars", detail: "Recent candles all selling — active bleed", key: "bleed" });
+  }
+  if (!gates.volume_spike) {
+    const cur = gates.vol_ema_value ? `${(gates.vol_ema_value / 1000).toFixed(1)}k` : "?";
+    reasons.push({ text: "Volume too low",
+      detail: `Need ${pp.volMult}x baseline spike (baseline: ${cur})`, key: "vol",
+      closest: gates.vol_ema_value > 0 });
+  }
+  if (!gates.obi) {
+    reasons.push({ text: "Buy pressure weak",
+      detail: `OBI ${obi != null ? obi.toFixed(3) : "?"} < ${pp.obi.toFixed(2)} threshold`, key: "obi" });
+  }
+  if (!gates.rsi_window) {
+    const rsi = gates.rsi_value;
+    if (rsi != null) {
+      if (rsi > pp.rsiHi) reasons.push({ text: "RSI overbought",
+        detail: `RSI ${rsi} > ${pp.rsiHi} — too hot to enter`, key: "rsi" });
+      else if (rsi < pp.rsiLo) reasons.push({ text: "RSI too low for momentum",
+        detail: `RSI ${rsi} < ${pp.rsiLo} — may qualify for bounce mode`, key: "rsi" });
+      else reasons.push({ text: "RSI outside window",
+        detail: `RSI ${rsi} not in ${pp.rsiLo}–${pp.rsiHi}`, key: "rsi" });
+    }
+  }
+  if (!gates.vwap_align) {
+    reasons.push({ text: "Below VWAP", detail: "Price below session VWAP — no momentum confirmation", key: "vwap" });
+  }
+  if (!gates.not_extended) {
+    const ext = gates.extension_pct != null ? (gates.extension_pct * 100).toFixed(1) : "?";
+    reasons.push({ text: "Overextended",
+      detail: `${ext}% above slow EMA (limit: ${pp.ext}%)`, key: "ext" });
+  }
+  if (!gates.ask_wall_clear) {
+    reasons.push({ text: "Ask wall detected", detail: `Sell wall > $${pp.wall} blocking upside`, key: "wall" });
+  }
+
+  return reasons;
+}
+
+function AdaptiveSidebar({ position, midPrice, pair, gates, obi, confidence, kellySize,
+                           trades, engineState, enabled }) {
+  const pp = pairProfile(pair);
+
+  // ── Position open: show trade + exit proximity ──
+  if (position) {
+    const mode = position.entry_mode ?? "momentum";
+    const isBounce = mode === "bounce";
+    const stopPct = isBounce ? pp.stopBounce : pp.stopMom;
+    const targetPct = isBounce ? pp.profitBounce : pp.profitMom;
+    const timeStop = isBounce ? pp.timeStopBounce : pp.timeStopMom;
+
+    const entryPct = ((midPrice - position.entry_price) / position.entry_price) * 100;
+    const progress = Math.max(0, Math.min(100,
+      ((entryPct - stopPct) / (targetPct - stopPct)) * 100));
+    const pnlColor = entryPct >= 0 ? C.accent : C.danger;
+    const candles = position.candles_held ?? 0;
+    const peakPrice = position.peak_price ?? 0;
+    const peakPct = peakPrice > 0 ? ((peakPrice - position.entry_price) / position.entry_price) * 100 : 0;
+    const trailActivatePct = pp.trailActivate;
+    const trailActive = peakPct >= trailActivatePct;
+    const trailLevel = trailActive ? peakPrice * (1 - pp.trailOffset / 100) : null;
+    const stopPrice = position.entry_price * (1 + stopPct / 100);
+    const targetPrice = position.entry_price * (1 + targetPct / 100);
+
+    // Exit condition proximity calculations
+    const timeProgress = (candles / timeStop) * 100;
+    const stopDist = Math.abs(entryPct - stopPct);
+    const targetDist = Math.abs(targetPct - entryPct);
+    const trailArmProgress = trailActivatePct > 0 ? (peakPct / trailActivatePct) * 100 : 0;
+
     return (
-      <div style={{ padding: 16, background: C.panel, borderRadius: 8,
-                    border: `1px solid ${C.border}`, height: "100%",
-                    display: "flex", flexDirection: "column", justifyContent: "center",
-                    alignItems: "center", gap: 6 }}>
-        <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted,
-                      textTransform: "uppercase", letterSpacing: "0.1em" }}>Position</div>
-        <div style={{ fontFamily: C.mono, fontSize: 13, color: C.muted }}>No open position</div>
-        <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted + "80" }}>
-          Waiting for all gates + ATR regime
+      <div style={{ display: "flex", flexDirection: "column", gap: 0, height: "100%" }}>
+        {/* Position header */}
+        <div style={{ padding: "14px 16px", background: C.panel, borderRadius: "8px 8px 0 0",
+                      border: `1px solid ${C.purple}50`, borderBottom: "none" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                        marginBottom: 10 }}>
+            <span style={{ fontFamily: C.mono, fontSize: 10, color: C.purple,
+                           textTransform: "uppercase", letterSpacing: "0.1em" }}>Open Position</span>
+            <span style={{
+              fontFamily: C.mono, fontSize: 10, fontWeight: 700,
+              padding: "2px 8px", borderRadius: 4,
+              background: isBounce ? `${C.blue}20` : `${C.accent}20`,
+              color: isBounce ? C.blue : C.accent,
+            }}>{mode.toUpperCase()}</span>
+          </div>
+
+          {/* Big PnL */}
+          <div style={{ textAlign: "center", marginBottom: 12 }}>
+            <span style={{ fontFamily: C.mono, fontSize: 26, fontWeight: 700, color: pnlColor }}>
+              {entryPct >= 0 ? "+" : ""}{entryPct.toFixed(2)}%
+            </span>
+          </div>
+
+          {/* Entry/Mid/Qty compact row */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
+            {[
+              ["Entry", position.entry_price.toFixed(6)],
+              ["Now", midPrice.toFixed(6)],
+              ["Qty", position.qty?.toFixed(2) ?? "—"],
+            ].map(([l, v]) => (
+              <div key={l}>
+                <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted }}>{l}</div>
+                <div style={{ fontFamily: C.mono, fontSize: 11, color: C.text }}>{v}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Progress bar: stop → target */}
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+            <span style={{ fontFamily: C.mono, fontSize: 9, color: C.danger }}>{stopPct}%</span>
+            <span style={{ fontFamily: C.mono, fontSize: 9, color: C.accent }}>+{targetPct}%</span>
+          </div>
+          <div style={{ height: 8, background: "#27272a", borderRadius: 4, overflow: "hidden" }}>
+            <div style={{
+              height: "100%", width: `${progress}%`,
+              background: entryPct >= 0 ? C.accent : C.danger,
+              transition: "width 0.5s ease",
+            }} />
+          </div>
+        </div>
+
+        {/* Exit conditions */}
+        <div style={{ padding: "12px 16px", background: C.panel, borderRadius: "0 0 8px 8px",
+                      border: `1px solid ${C.purple}50`, borderTop: `1px solid ${C.border}`,
+                      flex: 1 }}>
+          <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted, marginBottom: 8,
+                        textTransform: "uppercase", letterSpacing: "0.1em" }}>Exit Watch</div>
+
+          <ExitCondition
+            label="Time stop"
+            progress={timeProgress}
+            detail={`${candles}/${timeStop} bars`}
+            color={timeProgress >= 80 ? C.danger : timeProgress >= 50 ? C.warn : C.muted}
+          />
+          <ExitCondition
+            label={trailActive ? "Trail armed" : "Trail activation"}
+            progress={trailArmProgress}
+            detail={trailActive
+              ? `trailing at ${trailLevel?.toFixed(6)}`
+              : `peak ${peakPct.toFixed(2)}% / ${trailActivatePct}%`}
+            color={trailActive ? C.warn : C.muted}
+          />
+          <ExitCondition
+            label="Distance to stop"
+            progress={stopDist > 0 ? Math.max(0, 100 - (stopDist / Math.abs(stopPct)) * 100) : 0}
+            detail={`${stopDist.toFixed(2)}% away`}
+            color={stopDist < 0.3 ? C.danger : stopDist < 0.6 ? C.warn : C.muted}
+          />
+          <ExitCondition
+            label="Distance to target"
+            progress={targetDist > 0 ? Math.max(0, 100 - (targetDist / targetPct) * 100) : 0}
+            detail={`${targetDist.toFixed(2)}% away`}
+            color={targetDist < 0.5 ? C.accent : C.muted}
+          />
+
+          {/* Level reference */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 3,
+                        padding: "8px 0", marginTop: 6,
+                        fontFamily: C.mono, fontSize: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: C.danger }}>▼ {stopPrice.toFixed(6)}</span>
+              <span style={{ color: C.accent }}>▲ {targetPrice.toFixed(6)}</span>
+            </div>
+            {trailLevel && (
+              <div style={{ textAlign: "center", color: C.warn }}>
+                ◆ trail {trailLevel.toFixed(6)}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
   }
-  const mode = position.entry_mode ?? "momentum";
-  const isBounce = mode === "bounce";
-  const stopPct = isBounce ? -1.2 : -1.0;
-  const targetPct = isBounce ? 2.0 : 3.0;
-  const timeStop = isBounce ? 8 : 3;
-  const stopPrice = position.entry_price * (1 + stopPct / 100);
-  const targetPrice = position.entry_price * (1 + targetPct / 100);
 
-  const entryPct = ((midPrice - position.entry_price) / position.entry_price) * 100;
-  const progress = Math.max(0, Math.min(100,
-    ((entryPct - stopPct) / (targetPct - stopPct)) * 100));
-  const pnlColor = entryPct >= 0 ? C.accent : C.danger;
-  const candles = position.candles_held ?? 0;
-  const peakPrice = position.peak_price ?? 0;
-  const peakPct = peakPrice > 0 ? ((peakPrice - position.entry_price) / position.entry_price) * 100 : 0;
-  const trailActive = peakPct >= 1.5;
-  const trailLevel = trailActive ? peakPrice * 0.99 : null;
+  // ── No position: show why not ──
+  const blockingReasons = buildBlockingReasons(gates, pp, obi);
+  const passingCount = countPassingGates(gates);
+  const totalGates = TOTAL_GATES;
+  const lastTrade = trades && trades.length > 0 ? trades[trades.length - 1] : null;
+
+  // BTC risk-off or halted — special states
+  const btcRiskOff = gates?.btc_risk_off ?? false;
+  const isHalted = engineState === "halted";
 
   return (
-    <div style={{ padding: 16, background: C.panel, borderRadius: 8,
-                  border: `1px solid ${C.purple}50` }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
-                    marginBottom: 12 }}>
-        <div style={{ fontFamily: C.mono, fontSize: 10, color: C.purple,
-                      textTransform: "uppercase", letterSpacing: "0.1em" }}>Open Position</div>
-        <span style={{
-          fontFamily: C.mono, fontSize: 10, fontWeight: 700,
-          padding: "2px 8px", borderRadius: 4,
-          background: isBounce ? `${C.blue}20` : `${C.accent}20`,
-          color: isBounce ? C.blue : C.accent,
-        }}>{mode.toUpperCase()}</span>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-        {[
-          ["Entry", position.entry_price.toFixed(6)],
-          ["Mid", midPrice.toFixed(6)],
-          ["Qty", position.qty?.toFixed(2) ?? "—"],
-          ["Peak", peakPrice > 0 ? `${peakPrice.toFixed(6)} (${peakPct >= 0 ? "+" : ""}${peakPct.toFixed(2)}%)` : "—"],
-        ].map(([l, v]) => (
-          <div key={l}>
-            <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted }}>{l}</div>
-            <div style={{ fontFamily: C.mono, fontSize: 12, color: C.text }}>{v}</div>
-          </div>
-        ))}
-      </div>
-      <div style={{ textAlign: "center", marginBottom: 14 }}>
-        <span style={{ fontFamily: C.mono, fontSize: 22, fontWeight: 700, color: pnlColor }}>
-          {entryPct >= 0 ? "+" : ""}{entryPct.toFixed(2)}%
-        </span>
-      </div>
-      {/* Exit watch levels */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 4,
-                    padding: "6px 10px", background: C.bg, borderRadius: 6,
-                    marginBottom: 10, fontFamily: C.mono, fontSize: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: C.danger }}>▼ stop {stopPrice.toFixed(6)} ({stopPct}%)</span>
-          <span style={{ color: C.accent }}>▲ target {targetPrice.toFixed(6)} (+{targetPct}%)</span>
+    <div style={{ display: "flex", flexDirection: "column", gap: 0, height: "100%" }}>
+      {/* Status header */}
+      <div style={{ padding: "14px 16px", background: C.panel, borderRadius: "8px 8px 0 0",
+                    border: `1px solid ${C.border}`, borderBottom: "none" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                      marginBottom: 8 }}>
+          <span style={{ fontFamily: C.mono, fontSize: 10, color: C.muted,
+                         textTransform: "uppercase", letterSpacing: "0.1em" }}>
+            {isHalted ? "Halted" : btcRiskOff ? "BTC Risk-Off" : "Watching"}
+          </span>
+          <span style={{ fontFamily: C.mono, fontSize: 10,
+                         color: blockingReasons.length === 0 ? C.accent : C.muted }}>
+            {passingCount}/{totalGates} gates
+          </span>
         </div>
-        {trailLevel && (
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <span style={{ color: C.warn }}>◆ trail {trailLevel.toFixed(6)} (peak−1%)</span>
+
+        {/* Gate progress bar */}
+        <div style={{ height: 6, background: "#27272a", borderRadius: 3, overflow: "hidden",
+                      marginBottom: 10 }}>
+          <div style={{
+            height: "100%",
+            width: `${(passingCount / totalGates) * 100}%`,
+            background: passingCount >= 10 ? C.accent : passingCount >= 7 ? C.warn : C.muted,
+            borderRadius: 3, transition: "width 0.4s ease",
+          }} />
+        </div>
+
+        {/* All pass → ready to fire */}
+        {blockingReasons.length === 0 && gates?.all_pass && (
+          <div style={{
+            padding: "10px 0", borderRadius: 6, textAlign: "center",
+            background: `${C.accent}12`, border: `1px solid ${C.accent}50`,
+            fontFamily: C.mono, fontSize: 14, fontWeight: 700, color: C.accent,
+            boxShadow: `0 0 20px ${C.accent}20`,
+          }}>
+            BUY SIGNAL
+          </div>
+        )}
+
+        {/* Confidence + Kelly when close */}
+        {confidence > 0 && (
+          <div style={{ display: "flex", gap: 12, padding: "8px 0" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted }}>Confidence</div>
+              <div style={{ fontFamily: C.mono, fontSize: 14, fontWeight: 700,
+                            color: confidence >= 0.7 ? C.accent : confidence >= 0.5 ? C.warn : C.muted }}>
+                {(confidence * 100).toFixed(0)}%
+              </div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted }}>Kelly Size</div>
+              <div style={{ fontFamily: C.mono, fontSize: 14, fontWeight: 700, color: C.purple }}>
+                {kellySize > 0 ? `$${kellySize.toFixed(0)}` : "—"}
+              </div>
+            </div>
           </div>
         )}
       </div>
-      {/* Progress bar */}
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-        <span style={{ fontFamily: C.mono, fontSize: 9, color: C.danger }}>{stopPct}%</span>
-        <span style={{ fontFamily: C.mono, fontSize: 9, color: C.muted }}>progress to target</span>
-        <span style={{ fontFamily: C.mono, fontSize: 9, color: C.accent }}>+{targetPct}%</span>
-      </div>
-      <div style={{ height: 8, background: "#27272a", borderRadius: 4, overflow: "hidden",
-                    marginBottom: 8 }}>
-        <div style={{
-          height: "100%", width: `${progress}%`,
-          background: entryPct >= 0 ? C.accent : C.danger,
-          transition: "width 0.5s ease",
-        }} />
-      </div>
-      <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted, textAlign: "center" }}>
-        {candles} candle{candles !== 1 ? "s" : ""} held
-        {" · "}time stop in {Math.max(0, timeStop - candles)} more
-        {trailActive && <span style={{ color: C.warn }}> · trail armed</span>}
-      </div>
-    </div>
-  );
-}
 
-// ─── Session Stats ────────────────────────────────────────────────────────────
-
-function SessionStats({ stats, dailyCap }) {
-  const remaining = dailyCap + (stats?.daily_loss ?? 0);
-  const usedPct = dailyCap > 0 ? Math.max(0, Math.min(100,
-    ((dailyCap - remaining) / dailyCap) * 100)) : 0;
-  return (
-    <div style={{ padding: 16, background: C.panel, borderRadius: 8,
-                  border: `1px solid ${C.border}`, marginTop: 8 }}>
-      <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted, marginBottom: 10,
-                    textTransform: "uppercase", letterSpacing: "0.1em" }}>Session</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-        {[
-          ["Net P&L", `$${(stats?.session_pnl ?? 0).toFixed(2)}`, (stats?.session_pnl ?? 0) >= 0 ? C.accent : C.danger],
-          ["Win Rate", `${((stats?.win_rate ?? 0) * 100).toFixed(0)}%`, C.text],
-          ["Trades", String(stats?.trade_count ?? 0), C.text],
-          ["Cap Left", `$${remaining.toFixed(2)}`, remaining > 10 ? C.accent : C.danger],
-        ].map(([label, val, color]) => (
-          <div key={label}>
-            <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted }}>{label}</div>
-            <div style={{ fontFamily: C.mono, fontSize: 14, fontWeight: 700, color }}>{val}</div>
+      {/* Blocking reasons */}
+      <div style={{ padding: "10px 16px", background: C.panel, borderRadius: "0 0 8px 8px",
+                    border: `1px solid ${C.border}`, borderTop: `1px solid ${C.border}`,
+                    flex: 1, overflowY: "auto" }}>
+        {isHalted ? (
+          <div style={{ padding: "16px 0", textAlign: "center" }}>
+            <div style={{ fontFamily: C.mono, fontSize: 13, color: C.danger, fontWeight: 700,
+                          marginBottom: 4 }}>Daily cap reached</div>
+            <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted }}>
+              Engine paused until next session
+            </div>
           </div>
-        ))}
-      </div>
-      <div style={{ height: 5, background: "#27272a", borderRadius: 3, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${usedPct}%`, background: C.danger,
-                      transition: "width 0.5s" }} />
-      </div>
-      <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted, marginTop: 3 }}>
-        daily cap: ${dailyCap.toFixed(0)} · {usedPct.toFixed(0)}% used
+        ) : blockingReasons.length > 0 ? (
+          <>
+            <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted, marginBottom: 6,
+                          textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              Why not trading
+            </div>
+            {blockingReasons.map(r => (
+              <BlockingReason key={r.key} text={r.text} detail={r.detail} closest={r.closest} />
+            ))}
+          </>
+        ) : !gates ? (
+          <div style={{ padding: "16px 0", textAlign: "center",
+                        fontFamily: C.mono, fontSize: 11, color: C.muted }}>
+            Waiting for first bar close…
+          </div>
+        ) : null}
+
+        {/* Last trade summary */}
+        {lastTrade && (
+          <div style={{ marginTop: 10, padding: "8px 10px", background: C.bg, borderRadius: 6 }}>
+            <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted, marginBottom: 4,
+                          textTransform: "uppercase" }}>Last Trade</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontFamily: C.mono, fontSize: 12, fontWeight: 700,
+                             color: (lastTrade.net_pnl ?? 0) >= 0 ? C.accent : C.danger }}>
+                {(lastTrade.net_pnl ?? 0) >= 0 ? "+" : ""}${(lastTrade.net_pnl ?? 0).toFixed(2)}
+              </span>
+              <span style={{ fontFamily: C.mono, fontSize: 10, color: C.muted }}>
+                {lastTrade.exit_reason ?? "—"}
+              </span>
+              <span style={{ fontFamily: C.mono, fontSize: 10, color: C.muted }}>
+                {lastTrade.hold_candles ?? 0}c
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Disabled notice */}
+        {!enabled && (
+          <div style={{ marginTop: 10, padding: "8px", borderRadius: 6,
+                        background: `${C.warn}10`, border: `1px solid ${C.warn}30`,
+                        fontFamily: C.mono, fontSize: 10, color: C.warn, textAlign: "center" }}>
+            Pair disabled — entries blocked
+          </div>
+        )}
       </div>
     </div>
   );
@@ -408,8 +806,9 @@ function TradeLog({ trades }) {
 
 // ─── Trading View ─────────────────────────────────────────────────────────────
 
-function TradingView({ state, dailyCap, connected, pair, onStop }) {
-  const { gates, position, midPrice, obi, engineState, sessionStats, trades, bars, spreadBps } = state;
+function TradingView({ state, connected, pair, onDisable, candleInterval }) {
+  const { gates, position, midPrice, obi, engineState, sessionStats, trades, bars, spreadBps,
+          enabled, confidence, kellySize, gateHistory } = state;
 
   if (!connected) {
     return (
@@ -424,13 +823,18 @@ function TradingView({ state, dailyCap, connected, pair, onStop }) {
     );
   }
 
+  const intervalLabel = candleInterval ? `${candleInterval}-min` : "15-min";
+  const pnl = sessionStats?.session_pnl ?? 0;
+  const tradeCount = sessionStats?.trade_count ?? 0;
+  const winRate = sessionStats?.win_rate ?? 0;
+
   return (
     <div>
-      {/* Control row */}
+      {/* Control row — pair, price, session stats, state, disable */}
       <div style={{
-        display: "flex", alignItems: "center", gap: 16, marginBottom: 16,
+        display: "flex", alignItems: "center", gap: 12, marginBottom: 16,
         padding: "10px 16px", background: C.panel, borderRadius: 8,
-        border: `1px solid ${C.border}`,
+        border: `1px solid ${C.border}`, flexWrap: "wrap",
       }}>
         <span style={{ fontFamily: C.mono, fontSize: 15, fontWeight: 700, color: C.text }}>
           {pair ?? "—"}
@@ -440,48 +844,58 @@ function TradingView({ state, dailyCap, connected, pair, onStop }) {
           {midPrice > 0 ? `$${midPrice.toFixed(6)}` : "—"}
         </span>
         {spreadBps > 0 && (
-          <span style={{ fontFamily: C.mono, fontSize: 11, color: C.muted }}>
-            spread {spreadBps.toFixed(1)} bps
+          <span style={{ fontFamily: C.mono, fontSize: 10, color: C.muted }}>
+            {spreadBps.toFixed(1)} bps
           </span>
         )}
+        <div style={{ width: 1, height: 16, background: C.border, flexShrink: 0 }} />
+        {/* Inline session stats */}
+        <span style={{ fontFamily: C.mono, fontSize: 12, fontWeight: 700,
+                       color: pnl >= 0 ? C.accent : C.danger }}>
+          {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
+        </span>
+        <span style={{ fontFamily: C.mono, fontSize: 10, color: C.muted }}>
+          {tradeCount}t · {(winRate * 100).toFixed(0)}%w
+        </span>
+        <div style={{ width: 1, height: 16, background: C.border, flexShrink: 0 }} />
         <div style={{
           display: "flex", alignItems: "center", gap: 6,
           padding: "3px 10px", borderRadius: 20,
           background: engineState === "running" ? `${C.accent}15`
-                    : engineState === "warmup" ? `${C.warn}15`
+                    : engineState === "switching" ? `${C.warn}15`
                     : engineState === "halted" ? `${C.danger}15` : "#27272a",
         }}>
           <div style={{
             width: 7, height: 7, borderRadius: "50%",
             background: engineState === "running" ? C.accent
-                       : engineState === "warmup" ? C.warn
+                       : engineState === "switching" ? C.warn
                        : engineState === "halted" ? C.danger : C.muted,
           }} />
           <span style={{ fontFamily: C.mono, fontSize: 10,
                          color: engineState === "running" ? C.accent
-                               : engineState === "warmup" ? C.warn
+                               : engineState === "switching" ? C.warn
                                : engineState === "halted" ? C.danger : C.muted }}>
             {engineState}
           </span>
         </div>
         <div style={{ marginLeft: "auto" }}>
           <button
-            onClick={onStop}
-            disabled={!["running", "warmup"].includes(engineState)}
+            onClick={onDisable}
+            disabled={!enabled}
             style={{
               padding: "6px 18px", borderRadius: 6,
-              border: `1px solid ${C.danger}50`, background: "transparent",
-              color: C.danger, fontFamily: C.mono, fontSize: 12, fontWeight: 700,
-              cursor: ["running", "warmup"].includes(engineState) ? "pointer" : "not-allowed",
-              opacity: ["running", "warmup"].includes(engineState) ? 1 : 0.3,
+              border: `1px solid ${C.warn}50`, background: "transparent",
+              color: C.warn, fontFamily: C.mono, fontSize: 12, fontWeight: 700,
+              cursor: enabled ? "pointer" : "not-allowed",
+              opacity: enabled ? 1 : 0.3,
             }}
           >
-            ■ STOP
+            DISABLE
           </button>
         </div>
       </div>
 
-      {/* Main 2-column grid — chart left, panels right */}
+      {/* Main 2-column grid — chart left, adaptive sidebar right */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 12,
                     marginBottom: 12 }}>
         {/* LEFT — hero chart */}
@@ -492,56 +906,32 @@ function TradingView({ state, dailyCap, connected, pair, onStop }) {
                         padding: "10px 14px 6px",
                         textTransform: "uppercase", letterSpacing: "0.1em",
                         display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span>5-min Candles</span>
+            <span>{intervalLabel} Candles</span>
             {bars && bars.length > 0 && (
               <span style={{ fontSize: 9, opacity: 0.6 }}>{bars.length} bars</span>
             )}
           </div>
-          <CandleChart bars={bars} height={340} />
+          <CandleChart bars={bars} height={340} trades={trades} position={position} pair={pair} />
           <VolumeHistogram bars={bars} height={72} />
+          <GateHealthStrip gateHistory={gateHistory} bars={bars} height={20} />
           <div style={{ padding: "6px 14px 10px" }}>
             <OBIGauge obi={obi ?? 0} />
           </div>
         </div>
 
-        {/* RIGHT — position, session, gates */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <PositionPanel position={position} midPrice={midPrice ?? 0} />
-          <SessionStats stats={sessionStats ?? {}} dailyCap={dailyCap} />
-          <div style={{ padding: 16, background: C.panel, borderRadius: 8,
-                        border: `1px solid ${C.border}`, flex: 1 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
-                          marginBottom: 8 }}>
-              <span style={{ fontFamily: C.mono, fontSize: 10, color: C.muted,
-                             textTransform: "uppercase", letterSpacing: "0.1em" }}>Entry Gates</span>
-              {gates?.entry_mode && gates.entry_mode !== "none" && (
-                <span style={{
-                  fontFamily: C.mono, fontSize: 9, fontWeight: 700,
-                  padding: "1px 6px", borderRadius: 3,
-                  background: gates.entry_mode === "bounce" ? `${C.blue}20` : `${C.accent}20`,
-                  color: gates.entry_mode === "bounce" ? C.blue : C.accent,
-                }}>{gates.entry_mode}</span>
-              )}
-            </div>
-            <GateDot pass={gates?.vol_regime} label="ATR ≥1.5%"
-                     value={gates?.atr_pct != null ? `${(gates.atr_pct * 100).toFixed(1)}%` : null} />
-            <GateDot pass={gates?.trend_aligned} label="EMA trend"
-                     value={null} />
-            <GateDot pass={gates?.volume_spike} label="Vol 1.8×"
-                     value={gates?.vol_ema_value ? `${(gates.vol_ema_value / 1000).toFixed(1)}k` : null} />
-            <GateDot pass={gates?.obi} label="OBI >0.20"
-                     value={obi != null ? obi.toFixed(3) : null} />
-            <GateDot pass={gates?.vwap_align} label="VWAP align"
-                     value={gates?.vwap_value ? `$${parseFloat(gates.vwap_value).toFixed(5)}` : null} />
-            <GateDot pass={gates?.rsi_window} label="RSI 45–78"
-                     value={gates?.rsi_value != null ? String(gates.rsi_value) : null} />
-            <GateDot pass={gates?.not_extended} label="Ext <10%"
-                     value={gates?.extension_pct != null ? `${(gates.extension_pct * 100).toFixed(1)}%` : null} />
-            <GateDot pass={gates?.ask_wall_clear} label="Wall <$500"
-                     value={null} />
-            <SignalBanner allPass={gates?.all_pass ?? false} engineState={engineState} />
-          </div>
-        </div>
+        {/* RIGHT — adaptive sidebar */}
+        <AdaptiveSidebar
+          position={position}
+          midPrice={midPrice ?? 0}
+          pair={pair}
+          gates={gates}
+          obi={obi}
+          confidence={confidence ?? 0}
+          kellySize={kellySize ?? 0}
+          trades={trades}
+          engineState={engineState}
+          enabled={enabled}
+        />
       </div>
 
       {/* Trade log */}
@@ -600,24 +990,38 @@ function ScanCountdown({ lastScanTs }) {
   );
 }
 
+// ─── Confidence Bar ───────────────────────────────────────────────────────────
+
+function ConfidenceBar({ value }) {
+  const pct = Math.max(0, Math.min(100, (value ?? 0) * 100));
+  const color = pct >= 70 ? C.accent : pct >= 50 ? C.warn : C.muted;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{ flex: 1, height: 6, background: "#27272a", borderRadius: 3, overflow: "hidden" }}>
+        <div style={{
+          height: "100%", width: `${pct}%`,
+          background: color, borderRadius: 3,
+          transition: "width 0.4s ease",
+        }} />
+      </div>
+      <span style={{ fontFamily: C.mono, fontSize: 11, color, minWidth: 32, textAlign: "right" }}>
+        {pct.toFixed(0)}%
+      </span>
+    </div>
+  );
+}
+
 // ─── Discover View ────────────────────────────────────────────────────────────
 
-function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, lastScanTs, wsRef, sessionStats, dailyCap, scanInProgress }) {
-  const [levers, setLevers] = useState({});
-
-  function handleToggle(pair) {
-    if (!connected) return;
-    if (enginePair === pair) {
-      onStop();
-    } else {
-      onStartEngine(pair);
-    }
-  }
-
+function DiscoverView({ tokens, pairStates, onToggle, anyConnected, lastScanTs,
+                        wsRefs, scanInProgress }) {
   function handleScanNow() {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "scan_now" }));
-    }
+    SEED_PAIRS.forEach(pair => {
+      const ws = wsRefs.current[pair];
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "scan_now" }));
+      }
+    });
   }
 
   function ratioColor(r) {
@@ -634,21 +1038,24 @@ function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, la
     return v.toFixed(0);
   }
 
-  // Capital summary data
-  const capRemaining = dailyCap + (sessionStats?.daily_loss ?? 0);
-  const capUsed = Math.max(0, dailyCap - capRemaining);
-  // Gate on daily-loss budget (capRemaining > 0), not account balance
-  const hasCapital = !connected || capRemaining > 0;
+  const totalKelly = SEED_PAIRS.reduce((sum, pair) => {
+    const ps = pairStates[pair];
+    return sum + (ps?.enabled && ps?.connected ? (ps.kellySize ?? 0) : 0);
+  }, 0);
+  const totalPnl = SEED_PAIRS.reduce((sum, pair) => {
+    return sum + (pairStates[pair]?.sessionStats?.session_pnl ?? 0);
+  }, 0);
+  const totalTrades = SEED_PAIRS.reduce((sum, pair) => {
+    return sum + (pairStates[pair]?.sessionStats?.trade_count ?? 0);
+  }, 0);
 
-  // Sort by anomaly ratio when connected; preserve seed order otherwise
-  const displayTokens = connected
+  const displayTokens = anyConnected
     ? [...tokens].sort((a, b) => (b.anomaly_ratio ?? 0) - (a.anomaly_ratio ?? 0))
     : tokens;
 
   return (
     <div>
-      {/* Scan header */}
-      {connected ? (
+      {anyConnected ? (
         <div style={{
           display: "flex", alignItems: "center", gap: 12, marginBottom: 16,
           padding: "10px 16px", background: C.panel, borderRadius: 8,
@@ -684,8 +1091,7 @@ function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, la
         <OfflineBanner />
       )}
 
-      {/* Vol surge legend */}
-      {connected && (
+      {anyConnected && (
         <div style={{
           fontFamily: C.mono, fontSize: 11, color: C.muted, marginBottom: 10,
           padding: "6px 16px", display: "flex", gap: 16, alignItems: "center",
@@ -698,13 +1104,12 @@ function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, la
         </div>
       )}
 
-      {/* Competition table */}
       <div style={{ background: C.panel, borderRadius: 8, border: `1px solid ${C.border}`,
                     marginBottom: 12, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: C.mono }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-              {["Token", "Vol 24h", "7d Baseline", "Vol Surge", "Type", "Capital", "Trade"].map(h => (
+              {["Token", "Vol 24h", "7d Baseline", "Vol Surge", "Type", "Confidence", "Kelly $", "Status"].map(h => (
                 <th key={h} style={{
                   padding: "12px 14px", textAlign: "left", fontSize: 13,
                   color: C.muted, fontWeight: 400, textTransform: "uppercase",
@@ -715,26 +1120,32 @@ function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, la
           </thead>
           <tbody>
             {displayTokens.map((token, idx) => {
+              const ps = pairStates[token.pair] ?? {};
               const isAnomaly = (token.anomaly_ratio ?? 0) >= 5;
-              const isActive = enginePair === token.pair;
-              const capOk = hasCapital;
-              const canToggle = connected && capOk;
+              const isEnabled = ps.enabled ?? true;
+              const isConnected = ps.connected ?? false;
+              const canToggle = isConnected;
               const evenRow = idx % 2 === 0;
 
               return (
                 <tr key={token.pair} style={{
                   borderBottom: `1px solid ${C.border}25`,
-                  background: isActive ? `${C.accent}12`
+                  background: isEnabled && isConnected ? `${C.accent}0a`
                             : isAnomaly ? `${C.warn}0c`
                             : evenRow ? "#1a1a1f" : C.panel,
-                  borderLeft: isAnomaly ? `3px solid ${C.warn}` : isActive ? `3px solid ${C.accent}` : "3px solid transparent",
-                  boxShadow: isActive ? `inset 0 1px 0 ${C.accent}15, inset 0 -1px 0 ${C.accent}15`
-                           : `inset 0 1px 0 #ffffff04`,
+                  borderLeft: isAnomaly ? `3px solid ${C.warn}`
+                            : isEnabled && isConnected ? `3px solid ${C.accent}`
+                            : "3px solid transparent",
                   transition: "background 0.3s",
                 }}>
                   <td style={{ padding: "12px 14px" }}>
                     <div style={{ fontFamily: C.mono, fontSize: 16, fontWeight: 700,
                                   color: C.text }}>{token.pair}</div>
+                    {isConnected && (
+                      <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted, marginTop: 2 }}>
+                        port {ps.port ?? "—"}
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: "12px 14px", fontFamily: C.mono, fontSize: 15,
                                 color: C.text }}>
@@ -764,50 +1175,57 @@ function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, la
                       ? <>{token.competition_type}{!token.competition_type_confirmed && <span style={{ color: C.muted + "80" }}> *</span>}</>
                       : "—"}
                   </td>
+                  <td style={{ padding: "12px 14px", minWidth: 110 }}>
+                    {isConnected
+                      ? <ConfidenceBar value={ps.confidence ?? 0} />
+                      : <span style={{ fontFamily: C.mono, fontSize: 13, color: C.muted }}>—</span>}
+                  </td>
                   <td style={{ padding: "12px 14px" }}>
-                    <div style={{
-                      fontFamily: C.mono, fontSize: 14,
-                      color: !connected ? C.muted : capOk ? C.accent : C.danger,
-                    }}>
-                      {connected ? (capOk ? `$${POSITION_SIZE_USD} ✓` : `$${POSITION_SIZE_USD} ✗`) : "—"}
+                    <div style={{ fontFamily: C.mono, fontSize: 14,
+                                  color: isConnected ? C.purple : C.muted }}>
+                      {isConnected && (ps.kellySize ?? 0) > 0
+                        ? `$${(ps.kellySize ?? 0).toFixed(0)}`
+                        : "—"}
                     </div>
                   </td>
                   <td style={{ padding: "10px 12px" }}>
                     <button
-                      onClick={() => canToggle && handleToggle(token.pair)}
+                      onClick={() => canToggle && onToggle(token.pair)}
                       disabled={!canToggle}
-                      title={!connected ? "Connect APEX engine first"
-                           : !capOk ? "Daily cap exhausted"
-                           : isActive ? "Stop trading this token"
-                           : "Switch to this token"}
+                      title={!isConnected ? "Pair not connected"
+                           : isEnabled ? "Disable entries for this pair"
+                           : "Enable entries for this pair"}
                       style={{
                         display: "inline-flex", alignItems: "center", justifyContent: "center",
-                        gap: 8, width: 90, padding: "8px 0", borderRadius: 6, border: "none",
-                        background: isActive ? `${C.accent}20`
+                        gap: 8, width: 110, padding: "8px 0", borderRadius: 6, border: "none",
+                        background: isEnabled && isConnected ? `${C.accent}20`
                                   : canToggle ? `${C.purple}20`
                                   : "#27272a",
-                        color: isActive ? C.accent : canToggle ? C.purple : C.muted,
+                        color: isEnabled && isConnected ? C.accent
+                             : canToggle ? C.purple : C.muted,
                         fontFamily: C.mono, fontSize: 13, fontWeight: 700,
                         cursor: canToggle ? "pointer" : "not-allowed",
                         transition: "all 0.2s",
                       }}
                     >
-                      {/* Toggle switch — square style */}
                       <div style={{
                         width: 36, height: 20, borderRadius: 4, position: "relative",
-                        background: isActive ? C.accent : canToggle ? "#3f3f46" : "#27272a",
-                        border: `1px solid ${isActive ? C.accent : canToggle ? C.purple + "60" : C.border}`,
+                        background: isEnabled && isConnected ? C.accent
+                                  : canToggle ? "#3f3f46" : "#27272a",
+                        border: `1px solid ${isEnabled && isConnected ? C.accent
+                                            : canToggle ? C.purple + "60" : C.border}`,
                         transition: "all 0.2s", flexShrink: 0,
                       }}>
                         <div style={{
                           position: "absolute", top: 3,
-                          left: isActive ? 19 : 3,
+                          left: isEnabled && isConnected ? 19 : 3,
                           width: 12, height: 12, borderRadius: 2,
-                          background: isActive ? "#fff" : canToggle ? C.purple : C.muted,
+                          background: isEnabled && isConnected ? "#fff"
+                                    : canToggle ? C.purple : C.muted,
                           transition: "left 0.2s",
                         }} />
                       </div>
-                      {isActive ? "ON" : "OFF"}
+                      {isEnabled && isConnected ? "ENABLED" : "DISABLED"}
                     </button>
                   </td>
                 </tr>
@@ -817,50 +1235,15 @@ function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, la
         </table>
       </div>
 
-      {/* Position size lever (only for anomalous tokens) */}
-      {connected && tokens.filter(t => (t.anomaly_ratio ?? 0) >= 5).map(token => (
-        <div key={`lever-${token.pair}`} style={{
-          padding: 16, background: C.panel, borderRadius: 8,
-          border: `1px solid ${C.purple}30`, marginBottom: 8,
-        }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <span style={{ fontFamily: C.mono, fontSize: 12, fontWeight: 700,
-                           color: C.text }}>{token.pair} — position lever</span>
-            <span style={{ fontFamily: C.mono, fontSize: 11, color: C.muted }}>
-              ${levers[token.pair] ?? POSITION_SIZE_USD}/trade ·{" "}
-              ${((levers[token.pair] ?? POSITION_SIZE_USD) * 5 * 2).toLocaleString()}/day proj.
-            </span>
-          </div>
-          <input
-            type="range" min={300} max={3000} step={100}
-            value={levers[token.pair] ?? POSITION_SIZE_USD}
-            onChange={e => setLevers(l => ({ ...l, [token.pair]: Number(e.target.value) }))}
-            style={{ width: "100%", accentColor: C.purple, marginBottom: 6 }}
-          />
-          <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted }}>
-            Competition type:{" "}
-            <span style={{ color: C.warn }}>
-              {token.competition_type || "volume (inferred)"}
-              {!token.competition_type_confirmed ? " *" : ""}
-            </span>
-            {" — "}
-            <a href="https://www.kraken.com/promotions" target="_blank" rel="noopener noreferrer"
-               style={{ color: C.blue }}>verify on Kraken</a>
-          </div>
-        </div>
-      ))}
-
-      {/* Capital summary */}
-      {connected && (
+      {anyConnected && (
         <div style={{
-          display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10,
+          display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10,
           padding: 16, background: C.panel, borderRadius: 8, border: `1px solid ${C.border}`,
         }}>
           {[
-            ["Available", `$${capRemaining.toFixed(2)}`, capRemaining > 0 ? C.accent : C.danger],
-            ["Locked", enginePair ? `$${POSITION_SIZE_USD}` : "$0", C.text],
-            ["Daily Cap", `$${dailyCap.toFixed(0)}`, C.muted],
-            ["Used Today", `$${capUsed.toFixed(2)}`, capUsed > 0 ? C.danger : C.muted],
+            ["Net P&L", `${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`, totalPnl >= 0 ? C.accent : C.danger],
+            ["Kelly Alloc", totalKelly > 0 ? `$${totalKelly.toFixed(0)}` : "—", C.purple],
+            ["Trades", String(totalTrades), C.text],
           ].map(([l, v, color]) => (
             <div key={l} style={{ textAlign: "center" }}>
               <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted,
@@ -872,8 +1255,7 @@ function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, la
         </div>
       )}
 
-      {/* Offline seed note */}
-      {!connected && (
+      {!anyConnected && (
         <div style={{ fontFamily: C.mono, fontSize: 10, color: C.muted + "80",
                       textAlign: "center", marginTop: 12 }}>
           {tokens.length} seed pairs · volume data appears once APEX connects and scans
@@ -883,178 +1265,205 @@ function DiscoverView({ tokens, onStartEngine, onStop, enginePair, connected, la
   );
 }
 
-// ─── Competition Modal ────────────────────────────────────────────────────────
-
-function CompetitionModal({ alert, onStart, onDismiss }) {
-  if (!alert) return null;
-  return (
-    <div style={{
-      position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)",
-      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
-    }}>
-      <div style={{
-        background: C.panel, border: `1px solid ${C.purple}60`, borderRadius: 12,
-        padding: 28, maxWidth: 500, width: "90%",
-        boxShadow: `0 0 40px ${C.purple}20`,
-      }}>
-        <div style={{ fontFamily: C.mono, fontSize: 11, color: C.purple, marginBottom: 6,
-                      textTransform: "uppercase", letterSpacing: "0.1em" }}>
-          ⚡ Competition Detected
-        </div>
-        <div style={{ fontFamily: C.sans, fontSize: 22, fontWeight: 700, color: C.text,
-                      marginBottom: 16 }}>{alert.pair}</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10,
-                      marginBottom: 16 }}>
-          {[
-            ["24h Volume", `${(alert.volume / 1_000_000).toFixed(1)}M tokens`],
-            ["7d Baseline", `${(alert.baseline / 1_000_000).toFixed(1)}M tokens`],
-            ["Anomaly Ratio", `${alert.ratio?.toFixed(1)}× baseline`],
-            ["Competition Type", `${alert.competition_type || "unknown"}${!alert.competition_type_confirmed ? " (inferred)" : ""}`],
-          ].map(([l, v]) => (
-            <div key={l} style={{ padding: 10, background: C.bg, borderRadius: 8 }}>
-              <div style={{ fontFamily: C.mono, fontSize: 9, color: C.muted,
-                            textTransform: "uppercase", letterSpacing: "0.07em",
-                            marginBottom: 3 }}>{l}</div>
-              <div style={{ fontFamily: C.mono, fontSize: 13, color: C.text }}>{v}</div>
-            </div>
-          ))}
-        </div>
-        <div style={{ padding: "10px 12px", background: "#0f1923", borderRadius: 8,
-                      marginBottom: 16, fontFamily: C.mono, fontSize: 11, color: C.muted }}>
-          V3: $300 · limit orders · ATR ≥1.5% regime filter · momentum +3%/−1% · bounce +2%/−1.2% · trailing stop 1% from peak
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button
-            onClick={() => onStart(alert.pair)}
-            style={{
-              flex: 1, padding: "12px 0", borderRadius: 8, border: "none",
-              background: C.purple, color: C.text,
-              fontFamily: C.mono, fontSize: 13, fontWeight: 700, cursor: "pointer",
-              boxShadow: `0 0 20px ${C.purple}40`,
-            }}
-          >
-            Start APEX Engine
-          </button>
-          <button
-            onClick={() => onDismiss(alert.pair)}
-            style={{
-              padding: "12px 20px", borderRadius: 8,
-              border: `1px solid ${C.border}`, background: "transparent",
-              color: C.muted, fontFamily: C.mono, fontSize: 12, cursor: "pointer",
-            }}
-          >
-            Dismiss (2h)
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Root ─────────────────────────────────────────────────────────────────────
+
+function buildInitialPairState() {
+  const init = {};
+  SEED_PAIRS.forEach((pair, i) => {
+    init[pair] = {
+      port: APEX_WS_BASE + i,
+      connected: false,
+      enabled: true,
+      gates: null,
+      position: null,
+      midPrice: 0,
+      bars: [],
+      obi: 0,
+      engineState: "idle",
+      sessionStats: null,
+      trades: [],
+      spreadBps: 0,
+      confidence: 0,
+      kellySize: 0,
+      siblings: [],
+      candleInterval: 15,
+      gateHistory: [],
+    };
+  });
+  return init;
+}
 
 export default function MemeTab() {
   const [subView, setSubView] = useState("trading");
-  const [connected, setConnected] = useState(false);
-  const [engineState, setEngineState] = useState("idle");
-  const [enginePair, setEnginePair] = useState(null);
-  const [gates, setGates] = useState(null);
-  const [position, setPosition] = useState(null);
-  const [midPrice, setMidPrice] = useState(0);
-  const [spreadBps, setSpreadBps] = useState(0);
-  const [obi, setObi] = useState(0);
-  const [sessionStats, setSessionStats] = useState(null);
-  const [trades, setTrades] = useState([]);
+  const [selectedPair, setSelectedPair] = useState(SEED_PAIRS[0]);
+  const [pairStates, setPairStates] = useState(buildInitialPairState);
   const [tokens, setTokens] = useState(() => SEED_PAIRS.map(p => ({ pair: p })));
   const [scanInProgress, setScanInProgress] = useState(false);
-  const [bars, setBars] = useState([]);
   const [lastScanTs, setLastScanTs] = useState(null);
-  const [pendingAlert, setPendingAlert] = useState(null);
-  const wsRef = useRef(null);
-  const reconnectRef = useRef(null);
-  const connectRef = useRef(null);
+  const [sellAlerts, setSellAlerts] = useState({});
 
-  const portRef = useRef(null);
+  const wsRefs = useRef({});
+  const selectedPairRef = useRef(selectedPair);
+  useEffect(() => { selectedPairRef.current = selectedPair; }, [selectedPair]);
 
-  const onMessage = useCallback((evt) => {
+  const anyConnected = Object.values(pairStates).some(s => s.connected);
+  const connectedCount = Object.values(pairStates).filter(s => s.connected).length;
+
+  function updatePair(pair, updates) {
+    setPairStates(prev => ({
+      ...prev,
+      [pair]: { ...prev[pair], ...updates },
+    }));
+  }
+
+  const handlePairMessage = useCallback((pair, evt) => {
     try {
       const msg = JSON.parse(evt.data);
       switch (msg.type) {
         case "initial_state":
-          setEngineState(msg.engine_state ?? "idle");
-          if (msg.pair) setEnginePair(msg.pair);
-          setPosition(msg.position ?? null);
-          setTrades(msg.trades ?? []);
-          if (msg.session_pnl != null || msg.trade_count != null) {
-            setSessionStats({
-              session_pnl: msg.session_pnl ?? 0,
-              daily_loss: msg.daily_loss ?? 0,
-              trade_count: msg.trade_count ?? 0,
-              win_rate: msg.win_rate ?? 0,
+          updatePair(pair, {
+            engineState: msg.engine_state ?? "idle",
+            position: msg.position ?? null,
+            trades: msg.trades ?? [],
+            enabled: msg.enabled !== undefined ? msg.enabled : true,
+            candleInterval: msg.candle_interval ?? 15,
+            ...(msg.session_pnl != null || msg.trade_count != null ? {
+              sessionStats: {
+                session_pnl: msg.session_pnl ?? 0,
+                daily_loss: msg.daily_loss ?? 0,
+                trade_count: msg.trade_count ?? 0,
+                win_rate: msg.win_rate ?? 0,
+              }
+            } : {}),
+          });
+          break;
+        case "warmup_progress":
+          break;
+        case "candle_history":
+          updatePair(pair, { bars: msg.bars ?? [] });
+          break;
+        case "bar_update":
+          if (msg.bar) {
+            setPairStates(prev => {
+              const ps = prev[pair];
+              const deduped = ps.bars.filter(b => b.ts !== msg.bar.ts);
+              return { ...prev, [pair]: { ...ps, bars: [...deduped, msg.bar].slice(-100) } };
             });
           }
           break;
-        case "warmup_progress":
-          setEngineState("warmup");
-          break;
-        case "candle_history":
-          setBars(msg.bars ?? []);
-          break;
-        case "bar_update":
-          if (msg.bar) setBars(prev => {
-            const deduped = prev.filter(b => b.ts !== msg.bar.ts);
-            return [...deduped, msg.bar].slice(-100);
+        case "ticker":
+          setPairStates(prev => {
+            const ps = prev[pair];
+            const gateUpdates = msg.btc_risk_off !== undefined && ps.gates ? {
+              gates: {
+                ...ps.gates,
+                btc_risk_off: msg.btc_risk_off,
+                ...(msg.btc_rsi != null ? { btc_rsi: msg.btc_rsi } : {}),
+                ...(msg.btc_1h_chg != null ? { btc_1h_chg: msg.btc_1h_chg } : {}),
+              }
+            } : {};
+            return { ...prev, [pair]: {
+              ...ps,
+              midPrice: msg.price ?? ps.midPrice,
+              obi: msg.obi ?? ps.obi,
+              spreadBps: msg.spread_bps ?? ps.spreadBps,
+              ...gateUpdates,
+            }};
           });
           break;
-        case "ticker":
-          setMidPrice(msg.price ?? 0);
-          setObi(msg.obi ?? 0);
-          setSpreadBps(msg.spread_bps ?? 0);
-          break;
         case "signal_state":
-          setGates(msg.gates);
-          setEngineState("running");
-          if (msg.gates?.all_pass) setSubView("trading");
+          setPairStates(prev => {
+            const ps = prev[pair];
+            const g = msg.gates ?? {};
+            const passing = countPassingGates(g);
+            const snap = {
+              ts: Date.now() / 1000,
+              passing,
+              allPass: !!g.all_pass,
+              rsi: g.rsi_value ?? null,
+              atrPct: g.atr_pct ?? null,
+              confidence: g.confidence ?? 0,
+            };
+            const history = [...ps.gateHistory, snap].slice(-100);
+            return { ...prev, [pair]: {
+              ...ps,
+              gates: msg.gates,
+              engineState: "running",
+              confidence: g.confidence ?? 0,
+              kellySize: g.kelly_size ?? 0,
+              enabled: g.enabled !== undefined ? g.enabled : ps.enabled,
+              siblings: msg.siblings ?? [],
+              gateHistory: history,
+            }};
+          });
+          if (msg.gates?.all_pass && selectedPairRef.current === pair) setSubView("trading");
+          break;
+        case "pair_enabled":
+          updatePair(pair, { enabled: msg.enabled !== undefined ? msg.enabled : true });
           break;
         case "position_update":
-          setMidPrice(msg.price ?? 0);
-          setObi(msg.obi ?? 0);
-          setSpreadBps(msg.spread_bps ?? 0);
-          if (msg.entry && typeof msg.entry === "object") {
-            setPosition(p => p ? { ...p, ...msg.entry } : msg.entry);
-          }
+          setPairStates(prev => {
+            const ps = prev[pair];
+            const entryUpdate = msg.entry && typeof msg.entry === "object"
+              ? { position: ps.position ? { ...ps.position, ...msg.entry } : msg.entry }
+              : {};
+            return { ...prev, [pair]: {
+              ...ps,
+              midPrice: msg.price ?? ps.midPrice,
+              obi: msg.obi ?? ps.obi,
+              spreadBps: msg.spread_bps ?? ps.spreadBps,
+              ...entryUpdate,
+            }};
+          });
           break;
         case "order_placed":
           if (msg.side === "buy") {
-            setPosition({ entry_price: msg.price, qty: msg.qty,
-                          notional_usd: POSITION_SIZE_USD,
-                          entry_ts: Date.now() / 1000, candles_held: 0,
-                          entry_mode: msg.entry_mode ?? "momentum",
-                          peak_price: msg.price });
-            setSubView("trading");
+            updatePair(pair, {
+              position: {
+                entry_price: msg.price,
+                qty: msg.qty,
+                entry_ts: Date.now() / 1000,
+                candles_held: 0,
+                entry_mode: msg.entry_mode ?? "momentum",
+                peak_price: msg.price,
+              },
+            });
+            if (selectedPairRef.current === pair) setSubView("trading");
           }
           break;
         case "trade_closed":
-          setPosition(null);
-          setTrades(prev => [...prev, {
-            ...msg,
-            entry_price: msg.entry_price ?? msg.entry,
-            exit_price: msg.exit_price ?? msg.exit,
-          }]);
+          setPairStates(prev => {
+            const ps = prev[pair];
+            return { ...prev, [pair]: {
+              ...ps,
+              position: null,
+              trades: [...ps.trades, {
+                ...msg,
+                entry_price: msg.entry_price ?? msg.entry,
+                exit_price: msg.exit_price ?? msg.exit,
+                entry_ts: msg.entry_ts ?? ps.position?.entry_ts,
+                exit_ts: msg.exit_ts ?? Date.now() / 1000,
+              }],
+            }};
+          });
+          setSellAlerts(prev => { const n = { ...prev }; delete n[pair]; return n; });
           break;
         case "session_stats":
-          setSessionStats(msg);
+          updatePair(pair, { sessionStats: msg });
           break;
         case "engine_halted":
-          setEngineState("halted");
-          setPosition(null);
+          updatePair(pair, { engineState: "halted", position: null });
           break;
         case "engine_state":
-          setEngineState(msg.state ?? "idle");
-          if (msg.pair !== undefined) setEnginePair(msg.pair);
+          updatePair(pair, { engineState: msg.state ?? "idle" });
           break;
-        case "competition_alert":
-          setPendingAlert(msg);
+        case "sell_failed":
+          setSellAlerts(prev => ({ ...prev, [pair]: { level: "retry", reason: msg.reason,
+                                                       pair: msg.pair, retry: msg.retry } }));
+          break;
+        case "sell_abandoned":
+          setSellAlerts(prev => ({ ...prev, [pair]: { level: "abandoned", reason: msg.reason,
+                                                       pair: msg.pair, retries: msg.retries } }));
           break;
         case "scan_started":
           setScanInProgress(true);
@@ -1081,81 +1490,63 @@ export default function MemeTab() {
           break;
       }
     } catch (e) {
-      console.error("[APEX] parse error", e);
+      console.error(`[APEX][${pair}] parse error`, e);
     }
   }, []);
 
-  const tryPort = useCallback((port) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-    const timeout = setTimeout(() => { ws.close(); }, 2000);
-    ws.onopen = () => {
-      clearTimeout(timeout);
-      wsRef.current = ws;
-      portRef.current = port;
-      setConnected(true);
-      ws.onclose = () => {
-        setConnected(false);
-        wsRef.current = null;
-        reconnectRef.current = setTimeout(() => connectRef.current?.(), 3000);
-      };
-      ws.onmessage = onMessage;
-    };
-    ws.onerror = () => {
-      clearTimeout(timeout);
-      ws.close();
-      const next = port + 1;
-      if (next < APEX_WS_BASE + APEX_WS_RANGE) {
-        setTimeout(() => tryPort(next), 100);
-      } else {
-        reconnectRef.current = setTimeout(() => connectRef.current?.(), 5000);
-      }
-    };
-  }, [onMessage]);
-
   useEffect(() => {
-    const doConnect = () => tryPort(APEX_WS_BASE);
-    connectRef.current = doConnect;
-    doConnect();
+    const reconnectTimers = {};
+
+    function connect(pair, port) {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      ws.onopen = () => {
+        wsRefs.current[pair] = ws;
+        updatePair(pair, { connected: true });
+      };
+      ws.onclose = () => {
+        if (wsRefs.current[pair] === ws) {
+          wsRefs.current[pair] = null;
+        }
+        updatePair(pair, { connected: false });
+        reconnectTimers[pair] = setTimeout(() => connect(pair, port), 3000);
+      };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (evt) => handlePairMessage(pair, evt);
+    }
+
+    SEED_PAIRS.forEach((pair, idx) => {
+      connect(pair, APEX_WS_BASE + idx);
+    });
+
     return () => {
-      clearTimeout(reconnectRef.current);
-      wsRef.current?.close();
-      wsRef.current = null;
+      Object.values(reconnectTimers).forEach(t => clearTimeout(t));
+      Object.values(wsRefs.current).forEach(ws => ws?.close());
+      wsRefs.current = {};
     };
-  }, [tryPort]);
+  }, [handlePairMessage]);
 
-  function handleStartEngine(pair) {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "switch_pair", pair }));
-    }
-    setPendingAlert(null);
-    setEnginePair(pair);
-    setEngineState("warmup");
-    setBars([]);
-    setGates(null);
-    setSubView("trading");
-  }
-
-  function handleStop() {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "stop_engine" }));
-    }
-    setEngineState("idle");
-    setEnginePair(null);
-    setPosition(null);
-    setBars([]);
-    setGates(null);
-  }
-
-  function handleDismiss(pair) {
-    setPendingAlert(null);
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "dismiss_alert", pair }));
+  function handleToggle(pair) {
+    const ws = wsRefs.current[pair];
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const currentlyEnabled = pairStates[pair]?.enabled ?? true;
+    if (currentlyEnabled) {
+      ws.send(JSON.stringify({ type: "disable_pair" }));
+      updatePair(pair, { enabled: false });
+    } else {
+      ws.send(JSON.stringify({ type: "enable_pair" }));
+      updatePair(pair, { enabled: true });
     }
   }
 
-  const tradingState = { gates, position, midPrice, obi, engineState,
-                          sessionStats, trades, bars, spreadBps };
+  function handleDisable(pair) {
+    const ws = wsRefs.current[pair];
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "disable_pair" }));
+    }
+    updatePair(pair, { enabled: false });
+  }
+
+  const selectedState = pairStates[selectedPair] ?? buildInitialPairState()[SEED_PAIRS[0]];
 
   return (
     <div style={{ padding: "16px 12px", background: C.bg, minHeight: "100%" }}>
@@ -1181,44 +1572,101 @@ export default function MemeTab() {
                       paddingBottom: 8 }}>
           <div style={{
             width: 7, height: 7, borderRadius: "50%",
-            background: connected ? C.accent : C.danger,
-            boxShadow: connected ? `0 0 6px ${C.accent}` : "none",
+            background: anyConnected ? C.accent : C.danger,
+            boxShadow: anyConnected ? `0 0 6px ${C.accent}` : "none",
           }} />
           <span style={{ fontFamily: C.mono, fontSize: 10, color: C.muted }}>
-            {connected ? `APEX ${enginePair ? `· ${enginePair}` : "· idle"}` : "disconnected"}
+            {anyConnected ? `APEX · ${connectedCount}/${SEED_PAIRS.length} pairs` : "disconnected"}
           </span>
         </div>
       </div>
 
+      {/* Sell alerts */}
+      {Object.entries(sellAlerts).map(([pair, alert]) => (
+        <div key={pair} style={{
+          padding: "10px 16px", marginBottom: 8, borderRadius: 8,
+          background: alert.level === "abandoned" ? `${C.danger}20` : `${C.warn}20`,
+          border: `1px solid ${alert.level === "abandoned" ? C.danger : C.warn}60`,
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+        }}>
+          <span style={{ fontFamily: C.mono, fontSize: 12,
+                         color: alert.level === "abandoned" ? C.danger : C.warn }}>
+            {alert.level === "abandoned"
+              ? `SELL ABANDONED after ${alert.retries} retries — close ${alert.pair} manually`
+              : `Sell retry ${alert.retry} — ${alert.reason} (${pair})`}
+          </span>
+          <button onClick={() => setSellAlerts(prev => { const n = { ...prev }; delete n[pair]; return n; })}
+                  style={{ background: "transparent", border: "none", color: C.muted,
+                           cursor: "pointer", fontSize: 14 }}>✕</button>
+        </div>
+      ))}
+
       {subView === "trading" && (
-        <TradingView
-          state={tradingState}
-          dailyCap={APEX_DAILY_CAP_USD}
-          connected={connected}
-          pair={enginePair}
-          onStop={handleStop}
-        />
+        <div>
+          {/* Pair selector chips */}
+          <div style={{
+            display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap",
+          }}>
+            {SEED_PAIRS.map(pair => {
+              const ps = pairStates[pair];
+              const isSelected = selectedPair === pair;
+              const conf = ps?.confidence ?? 0;
+              const confColor = conf >= 0.7 ? C.accent : conf >= 0.5 ? C.warn : C.muted;
+              return (
+                <button
+                  key={pair}
+                  onClick={() => setSelectedPair(pair)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "7px 14px", borderRadius: 8,
+                    border: `1px solid ${isSelected ? C.purple : C.border}`,
+                    background: isSelected ? `${C.purple}20` : C.panel,
+                    cursor: "pointer", transition: "all 0.2s",
+                  }}
+                >
+                  <div style={{
+                    width: 6, height: 6, borderRadius: "50%",
+                    background: ps?.connected ? (ps.enabled ? C.accent : C.warn) : C.danger,
+                    flexShrink: 0,
+                  }} />
+                  <span style={{ fontFamily: C.mono, fontSize: 13, fontWeight: 700,
+                                 color: isSelected ? C.purple : C.text }}>{pair}</span>
+                  {ps?.connected && conf > 0 && (
+                    <span style={{ fontFamily: C.mono, fontSize: 10, color: confColor }}>
+                      {(conf * 100).toFixed(0)}%
+                    </span>
+                  )}
+                  {ps?.position && (
+                    <span style={{ fontFamily: C.mono, fontSize: 9, color: C.purple,
+                                   background: `${C.purple}20`, padding: "1px 5px",
+                                   borderRadius: 3 }}>POS</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <TradingView
+            state={selectedState}
+            connected={selectedState.connected}
+            pair={selectedPair}
+            onDisable={() => handleDisable(selectedPair)}
+            candleInterval={selectedState.candleInterval}
+          />
+        </div>
       )}
+
       {subView === "discover" && (
         <DiscoverView
           tokens={tokens}
-          onStartEngine={handleStartEngine}
-          onStop={handleStop}
-          enginePair={enginePair}
-          connected={connected}
+          pairStates={pairStates}
+          onToggle={handleToggle}
+          anyConnected={anyConnected}
           lastScanTs={lastScanTs}
-          wsRef={wsRef}
-          sessionStats={sessionStats}
-          dailyCap={APEX_DAILY_CAP_USD}
+          wsRefs={wsRefs}
           scanInProgress={scanInProgress}
         />
       )}
-
-      <CompetitionModal
-        alert={pendingAlert}
-        onStart={handleStartEngine}
-        onDismiss={handleDismiss}
-      />
     </div>
   );
 }

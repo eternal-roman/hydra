@@ -11,6 +11,8 @@ from hydra_meme_agent import (
     CandleBar, wilder_rsi, vol_ema, compute_obi, compute_vwap,
     TradeRecord, Position, MemeExecutor, _query_fill, _cancel_order,
     TAKER_SLIPPAGE_BPS, SLIPPAGE_CAP_BPS, RSI_PERIOD, SELL_MAX_RETRIES,
+    half_kelly_size, KELLY_DEFAULT_WIN_RATE, KELLY_DEFAULT_PAYOFF,
+    KELLY_MIN_FRACTION, KELLY_MAX_FRACTION, BASE_CAPITAL,
 )
 
 
@@ -118,15 +120,11 @@ def _warmed_engine(n_bars=15, close=1.0, volume=1000.0, flat=False):
     return eng
 
 
-def test_signal_engine_warmup_not_ready():
+def test_signal_engine_always_hot():
     eng = SignalEngine()
-    for i in range(14):
+    assert eng.is_warmed_up()
+    for i in range(5):
         eng.add_bar(_make_bar(ts=i * 300))
-    assert not eng.is_warmed_up()
-
-
-def test_signal_engine_warmed_after_15():
-    eng = _warmed_engine(n_bars=15)
     assert eng.is_warmed_up()
 
 
@@ -236,7 +234,7 @@ def test_exit_hard_stop():
     eng = _warmed_engine()
     pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
                    entry_ts=0, candles_held=1)
-    result = eng.evaluate_exit_intracandle(pos, mid_price=0.989, obi=0.1)
+    result = eng.evaluate_exit_intracandle(pos, mid_price=0.985, obi=0.1)
     assert result == "hard_stop"
 
 
@@ -259,7 +257,7 @@ def test_exit_no_trigger_intracandle():
 def test_exit_time_stop():
     eng = _warmed_engine(flat=True)
     pos = Position(entry_price=1.00, qty=600.0, notional_usd=600.0,
-                   entry_ts=0, candles_held=3)
+                   entry_ts=0, candles_held=12)
     bar = _make_bar(close=1.01, volume=1000.0)
     result = eng.evaluate_exit_bar(pos, bar)
     assert result == "time_stop"
@@ -280,8 +278,13 @@ def test_exit_rsi_exhaust():
 def test_exit_volume_death():
     eng = _warmed_engine(volume=1000.0, flat=True)
     pos = Position(entry_price=1.00, qty=600.0, notional_usd=600.0,
-                   entry_ts=0, candles_held=1)
-    dead_bar = _make_bar(close=1.01, volume=200.0)  # 0.2x baseline
+                   entry_ts=0, candles_held=6)  # volume death requires 6+ bars held
+    dead_bar = _make_bar(close=1.00, volume=200.0)  # 0.2x baseline, flat PnL
+    # First low-vol bar increments counter but doesn't trigger
+    result = eng.evaluate_exit_bar(pos, dead_bar)
+    assert result is None
+    assert pos.low_vol_bars == 1
+    # Second consecutive low-vol bar triggers volume_death
     result = eng.evaluate_exit_bar(pos, dead_bar)
     assert result == "volume_death"
 
@@ -293,6 +296,151 @@ def test_exit_no_trigger_bar():
     normal_bar = _make_bar(close=1.01, volume=1000.0)
     result = eng.evaluate_exit_bar(pos, normal_bar)
     assert result is None
+
+
+def test_volume_death_counter_resets_on_normal_bar():
+    eng = _warmed_engine(volume=1000.0, flat=True)
+    pos = Position(entry_price=1.00, qty=600.0, notional_usd=600.0,
+                   entry_ts=0, candles_held=6)
+    dead_bar = _make_bar(close=1.00, volume=200.0)  # flat PnL avoids stale_profit
+    normal_bar = _make_bar(close=1.00, volume=1000.0)
+    # One low-vol bar
+    eng.evaluate_exit_bar(pos, dead_bar)
+    assert pos.low_vol_bars == 1
+    # Normal bar resets counter
+    eng.evaluate_exit_bar(pos, normal_bar)
+    assert pos.low_vol_bars == 0
+    # Need 2 fresh consecutive low-vol bars to trigger
+    eng.evaluate_exit_bar(pos, dead_bar)
+    assert pos.low_vol_bars == 1
+    result = eng.evaluate_exit_bar(pos, dead_bar)
+    assert result == "volume_death"
+
+
+# ─── Falling Knife / Stale Profit / BTC Regime Tests ─────────────────────────
+
+from hydra_meme_agent import PairProfile, BtcRegimeMonitor
+
+
+def test_bounce_reversal_blocks_falling_knife():
+    """Bounce entry must not fire when latest bar closes BELOW prior bar (still falling).
+
+    Runtime flow: bar is added to engine BEFORE evaluate_entry_gates.
+    """
+    profile = PairProfile(bounce_reversal_required=True)
+    eng = SignalEngine(profile)
+    for i in range(19):
+        eng.add_bar(_make_bar(close=1.0 - i * 0.02, volume=1000.0, ts=i * 300))
+    # Add a still-falling bar (close < prior close)
+    falling_bar = _make_bar(close=0.55, volume=3000.0, ts=19 * 300)
+    eng.add_bar(falling_bar)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=falling_bar,
+        obi=0.25,
+        ask_wall_usd=100.0,
+    )
+    assert gates["bounce_reversal"] is False
+    assert gates["entry_mode"] == "none"
+
+
+def test_bounce_reversal_allows_confirmed_uptick():
+    """Bounce entry fires when latest bar closes ABOVE prior bar (reversal confirmed).
+
+    Runtime flow: bar is added to engine BEFORE evaluate_entry_gates is called,
+    so self._bars[-1] = latest_bar and self._bars[-2] = prior bar.
+    """
+    profile = PairProfile(
+        bounce_reversal_required=True,
+        bounce_rsi_threshold=30,
+        bounce_vol_spike_mult=1.5,
+        bounce_max_ema50_dist=-0.50,
+        atr_min_pct=0.0,
+    )
+    eng = SignalEngine(profile)
+    for i in range(19):
+        eng.add_bar(_make_bar(close=1.0 - i * 0.015, volume=1000.0, ts=i * 300))
+    # Add the reversal bar to the engine (matching runtime flow)
+    prev_close = eng._bars[-1].close
+    reversal_bar = _make_bar(close=prev_close + 0.01, volume=2000.0, ts=19 * 300)
+    eng.add_bar(reversal_bar)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=reversal_bar,
+        obi=0.25,
+        ask_wall_usd=100.0,
+    )
+    assert gates["bounce_reversal"] is True
+
+
+def test_momentum_blocks_consecutive_red_bars():
+    """Momentum entry should not fire when the last N bars are all red (close < open)."""
+    profile = PairProfile(momentum_max_red_bars=3, atr_min_pct=0.0)
+    eng = SignalEngine(profile)
+    # Bars with close < open (red) but mild uptrend so RSI stays in range
+    for i in range(20):
+        bar = CandleBar(ts=i * 300, open=1.0 + i * 0.001 + 0.003,
+                        high=1.0 + i * 0.001 + 0.005,
+                        low=1.0 + i * 0.001 - 0.002,
+                        close=1.0 + i * 0.001,
+                        vwap=1.0 + i * 0.001, volume=1000.0, count=10)
+        eng.add_bar(bar)
+    # Add another red bar (matching runtime flow)
+    red_bar = CandleBar(ts=20 * 300, open=1.025, high=1.027,
+                        low=1.018, close=1.021, vwap=1.021, volume=2000.0, count=10)
+    eng.add_bar(red_bar)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=red_bar,
+        obi=0.25,
+        ask_wall_usd=100.0,
+    )
+    assert gates["not_bleeding"] is False
+
+
+def test_stale_profit_exits_stuck_position():
+    """Position in profit but below trailing activation should exit after N bars."""
+    profile = PairProfile(
+        stale_profit_bars=4,
+        stale_profit_min_pct=0.005,
+        trailing_activate_pct=0.015,
+        time_stop_candles=20,
+        rsi_exhaust=99,
+        bounce_rsi_exit=99,
+    )
+    eng = SignalEngine(profile)
+    for i in range(20):
+        eng.add_bar(_make_bar(close=1.0, volume=1000.0, ts=i * 300))
+    pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
+                   entry_ts=0, candles_held=5, peak_price=1.008)
+    bar = _make_bar(close=1.007, volume=1000.0)
+    result = eng.evaluate_exit_bar(pos, bar)
+    assert result == "stale_profit"
+
+
+def test_stale_profit_does_not_fire_when_trailing_active():
+    """Stale profit should NOT fire if peak was high enough for trailing stop."""
+    profile = PairProfile(
+        stale_profit_bars=4,
+        stale_profit_min_pct=0.005,
+        trailing_activate_pct=0.015,
+        time_stop_candles=20,
+        rsi_exhaust=99,
+        bounce_rsi_exit=99,
+    )
+    eng = SignalEngine(profile)
+    for i in range(20):
+        eng.add_bar(_make_bar(close=1.0, volume=1000.0, ts=i * 300))
+    pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
+                   entry_ts=0, candles_held=5, peak_price=1.020)
+    bar = _make_bar(close=1.008, volume=1000.0)
+    result = eng.evaluate_exit_bar(pos, bar)
+    assert result != "stale_profit"
+
+
+def test_btc_regime_monitor_init():
+    """BTC monitor starts with risk_off=False."""
+    mon = BtcRegimeMonitor()
+    assert mon.is_risk_off is False
+    assert mon.btc_rsi == 50.0
+    assert mon.btc_1h_change == 0.0
 
 
 # ─── Competition Detector Tests ────────────────────────────────────────────────
@@ -314,18 +462,18 @@ def test_competition_detector_anomaly_detection():
         path = os.path.join(d, "watchlist.json")
         detector = CompetitionDetector(path)
         # Manually set a baseline
-        detector._set_baseline("PLAY/USD", 3_200_000)
+        detector._set_baseline("NIGHT/USD", 3_200_000)
         # Volume 6x baseline → anomaly
-        assert detector._is_anomaly("PLAY/USD", 19_200_000) is True
+        assert detector._is_anomaly("NIGHT/USD", 19_200_000) is True
 
 
 def test_competition_detector_no_anomaly_below_threshold():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "watchlist.json")
         detector = CompetitionDetector(path)
-        detector._set_baseline("PLAY/USD", 3_200_000)
+        detector._set_baseline("NIGHT/USD", 3_200_000)
         # 4x — below 5x threshold
-        assert detector._is_anomaly("PLAY/USD", 12_800_000) is False
+        assert detector._is_anomaly("NIGHT/USD", 12_800_000) is False
 
 
 def test_competition_detector_null_baseline_not_anomaly():
@@ -340,9 +488,9 @@ def test_competition_detector_ema_update():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "watchlist.json")
         detector = CompetitionDetector(path)
-        detector._set_baseline("PLAY/USD", 3_200_000)
-        detector._update_baseline("PLAY/USD", 3_200_000)
-        updated = detector._get_baseline("PLAY/USD")
+        detector._set_baseline("NIGHT/USD", 3_200_000)
+        detector._update_baseline("NIGHT/USD", 3_200_000)
+        updated = detector._get_baseline("NIGHT/USD")
         # EMA with alpha=1/7: new = (1/7)*3.2M + (6/7)*3.2M = 3.2M (stable)
         assert abs(updated - 3_200_000) < 1000
 
@@ -425,20 +573,20 @@ def test_competition_detector_alert_suppression():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "watchlist.json")
         detector = CompetitionDetector(path)
-        detector._set_baseline("PLAY/USD", 3_200_000)
+        detector._set_baseline("NIGHT/USD", 3_200_000)
         # Suppress for 2 hours
         future = time.time() + 7200
-        detector._suppress("PLAY/USD", until=future)
-        assert detector._is_suppressed("PLAY/USD") is True
+        detector._suppress("NIGHT/USD", until=future)
+        assert detector._is_suppressed("NIGHT/USD") is True
 
 
 def test_competition_detector_suppression_expired():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "watchlist.json")
         detector = CompetitionDetector(path)
-        detector._set_baseline("PLAY/USD", 3_200_000)
-        detector._suppress("PLAY/USD", until=time.time() - 1)
-        assert detector._is_suppressed("PLAY/USD") is False
+        detector._set_baseline("NIGHT/USD", 3_200_000)
+        detector._suppress("NIGHT/USD", until=time.time() - 1)
+        assert detector._is_suppressed("NIGHT/USD") is False
 
 
 # ─── Session State & Persistence Tests ────────────────────────────────────────
@@ -449,12 +597,12 @@ from hydra_meme_agent import SessionState, save_session, append_journal
 def test_save_and_load_session():
     with tempfile.TemporaryDirectory() as d:
         path = _os.path.join(d, "session.json")
-        state = SessionState(pair="PLAY/USD", engine_state="running",
+        state = SessionState(pair="NIGHT/USD", engine_state="running",
                              session_pnl=10.20, daily_pnl=10.20, trade_count=2)
         save_session(state, path)
         with open(path) as f:
             data = _json.load(f)
-        assert data["pair"] == "PLAY/USD"
+        assert data["pair"] == "NIGHT/USD"
         assert data["session_pnl"] == 10.20
         assert data["trade_count"] == 2
 
@@ -484,7 +632,7 @@ from hydra_meme_agent import MemeExecutor
 
 
 def test_executor_buy_price_calculation():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     ask = 0.16540
     expected_limit = ask * (1 + TAKER_SLIPPAGE_BPS / 10000)
     price = exec_._buy_limit_price(ask)
@@ -492,14 +640,14 @@ def test_executor_buy_price_calculation():
 
 
 def test_executor_buy_rejects_above_slippage_cap():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     ask = 0.16540
     price = exec_._buy_limit_price(ask)
     assert price <= ask * (1 + SLIPPAGE_CAP_BPS / 10000)
 
 
 def test_executor_sell_price_calculation():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     bid = 0.16520
     price = exec_._sell_limit_price(bid)
     expected = bid * (1 - TAKER_SLIPPAGE_BPS / 10000)
@@ -507,38 +655,38 @@ def test_executor_sell_price_calculation():
 
 
 def test_executor_qty_calculation():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     ask = 0.16540
     qty = exec_._buy_qty(ask)
     assert abs(qty * ask - 600.0) < 0.01
 
 
 def test_executor_daily_cap_blocks_trade():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     exec_._daily_loss = -30.01  # already hit cap
     assert exec_.is_halted() is True
 
 
 def test_executor_not_halted_initially():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     assert exec_.is_halted() is False
 
 
 def test_executor_record_loss_triggers_halt():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     exec_.record_pnl(-31.0)
     assert exec_.is_halted() is True
 
 
 def test_executor_record_pnl_accumulates():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     exec_.record_pnl(10.20)
     exec_.record_pnl(-5.00)
     assert abs(exec_._daily_pnl - 5.20) < 0.001
 
 
 def test_executor_net_pnl_calculation():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     # BUY at 0.16000, SELL at 0.16400 (2.5% move)
     pos = Position(entry_price=0.16000, qty=3750.0, notional_usd=600.0,
                    entry_ts=1000, candles_held=2)
@@ -553,12 +701,12 @@ def test_executor_net_pnl_calculation():
 def test_executor_daily_cap_zero_raises():
     import pytest
     with pytest.raises(ValueError, match="daily_cap must be positive"):
-        MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=0.0)
+        MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=0.0)
 
 
 def test_executor_slippage_cap_blocks_buy_when_spread_too_wide():
     """place_buy returns None when limit_price deviates > SLIPPAGE_CAP_BPS from mid."""
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     ask = 0.18000
     # Simulate a mid-price well below ask — spread is huge
     mid = 0.16000  # (limit = ask*1.0005 ≈ 0.1801, deviation from mid ≈ 125 bps)
@@ -570,7 +718,7 @@ def test_executor_slippage_cap_allows_buy_tight_spread():
     """place_buy proceeds when spread is within SLIPPAGE_CAP_BPS.
     With bid=0.16537 and ask=0.16540 (2-bps spread), limit = ask*1.0005 ≈ 6 bps from mid.
     """
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     ask = 0.16540
     bid = 0.16537   # 2-bps spread — typical for liquid token
     mid = (bid + ask) / 2
@@ -624,7 +772,7 @@ def test_compute_obi_string_inputs():
 def test_executor_win_rate_no_div_zero():
     """session_stats win_rate calculation should not divide by zero."""
     from hydra_meme_agent import MemeExecutor
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     trade_log = []
     win_rate = sum(1 for t in trade_log if t.net_pnl > 0) / max(len(trade_log), 1)
     assert win_rate == 0.0
@@ -688,7 +836,7 @@ def test_cancel_order_calls_cli():
 # ─── Fill-Verified Executor Tests ─────────────────────────────────────────────
 
 def test_place_buy_uses_actual_fill_price():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     order_response = {"txid": ["BUY001"]}
     fill_response = {"status": "filled", "avg_price": 0.16500, "vol_exec": 3636.36}
     with patch("hydra_meme_agent._kraken_cli", return_value=order_response), \
@@ -700,7 +848,7 @@ def test_place_buy_uses_actual_fill_price():
 
 
 def test_place_buy_falls_back_to_limit_on_fill_failure():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     order_response = {"txid": ["BUY002"]}
     with patch("hydra_meme_agent._kraken_cli", return_value=order_response), \
          patch("hydra_meme_agent._query_fill", return_value=None):
@@ -710,7 +858,7 @@ def test_place_buy_falls_back_to_limit_on_fill_failure():
 
 
 def test_place_sell_uses_actual_fill_price():
-    exec_ = MemeExecutor("PLAY/USD", position_size=600.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=600.0, daily_cap=30.0)
     pos = Position(entry_price=0.16000, qty=3750.0, notional_usd=600.0,
                    entry_ts=1000, candles_held=2)
     order_response = {"txid": ["SELL001"]}
@@ -746,7 +894,7 @@ def test_reentry_cooldown_blocks_immediate_reentry():
 
 def test_executor_daily_reset():
     """Daily loss and halt state reset when the day changes."""
-    exec_ = MemeExecutor("PLAY/USD", position_size=300.0, daily_cap=30.0)
+    exec_ = MemeExecutor("NIGHT/USD", position_size=300.0, daily_cap=30.0)
     exec_.record_pnl(-31.0)
     assert exec_.is_halted() is True
     # Should NOT reset if same day
@@ -767,7 +915,7 @@ def test_load_session_detects_orphaned_position():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "session.json")
         state = SessionState(
-            pair="PLAY/USD",
+            pair="NIGHT/USD",
             engine_state="running",
             open_position={"entry_price": 0.16, "qty": 1875.0,
                            "notional_usd": 300.0, "entry_ts": 1000,
@@ -797,10 +945,10 @@ def test_load_session_returns_none_for_corrupt_file():
 
 
 def test_risk_reward_ratio():
-    """R:R must be at least 1:2 to overcome fee drag."""
+    """R:R must be at least 1.5:1 — asymmetric for tight-stop + trail strategy."""
     from hydra_meme_agent import PROFIT_TARGET_PCT, HARD_STOP_PCT
     rr_ratio = abs(PROFIT_TARGET_PCT / HARD_STOP_PCT)
-    assert rr_ratio >= 2.0, f"R:R ratio {rr_ratio:.1f} is too low for fee drag"
+    assert rr_ratio >= 1.5, f"R:R ratio {rr_ratio:.2f} is too low"
 
 
 def test_maker_fee_rate():
@@ -811,16 +959,16 @@ def test_maker_fee_rate():
 
 
 def test_extension_guard_tighter():
-    """Extension guard should block at 10% (tighter than v2's 20%)."""
+    """Extension guard should block at 8% (tight for 15-min regime)."""
     from hydra_meme_agent import EXTENSION_MAX_PCT
-    assert EXTENSION_MAX_PCT == 0.10
+    assert EXTENSION_MAX_PCT == 0.08
 
 
 def test_trailing_stop_constants():
-    """Trailing stop activates at 1.5% gain, trails 1.0% below peak."""
+    """Trailing stop activates at 0.8% gain, trails 0.5% below peak — early lock."""
     from hydra_meme_agent import TRAILING_ACTIVATE_PCT, TRAILING_OFFSET_PCT
-    assert TRAILING_ACTIVATE_PCT == 0.015
-    assert TRAILING_OFFSET_PCT == 0.010
+    assert TRAILING_ACTIVATE_PCT == 0.008
+    assert TRAILING_OFFSET_PCT == 0.005
 
 
 def test_trailing_stop_fires_on_bar():
@@ -837,7 +985,7 @@ def test_trailing_stop_does_not_fire_below_activation():
     """Trailing stop should NOT fire if peak gain never reached activation threshold."""
     eng = _warmed_engine(flat=True)
     pos = Position(entry_price=1.00, qty=300.0, notional_usd=300.0,
-                   entry_ts=0, candles_held=1, peak_price=1.01)  # 1% peak < 1.5% activation
+                   entry_ts=0, candles_held=1, peak_price=1.005)  # 0.5% peak < 0.8% activation
     bar = _make_bar(close=0.999, volume=1000.0)
     result = eng.evaluate_exit_bar(pos, bar)
     assert result != "trailing_stop"
@@ -960,7 +1108,7 @@ def test_atr_pct_volatile_bars():
 
 def test_atr_pct_constant():
     from hydra_meme_agent import ATR_MIN_PCT
-    assert ATR_MIN_PCT == 0.015
+    assert ATR_MIN_PCT == 0.003
 
 
 def test_atr_gate_in_entry_gates():
@@ -1009,3 +1157,109 @@ def test_atr_gate_passes_volatile_market():
     assert gates["vol_regime"] is True
     assert gates["atr_pct"] >= ATR_MIN_PCT
     assert gates["entry_mode"] in ("momentum", "bounce", "none")
+
+
+# ─── Half-Kelly + Confidence Tests ────────────────────────────────────────────
+
+
+def test_half_kelly_size_positive_edge():
+    """Half-Kelly produces a positive size when there's a positive edge."""
+    size = half_kelly_size(0.55, 2.0, 1.0)
+    assert size > 0
+    assert size <= BASE_CAPITAL * KELLY_MAX_FRACTION
+
+
+def test_half_kelly_size_no_edge():
+    """Half-Kelly falls to minimum when win rate implies no edge."""
+    size = half_kelly_size(0.20, 1.0, 1.0)
+    assert size == BASE_CAPITAL * KELLY_MIN_FRACTION
+
+
+def test_half_kelly_size_zero_confidence():
+    """Half-Kelly returns 0 when confidence is 0."""
+    size = half_kelly_size(0.60, 2.0, 0.0)
+    assert size == 0.0
+
+
+def test_half_kelly_size_scales_with_confidence():
+    """Higher confidence produces larger position size."""
+    size_lo = half_kelly_size(0.55, 2.0, 0.3)
+    size_hi = half_kelly_size(0.55, 2.0, 0.9)
+    assert size_hi > size_lo
+
+
+def test_half_kelly_size_clamped_max():
+    """Kelly fraction clamped at KELLY_MAX_FRACTION even with extreme edge."""
+    size = half_kelly_size(0.95, 10.0, 1.0)
+    assert size <= BASE_CAPITAL * KELLY_MAX_FRACTION * 1.001
+
+
+def test_half_kelly_constants():
+    assert KELLY_DEFAULT_WIN_RATE == 0.45
+    assert KELLY_DEFAULT_PAYOFF == 1.5
+    assert KELLY_MIN_FRACTION == 0.05
+    assert KELLY_MAX_FRACTION == 0.50
+    assert BASE_CAPITAL == 600.0
+
+
+def test_confidence_in_gates():
+    """evaluate_entry_gates returns a confidence field."""
+    from hydra_meme_agent import SignalEngine
+    eng = SignalEngine()
+    for i in range(20):
+        c = 1.0 + (i % 2) * 0.03
+        b = CandleBar(ts=i * 300, open=c - 0.01, high=c + 0.02,
+                      low=c - 0.02, close=c, vwap=c, volume=1000.0, count=10)
+        eng.add_bar(b)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=_make_bar(close=1.03, volume=2000.0),
+        obi=0.25,
+        ask_wall_usd=200.0,
+    )
+    assert "confidence" in gates
+    assert 0.0 <= gates["confidence"] <= 1.0
+
+
+def test_confidence_zero_when_no_entry():
+    """Confidence is 0 when entry_mode is none."""
+    from hydra_meme_agent import SignalEngine
+    eng = SignalEngine()
+    for i in range(20):
+        b = CandleBar(ts=i * 300, open=1.0, high=1.001, low=0.999,
+                      close=1.0, vwap=1.0, volume=100.0, count=10)
+        eng.add_bar(b)
+    gates = eng.evaluate_entry_gates(
+        latest_bar=CandleBar(ts=20 * 300, open=1.0, high=1.001, low=0.999,
+                             close=1.0, vwap=1.0, volume=100.0, count=10),
+        obi=0.0,
+        ask_wall_usd=10000.0,
+    )
+    assert gates["entry_mode"] == "none"
+    assert gates["confidence"] == 0.0
+
+
+def test_meme_agent_enabled_flag():
+    """MemeAgent has _enabled flag and respects it."""
+    from hydra_meme_agent import MemeAgent
+    with patch("hydra_meme_agent._query_pair_precision", return_value=(8, 8, 0.01, 5.0)):
+        agent = MemeAgent(
+            pair="NIGHT/USD",
+            position_size=300.0,
+            daily_cap=30.0,
+        )
+    assert agent._enabled is True
+    agent._enabled = False
+    assert agent._enabled is False
+
+
+def test_meme_agent_sibling_agents():
+    """MemeAgent has sibling_agents list."""
+    from hydra_meme_agent import MemeAgent
+    with patch("hydra_meme_agent._query_pair_precision", return_value=(8, 8, 0.01, 5.0)):
+        agent = MemeAgent(
+            pair="NIGHT/USD",
+            position_size=300.0,
+            daily_cap=30.0,
+        )
+    assert agent._sibling_agents == []
+    assert agent._get_sibling_states() == []

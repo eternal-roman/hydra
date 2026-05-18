@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import time
 import threading
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Optional
 import websockets
 
@@ -36,8 +36,8 @@ if os.path.exists(_env_path):
 
 WS_PORT_BASE = 8770
 WS_PORT_RANGE = 10  # try 8770-8779
-CANDLE_INTERVAL = 5          # minutes
-WARMUP_BARS = 15
+CANDLE_INTERVAL = 15         # minutes — 15m bars proven viable for ALT ATR
+WARMUP_BARS = 0              # hot-load history, no warmup gate
 CANDLE_BUFFER_SIZE = 100
 OBI_POLL_INTERVAL = 10       # seconds
 COMPETITION_SCAN_INTERVAL = 900  # 15 minutes
@@ -46,41 +46,222 @@ RSI_PERIOD = 9
 VOL_EMA_PERIOD = 10
 OBI_ENTRY_THRESHOLD = 0.20
 OBI_BOOK_FADE = -0.20
-RSI_ENTRY_LOW = 45
-RSI_ENTRY_HIGH = 78
-RSI_EXHAUST = 82
-VOLUME_SPIKE_MULTIPLIER = 1.8
+RSI_ENTRY_LOW = 35
+RSI_ENTRY_HIGH = 72
+RSI_EXHAUST = 75
+VOLUME_SPIKE_MULTIPLIER = 1.5
 VOLUME_DEATH_MULTIPLIER = 0.4
 ASK_WALL_USD_LIMIT = 500.0
-PROFIT_TARGET_PCT = 0.030    # 3.0%
-HARD_STOP_PCT = -0.010       # -1.0%
-TIME_STOP_CANDLES = 3
+PROFIT_TARGET_PCT = 0.020    # 2.0% — achievable on 15m bars (avg 8-12 bars)
+HARD_STOP_PCT = -0.012       # -1.2% — cut losers fast, asymmetric R:R
+TIME_STOP_CANDLES = 12       # 12 bars × 15min = 3h — if no move, exit
 OBI_LEVELS = 5
 TAKER_SLIPPAGE_BPS = 5       # 0.05% — limit at ask+0.05% for BUY
 SLIPPAGE_CAP_BPS = 10        # 0.10% — reject if book moves more
 SELL_MAX_RETRIES = 5         # abandon after N failed sell attempts
-TRAILING_ACTIVATE_PCT = 0.015  # activate trailing stop after 1.5% unrealised gain
-TRAILING_OFFSET_PCT = 0.010   # trail 1.0% below peak
+TRAILING_ACTIVATE_PCT = 0.008  # activate trailing stop after 0.8% gain
+TRAILING_OFFSET_PCT = 0.005   # trail 0.5% below peak — lock gains early
 
 COMPETITION_ANOMALY_RATIO = 5.0
 COMPETITION_EMA_ALPHA = 1 / 7
 
-EXTENSION_MAX_PCT = 0.10  # block entry when price is >10% above slow EMA
+EXTENSION_MAX_PCT = 0.08   # block entry when price is >8% above slow EMA
 REENTRY_COOLDOWN_BARS = 2  # bars to wait after exit before re-entering
-ATR_MIN_PCT = 0.015  # minimum ATR(5) as fraction of price to enter (1.5%)
+ATR_MIN_PCT = 0.003  # minimum ATR as fraction of price (0.3% — realistic for 15m)
 
 # Bounce-mode entry thresholds
-BOUNCE_RSI_THRESHOLD = 25    # enter bounce when RSI < 25 (deeply oversold)
-BOUNCE_VOL_SPIKE_MULT = 2.0  # require 2x vol EMA (capitulation selling)
-BOUNCE_MAX_EMA50_DIST = -0.15  # reject if price >15% below EMA(50) (freefall)
-BOUNCE_PROFIT_PCT = 0.020    # 2.0% profit target for bounce trades
-BOUNCE_STOP_PCT = -0.012     # -1.2% stop for bounce trades
-BOUNCE_RSI_EXIT = 50         # exit bounce when RSI recovers above 50
-BOUNCE_TIME_STOP = 8         # 8-bar timeout for bounce trades
+BOUNCE_RSI_THRESHOLD = 28    # enter bounce when RSI < 28 (deeply oversold)
+BOUNCE_VOL_SPIKE_MULT = 1.8  # require 1.8x vol EMA (capitulation selling)
+BOUNCE_MAX_EMA50_DIST = -0.12  # reject if price >12% below EMA(50) (freefall)
+BOUNCE_PROFIT_PCT = 0.015    # 1.5% profit target for bounce trades
+BOUNCE_STOP_PCT = -0.010     # -1.0% stop for bounce trades — tight
+BOUNCE_RSI_EXIT = 48         # exit bounce when RSI recovers above 48
+BOUNCE_TIME_STOP = 10        # 10-bar timeout (2.5h on 15m bars)
+
+BOUNCE_REVERSAL_REQUIRED = True
+MOMENTUM_MAX_RED_BARS = 3
+STALE_PROFIT_BARS = 5        # 5 bars (1.25h) — more patience on 15m
+STALE_PROFIT_MIN_PCT = 0.004  # 0.4% minimum gain to qualify
+
+# Consecutive-loss halt: after N stops in a row, pause for this many bars
+CONSEC_LOSS_HALT_THRESHOLD = 3  # 3 stops → halt
+CONSEC_LOSS_HALT_BARS = 8       # sit out 2h (8×15m)
+
+# Macro regime: pair's own EMA50 direction over N bars must not be declining
+MACRO_EMA50_LOOKBACK = 6  # check EMA50 slope over last 6 bars (1.5h)
+
+# BTC regime awareness: polls BTC/USD to detect market-wide dumps.
+BTC_REGIME_POLL_INTERVAL = 300  # 5 minutes
+BTC_REGIME_CANDLES = 4          # look back 4 x 15-min bars = 1 hour
+BTC_CRASH_THRESHOLD = -0.02    # -2% BTC move in 1h = risk-off for alts
+BTC_DUMP_RSI_CEILING = 35      # BTC RSI below this = alt entries gated
+
+# Half-Kelly position sizing
+KELLY_DEFAULT_WIN_RATE = 0.45  # conservative cold-start assumption
+KELLY_DEFAULT_PAYOFF = 1.5     # target/stop ratio for the pair profile
+KELLY_MIN_FRACTION = 0.05      # floor: never less than 5% of base
+KELLY_MAX_FRACTION = 0.50      # ceiling: never more than 50% of base
+BASE_CAPITAL = 600.0           # total capital pool for Half-Kelly computation
+
+
+# ─── Per-Pair Tuning Profiles ────────────────────────────────────────────────
+
+@dataclass
+class PairProfile:
+    """Per-pair parameter tuning. Defaults match the original module constants."""
+    rsi_entry_low: float = RSI_ENTRY_LOW
+    rsi_entry_high: float = RSI_ENTRY_HIGH
+    rsi_exhaust: float = RSI_EXHAUST
+    volume_spike_mult: float = VOLUME_SPIKE_MULTIPLIER
+    volume_death_mult: float = VOLUME_DEATH_MULTIPLIER
+    obi_entry_threshold: float = OBI_ENTRY_THRESHOLD
+    obi_book_fade: float = OBI_BOOK_FADE
+    ask_wall_usd_limit: float = ASK_WALL_USD_LIMIT
+    atr_min_pct: float = ATR_MIN_PCT
+    profit_target_pct: float = PROFIT_TARGET_PCT
+    hard_stop_pct: float = HARD_STOP_PCT
+    time_stop_candles: int = TIME_STOP_CANDLES
+    trailing_activate_pct: float = TRAILING_ACTIVATE_PCT
+    trailing_offset_pct: float = TRAILING_OFFSET_PCT
+    extension_max_pct: float = EXTENSION_MAX_PCT
+    bounce_rsi_threshold: float = BOUNCE_RSI_THRESHOLD
+    bounce_vol_spike_mult: float = BOUNCE_VOL_SPIKE_MULT
+    bounce_max_ema50_dist: float = BOUNCE_MAX_EMA50_DIST
+    bounce_profit_pct: float = BOUNCE_PROFIT_PCT
+    bounce_stop_pct: float = BOUNCE_STOP_PCT
+    bounce_rsi_exit: float = BOUNCE_RSI_EXIT
+    bounce_time_stop: int = BOUNCE_TIME_STOP
+    bounce_reversal_required: bool = BOUNCE_REVERSAL_REQUIRED
+    momentum_max_red_bars: int = MOMENTUM_MAX_RED_BARS
+    stale_profit_bars: int = STALE_PROFIT_BARS
+    stale_profit_min_pct: float = STALE_PROFIT_MIN_PCT
+
+
+PROFILES: dict[str, PairProfile] = {
+    # NIGHT/USD (Midnight/Cardano L2): low-cap, thin book, spiky.
+    # 15m ATR ~0.48%. Strategy: enter on RSI dips + volume, tight stop (-1.5%),
+    # trail early (0.8% → 0.5% offset), let runners reach 2.5%.
+    # R:R = 2.5:1.5 = 1.67:1 → profitable at 40% WR.
+    "NIGHT/USD": PairProfile(
+        rsi_entry_low=30,
+        rsi_entry_high=72,
+        rsi_exhaust=72,
+        volume_spike_mult=2.0,
+        volume_death_mult=0.35,
+        obi_entry_threshold=0.12,
+        obi_book_fade=-0.20,
+        ask_wall_usd_limit=500.0,
+        atr_min_pct=0.003,
+        profit_target_pct=0.025,
+        hard_stop_pct=-0.015,
+        time_stop_candles=12,
+        trailing_activate_pct=0.010,
+        trailing_offset_pct=0.006,
+        extension_max_pct=0.08,
+        bounce_rsi_threshold=25,
+        bounce_vol_spike_mult=2.0,
+        bounce_max_ema50_dist=-0.12,
+        bounce_profit_pct=0.018,
+        bounce_stop_pct=-0.012,
+        bounce_rsi_exit=45,
+        bounce_time_stop=10,
+        bounce_reversal_required=True,
+        momentum_max_red_bars=2,
+        stale_profit_bars=5,
+        stale_profit_min_pct=0.004,
+    ),
+    # AAVE/USD (DeFi blue-chip): deeper book, steadier trends.
+    # 15m ATR ~0.38%. Strategy: buy confirmed dips with trend, tight stop (-1.2%),
+    # trail at 0.6% with 0.4% offset. Target 1.5%.
+    # R:R = 1.5:1.2 = 1.25:1 → profitable at 45% WR.
+    "AAVE/USD": PairProfile(
+        rsi_entry_low=32,
+        rsi_entry_high=70,
+        rsi_exhaust=70,
+        volume_spike_mult=1.5,
+        volume_death_mult=0.4,
+        obi_entry_threshold=0.08,
+        obi_book_fade=-0.15,
+        ask_wall_usd_limit=2000.0,
+        atr_min_pct=0.002,
+        profit_target_pct=0.015,
+        hard_stop_pct=-0.012,
+        time_stop_candles=14,
+        trailing_activate_pct=0.006,
+        trailing_offset_pct=0.004,
+        extension_max_pct=0.06,
+        bounce_rsi_threshold=28,
+        bounce_vol_spike_mult=1.8,
+        bounce_max_ema50_dist=-0.10,
+        bounce_profit_pct=0.012,
+        bounce_stop_pct=-0.010,
+        bounce_rsi_exit=46,
+        bounce_time_stop=12,
+        bounce_reversal_required=True,
+        momentum_max_red_bars=3,
+        stale_profit_bars=6,
+        stale_profit_min_pct=0.003,
+    ),
+    # AAVE/BTC: illiquid BTC-quoted pair. 15m ATR ~0.04% but spikes to 0.2%+.
+    # Strategy: only enter on volume with very tight stop. Patient hold.
+    # R:R = 1.2:1.0 = 1.2:1 → profitable at 45% WR.
+    "AAVE/BTC": PairProfile(
+        rsi_entry_low=32,
+        rsi_entry_high=68,
+        rsi_exhaust=68,
+        volume_spike_mult=1.8,
+        volume_death_mult=0.4,
+        obi_entry_threshold=0.10,
+        obi_book_fade=-0.15,
+        ask_wall_usd_limit=1500.0,
+        atr_min_pct=0.001,
+        profit_target_pct=0.012,
+        hard_stop_pct=-0.010,
+        time_stop_candles=16,
+        trailing_activate_pct=0.005,
+        trailing_offset_pct=0.0035,
+        extension_max_pct=0.05,
+        bounce_rsi_threshold=28,
+        bounce_vol_spike_mult=2.0,
+        bounce_max_ema50_dist=-0.08,
+        bounce_profit_pct=0.010,
+        bounce_stop_pct=-0.008,
+        bounce_rsi_exit=44,
+        bounce_time_stop=14,
+        bounce_reversal_required=True,
+        momentum_max_red_bars=3,
+        stale_profit_bars=6,
+        stale_profit_min_pct=0.003,
+    ),
+}
+
+DEFAULT_PROFILE = PairProfile()
 
 COMPETITION_SEED_PAIRS = [
-    "WIF/USD", "POPCAT/USD", "BONK/USD", "PEPE/USD", "PLAY/USD", "LION/USD",
+    "NIGHT/USD", "AAVE/USD", "AAVE/BTC",
 ]
+
+
+# ─── Three-Quarter Kelly Position Sizing ──────────────────────────────────────
+
+KELLY_FRACTION = 0.75  # 3/4 Kelly — more aggressive than half, still bounded
+
+def half_kelly_size(win_rate: float, avg_payoff: float, confidence: float) -> float:
+    """Compute 3/4-Kelly position size.
+
+    Kelly% = (p * b - q) / b  where p=win_rate, b=avg_payoff, q=1-p
+    Fractional Kelly = Kelly% * KELLY_FRACTION (0.75)
+    Final size = BASE_CAPITAL * clamp(frac_kelly, MIN, MAX) * confidence
+    """
+    if win_rate <= 0 or avg_payoff <= 0:
+        return BASE_CAPITAL * KELLY_MIN_FRACTION * confidence
+    q = 1.0 - win_rate
+    kelly = (win_rate * avg_payoff - q) / avg_payoff
+    if kelly <= 0:
+        return BASE_CAPITAL * KELLY_MIN_FRACTION * confidence
+    fk = kelly * KELLY_FRACTION
+    fk = max(KELLY_MIN_FRACTION, min(KELLY_MAX_FRACTION, fk))
+    return BASE_CAPITAL * fk * confidence
 
 
 # ─── Data Classes ─────────────────────────────────────────────────────────────
@@ -107,6 +288,7 @@ class Position:
     order_id: str = ""
     peak_price: float = 0.0
     entry_mode: str = "momentum"  # "momentum" or "bounce"
+    low_vol_bars: int = 0  # consecutive bars below volume_death threshold
 
 
 @dataclass
@@ -215,10 +397,11 @@ def atr_pct(bars: list, period: int = 5) -> float:
 class SignalEngine:
     """Evaluates 5 entry gates and 6 exit triggers against candle history."""
 
-    def __init__(self):
+    def __init__(self, profile: PairProfile | None = None):
         self._bars: list[CandleBar] = []
         self._vwap_cum_pv: float = 0.0
         self._vwap_cum_v: float = 0.0
+        self._p: PairProfile = profile or DEFAULT_PROFILE
 
     def add_bar(self, bar: CandleBar) -> None:
         """Add a closed bar to the buffer. Trims to CANDLE_BUFFER_SIZE."""
@@ -258,6 +441,7 @@ class SignalEngine:
         Mode A (momentum): uptrend + RSI sweet-spot + volume spike + extension guard
         Mode B (bounce): deeply oversold + capitulation volume + not in freefall
         """
+        p = self._p
         vol_baseline = self.vol_ema_baseline
         closes = [b.close for b in self._bars]
         rsi = wilder_rsi(closes)
@@ -269,32 +453,91 @@ class SignalEngine:
 
         trend_aligned = ema_fast_val > ema_slow_val if ema_slow_val > 0 else True
         extension = (latest_bar.close - ema_slow_val) / ema_slow_val if ema_slow_val > 0 else 0
-        not_extended = extension <= EXTENSION_MAX_PCT
+        not_extended = extension <= p.extension_max_pct
 
         cur_atr_pct = atr_pct(self._bars)
-        vol_regime_pass = cur_atr_pct >= ATR_MIN_PCT
+        vol_regime_pass = cur_atr_pct >= p.atr_min_pct
 
         # Momentum gate checks
-        mom_volume = latest_bar.volume > VOLUME_SPIKE_MULTIPLIER * vol_baseline
-        mom_obi = obi > OBI_ENTRY_THRESHOLD
+        mom_volume = latest_bar.volume > p.volume_spike_mult * vol_baseline
+        mom_obi = obi > p.obi_entry_threshold
         mom_vwap = latest_bar.close > vwap if vwap > 0 else False
-        mom_rsi = RSI_ENTRY_LOW <= rsi <= RSI_ENTRY_HIGH
-        mom_wall = ask_wall_usd < ASK_WALL_USD_LIMIT
+        mom_rsi = p.rsi_entry_low <= rsi <= p.rsi_entry_high
+        mom_wall = ask_wall_usd < p.ask_wall_usd_limit
         mom_pass = all([mom_volume, mom_obi, mom_vwap, mom_rsi,
                         mom_wall, trend_aligned, not_extended, vol_regime_pass])
 
         # Bounce gate checks
         ema50_dist = (latest_bar.close - ema50_val) / ema50_val if ema50_val > 0 else -1
-        bounce_rsi = rsi < BOUNCE_RSI_THRESHOLD and rsi > 0
-        bounce_vol = latest_bar.volume > BOUNCE_VOL_SPIKE_MULT * vol_baseline
-        bounce_floor = ema50_dist > BOUNCE_MAX_EMA50_DIST
-        bounce_pass = all([bounce_rsi, bounce_vol, bounce_floor, vol_regime_pass])
+        bounce_rsi = rsi < p.bounce_rsi_threshold and rsi > 0
+        bounce_vol = latest_bar.volume > p.bounce_vol_spike_mult * vol_baseline
+        bounce_floor = ema50_dist > p.bounce_max_ema50_dist
+        # Reversal confirmation: latest bar must close above prior bar's close
+        # (proves buying pressure arrested the slide — blocks falling knives)
+        if p.bounce_reversal_required and len(self._bars) >= 2:
+            bounce_reversal = latest_bar.close > self._bars[-2].close
+        else:
+            bounce_reversal = True
+        bounce_pass = all([bounce_rsi, bounce_vol, bounce_floor,
+                           vol_regime_pass, bounce_reversal])
+
+        # Momentum consecutive red-bar filter: block entry when the last N bars
+        # are all red (close < open) — trend may look aligned via EMA lag but
+        # actual price action is selling off
+        if len(self._bars) >= p.momentum_max_red_bars:
+            recent = self._bars[-p.momentum_max_red_bars:]
+            all_red = all(b.close < b.open for b in recent)
+        else:
+            all_red = False
+        not_bleeding = not all_red
+
+        # Macro EMA50 slope gate: if EMA50 is declining over recent bars,
+        # the pair is in a macro downtrend — don't enter longs regardless
+        # of short-term RSI dips (they're falling knives in this context)
+        macro_ok = True
+        if len(self._bars) >= 50 + MACRO_EMA50_LOOKBACK:
+            ema50_now = ema(closes, 50)
+            closes_earlier = closes[:-MACRO_EMA50_LOOKBACK]
+            ema50_earlier = ema(closes_earlier, 50)
+            macro_ok = ema50_now >= ema50_earlier
 
         entry_mode = "none"
-        if mom_pass:
+        if mom_pass and not_bleeding and macro_ok:
             entry_mode = "momentum"
-        elif bounce_pass:
+        elif bounce_pass and macro_ok:
             entry_mode = "bounce"
+
+        # Confidence score (0.0-1.0): only meaningful when entry_mode != "none"
+        if entry_mode != "none":
+            # RSI depth: how far RSI is from the threshold (deeper = higher conviction)
+            if entry_mode == "momentum":
+                rsi_range = p.rsi_entry_high - p.rsi_entry_low
+                rsi_depth = ((p.rsi_entry_high - rsi) / rsi_range
+                             if rsi_range > 0 else 0.0)
+            else:  # bounce
+                rsi_depth = ((p.bounce_rsi_threshold - rsi) / p.bounce_rsi_threshold
+                             if p.bounce_rsi_threshold > 0 else 0.0)
+            rsi_depth = max(0.0, min(1.0, rsi_depth))
+            # OBI strength: obi / 1.0 clamped 0-1
+            obi_strength = max(0.0, min(1.0, obi / 1.0))
+            # Volume surge: caps at 2x the required threshold
+            spike_mult = (p.bounce_vol_spike_mult if entry_mode == "bounce"
+                          else p.volume_spike_mult)
+            vol_surge = (min(latest_bar.volume / (vol_baseline * spike_mult), 2.0) / 2.0
+                         if vol_baseline > 0 and spike_mult > 0 else 0.0)
+            # Trend strength: (ema_fast - ema_slow) / ema_slow * 100, clamped 0-5, /5
+            if ema_slow_val > 0:
+                trend_pct = (ema_fast_val - ema_slow_val) / ema_slow_val * 100
+                trend_strength = max(0.0, min(5.0, trend_pct)) / 5.0
+            else:
+                trend_strength = 0.0
+            confidence = (rsi_depth * 0.30
+                          + obi_strength * 0.20
+                          + vol_surge * 0.25
+                          + trend_strength * 0.25)
+            confidence = max(0.0, min(1.0, confidence))
+        else:
+            confidence = 0.0
 
         gates = {
             "volume_spike": mom_volume,
@@ -304,10 +547,13 @@ class SignalEngine:
             "ask_wall_clear": mom_wall,
             "trend_aligned": trend_aligned,
             "not_extended": not_extended,
+            "not_bleeding": not_bleeding,
+            "macro_trend": macro_ok,
             "vol_regime": vol_regime_pass,
             "bounce_rsi": bounce_rsi,
             "bounce_vol": bounce_vol,
             "bounce_floor": bounce_floor,
+            "bounce_reversal": bounce_reversal,
             "rsi_value": round(rsi, 1),
             "vwap_value": round(vwap, 8),
             "vol_ema_value": round(vol_baseline, 2),
@@ -316,6 +562,7 @@ class SignalEngine:
             "extension_pct": round(extension, 4),
             "entry_mode": entry_mode,
             "all_pass": entry_mode != "none",
+            "confidence": round(confidence, 4),
         }
         return gates
 
@@ -324,30 +571,48 @@ class SignalEngine:
 
         position is a Position dataclass. Returns exit reason string or None.
         """
+        p = self._p
         rsi = wilder_rsi([b.close for b in self._bars])
 
         if position.entry_mode == "bounce":
-            if rsi > BOUNCE_RSI_EXIT:
+            if rsi > p.bounce_rsi_exit:
                 return "rsi_exit"
-            if position.candles_held >= BOUNCE_TIME_STOP:
+            if position.candles_held >= p.bounce_time_stop:
                 return "time_stop"
         else:
-            if rsi > RSI_EXHAUST:
+            if rsi > p.rsi_exhaust:
                 return "rsi_exhaust"
-            if position.candles_held >= TIME_STOP_CANDLES:
+            if position.candles_held >= p.time_stop_candles:
                 return "time_stop"
 
         # Trailing stop (both modes): if peak gain >= activation, trail from peak
         if position.peak_price > 0 and position.entry_price > 0:
             peak_pct = (position.peak_price - position.entry_price) / position.entry_price
-            if peak_pct >= TRAILING_ACTIVATE_PCT:
-                trail_level = position.peak_price * (1 - TRAILING_OFFSET_PCT)
+            if peak_pct >= p.trailing_activate_pct:
+                trail_level = position.peak_price * (1 - p.trailing_offset_pct)
                 if latest_bar.close <= trail_level:
                     return "trailing_stop"
 
-        vol_baseline = self.vol_ema_baseline
-        if vol_baseline > 0 and latest_bar.volume < VOLUME_DEATH_MULTIPLIER * vol_baseline:
-            return "volume_death"
+        # Stale-profit exit: in profit for N bars but never hit trailing
+        # activation — the move is exhausted, take what's there
+        if position.entry_price > 0 and position.candles_held >= p.stale_profit_bars:
+            unrealised_pct = (latest_bar.close - position.entry_price) / position.entry_price
+            peak_pct = ((position.peak_price - position.entry_price) / position.entry_price
+                        if position.peak_price > 0 else 0.0)
+            if (unrealised_pct >= p.stale_profit_min_pct
+                    and peak_pct < p.trailing_activate_pct):
+                return "stale_profit"
+
+        # Volume death: require 6+ bars held AND 2 consecutive low-volume bars.
+        # Single quiet bars are normal mean-reversion on 15m — not a signal to exit.
+        if position.candles_held >= 6:
+            vol_baseline = self.vol_ema_baseline
+            if vol_baseline > 0 and latest_bar.volume < p.volume_death_mult * vol_baseline:
+                position.low_vol_bars += 1
+                if position.low_vol_bars >= 2:
+                    return "volume_death"
+            else:
+                position.low_vol_bars = 0
         return None
 
     def evaluate_exit_intracandle(
@@ -360,30 +625,102 @@ class SignalEngine:
 
         position is a Position dataclass. Returns exit reason string or None.
         """
+        p = self._p
         pct_change = (mid_price - position.entry_price) / position.entry_price
 
         if position.entry_mode == "bounce":
-            if pct_change >= BOUNCE_PROFIT_PCT:
+            if pct_change >= p.bounce_profit_pct:
                 return "profit_target"
-            if pct_change <= BOUNCE_STOP_PCT:
+            if pct_change <= p.bounce_stop_pct:
                 return "hard_stop"
         else:
-            if pct_change >= PROFIT_TARGET_PCT:
+            if pct_change >= p.profit_target_pct:
                 return "profit_target"
-            if pct_change <= HARD_STOP_PCT:
+            if pct_change <= p.hard_stop_pct:
                 return "hard_stop"
 
         # Trailing stop check on mid-price
         if position.peak_price > 0 and position.entry_price > 0:
             peak_pct = (position.peak_price - position.entry_price) / position.entry_price
-            if peak_pct >= TRAILING_ACTIVATE_PCT:
-                trail_level = position.peak_price * (1 - TRAILING_OFFSET_PCT)
+            if peak_pct >= p.trailing_activate_pct:
+                trail_level = position.peak_price * (1 - p.trailing_offset_pct)
                 if mid_price <= trail_level:
                     return "trailing_stop"
 
-        if obi < OBI_BOOK_FADE:
+        if obi < p.obi_book_fade:
             return "book_fade"
         return None
+
+
+# ─── BTC Regime Monitor ───────────────────────────────────────────────────────
+
+class BtcRegimeMonitor:
+    """Polls BTC/USD OHLC to detect market-wide risk-off regimes.
+
+    ALTs are strongly correlated with BTC.  When BTC drops >2% in 1h or
+    its RSI is below 35, new alt entries are gated — avoids buying into
+    a broad-market dump that will drag alts down harder.
+    """
+
+    def __init__(self):
+        self._bars: list[CandleBar] = []
+        self._lock = threading.Lock()
+        self._risk_off: bool = False
+        self._btc_rsi: float = 50.0
+        self._btc_1h_chg: float = 0.0
+        self._last_poll: float = 0.0
+
+    @property
+    def is_risk_off(self) -> bool:
+        with self._lock:
+            return self._risk_off
+
+    @property
+    def btc_rsi(self) -> float:
+        with self._lock:
+            return self._btc_rsi
+
+    @property
+    def btc_1h_change(self) -> float:
+        with self._lock:
+            return self._btc_1h_chg
+
+    def poll(self) -> None:
+        """Fetch BTC/USD 5-min candles and update regime state."""
+        now = time.time()
+        if now - self._last_poll < BTC_REGIME_POLL_INTERVAL:
+            return
+        result = _kraken_cli(["ohlc", "XBTUSD", "--interval", str(CANDLE_INTERVAL)])
+        self._last_poll = time.time()
+        if "error" in result:
+            return
+        key = next((k for k in result if k != "last"), None)
+        if not key:
+            return
+        raw = result[key]
+        closed = raw[-(BTC_REGIME_CANDLES + 1):-1] if len(raw) > BTC_REGIME_CANDLES else raw[:-1]
+        bars = []
+        for b in closed:
+            bars.append(CandleBar(
+                ts=int(b[0]), open=float(b[1]), high=float(b[2]),
+                low=float(b[3]), close=float(b[4]), vwap=float(b[5]),
+                volume=float(b[6]), count=int(b[7]),
+            ))
+        if not bars:
+            return
+        closes = [b.close for b in bars]
+        rsi = wilder_rsi(closes)
+        first_close = bars[0].close
+        last_close = bars[-1].close
+        pct_chg = (last_close - first_close) / first_close if first_close > 0 else 0.0
+        risk_off = pct_chg <= BTC_CRASH_THRESHOLD or rsi < BTC_DUMP_RSI_CEILING
+        with self._lock:
+            self._bars = bars
+            self._btc_rsi = rsi
+            self._btc_1h_chg = pct_chg
+            self._risk_off = risk_off
+        if risk_off:
+            print(f"[APEX] BTC RISK-OFF: 1h Δ={pct_chg:+.2%}  RSI={rsi:.1f} — alt entries gated")
 
 
 # ─── Competition Detector ──────────────────────────────────────────────────────
@@ -505,7 +842,7 @@ class CompetitionDetector:
         """Volume-pattern heuristic. Returns 'volume', 'pnl', 'rebate', or 'unknown'."""
         token = self._find_token(pair)
         if token and token.get("competition_type_confirmed"):
-            return token["competition_type"]
+            return token.get("competition_type") or "unknown"
         baseline = self._get_baseline(pair)
         if baseline is None:
             return "unknown"
@@ -520,8 +857,7 @@ class CompetitionDetector:
 @dataclass
 class SessionState:
     pair: str = ""
-    engine_state: str = "idle"   # idle | warmup | running | halted
-    candle_buffer: list = field(default_factory=list)
+    engine_state: str = "idle"   # idle | running | halted
     open_position: Optional[dict] = None
     session_pnl: float = 0.0
     daily_pnl: float = 0.0
@@ -728,8 +1064,9 @@ class MemeExecutor:
     def _sell_limit_price(self, bid: float) -> float:
         return bid * (1 - TAKER_SLIPPAGE_BPS / 10_000)
 
-    def _buy_qty(self, ask: float) -> float:
-        return self.position_size / ask
+    def _buy_qty(self, ask: float, size_override: Optional[float] = None) -> float:
+        size = size_override if size_override is not None else self.position_size
+        return size / ask
 
     def _compute_net_pnl(self, position: Position, exit_price: float) -> float:
         gross = (exit_price - position.entry_price) * position.qty
@@ -739,8 +1076,12 @@ class MemeExecutor:
         return gross - entry_fee - exit_fee
 
     def place_buy(self, ask: float, mid: Optional[float] = None,
-                  entry_mode: str = "momentum") -> Optional[Position]:
-        """Place a taker BUY limit order. Returns Position on success, None on failure."""
+                  entry_mode: str = "momentum",
+                  size_override: Optional[float] = None) -> Optional[Position]:
+        """Place a taker BUY limit order. Returns Position on success, None on failure.
+
+        If size_override is provided, it replaces self.position_size for qty computation.
+        """
         if self.is_halted():
             return None
         limit_price = self._buy_limit_price(ask)
@@ -748,7 +1089,7 @@ class MemeExecutor:
             slippage_bps = (limit_price - mid) / mid * 10_000
             if slippage_bps > SLIPPAGE_CAP_BPS:
                 return None
-        qty = self._buy_qty(ask)
+        qty = self._buy_qty(ask, size_override)
         pfmt = f"{{:.{self.price_decimals}f}}"
         qfmt = f"{{:.{self.lot_decimals}f}}"
         result = _kraken_cli([
@@ -904,7 +1245,7 @@ class CandleAggregator:
     WS_URL = "wss://ws.kraken.com"
 
     def __init__(self, pair: str, on_bar):
-        self.pair = pair          # e.g. "PLAY/USD"
+        self.pair = pair
         self._on_bar = on_bar
         self._last_etime: str = ""
         self._last_bar: Optional[CandleBar] = None
@@ -974,13 +1315,18 @@ class MemeAgent:
     def __init__(self, pair: str, position_size: float, daily_cap: float,
                  session_path: str = "hydra_meme_session.json",
                  journal_path: str = "hydra_meme_journal.json",
-                 watchlist_path: str = "hydra_meme_watchlist.json"):
+                 watchlist_path: str = "hydra_meme_watchlist.json",
+                 btc_monitor: BtcRegimeMonitor | None = None,
+                 ws_port: int | None = None):
         self.pair = pair
+        self._ws_port_fixed = ws_port
         self._position_size = position_size
         self._daily_cap = daily_cap
         self._clients: set = set()
-        self._signal_engine = SignalEngine()
+        self._profile = PROFILES.get(pair, DEFAULT_PROFILE)
+        self._signal_engine = SignalEngine(self._profile)
         self._obi_poller = OBIPoller(pair)
+        self._btc_monitor = btc_monitor or BtcRegimeMonitor()
         price_dec, lot_dec, ordermin, costmin = _query_pair_precision(pair)
         print(f"[APEX] {pair}: price_decimals={price_dec}  lot_decimals={lot_dec}  ordermin={ordermin}  costmin=${costmin}")
         self._executor = MemeExecutor(pair, position_size, daily_cap,
@@ -1006,14 +1352,18 @@ class MemeAgent:
                   f"qty={op.get('qty')} {pair} @ entry {op.get('entry_price')}")
             print(f"[APEX] WARNING: verify on Kraken that position is closed before continuing")
             print(f"[APEX] WARNING: engine will trade normally -- close stale position manually if needed")
-        self._engine_state = "warmup"
+        self._engine_state = "running"
+        self._enabled: bool = True  # toggled by dashboard; when False, skip entries
+        self._sibling_agents: list["MemeAgent"] = []  # populated in multi-pair mode
         self._last_exit_bar_count: int = -REENTRY_COOLDOWN_BARS
         self._bar_count: int = 0
+        self._consec_stops: int = 0
+        self._halt_until_bar: int = 0
 
     # ── History seed ──
 
     async def _seed_history(self) -> None:
-        """Fetch recent 5-min candles via CLI to skip warmup wait."""
+        """Hot-load history via CLI — engine goes straight to running."""
         pair_nodash = self.pair.replace("/", "")
         result = await asyncio.to_thread(
             _kraken_cli,
@@ -1026,7 +1376,7 @@ class MemeAgent:
         if not key:
             return
         raw_bars = result[key]
-        # Take the most recent WARMUP_BARS bars (exclude the very last — it's still open)
+        # Seed up to CANDLE_BUFFER_SIZE closed bars (exclude the last — still open)
         seed_count = CANDLE_BUFFER_SIZE
         closed = raw_bars[-(seed_count + 1):-1] if len(raw_bars) > seed_count else raw_bars[:-1]
         for b in closed:
@@ -1037,9 +1387,8 @@ class MemeAgent:
             )
             self._signal_engine.add_bar(bar)
         n = len(self._signal_engine._bars)
-        print(f"[APEX] Seeded {n} historical bars — {'warmed up' if n >= WARMUP_BARS else f'{WARMUP_BARS - n} more needed'}")
-        if self._signal_engine.is_warmed_up():
-            self._engine_state = "running"
+        print(f"[APEX] Seeded {n} historical bars — hot, ready to trade")
+        self._engine_state = "running"
 
     # ── WebSocket server ──
 
@@ -1057,8 +1406,8 @@ class MemeAgent:
             "type": "initial_state",
             "engine_state": self._engine_state,
             "pair": self.pair,
-            "bars_ready": len(self._signal_engine._bars),
-            "bars_required": WARMUP_BARS,
+            "enabled": self._enabled,
+            "candle_interval": CANDLE_INTERVAL,
             "position": pos_data,
             "session_pnl": self._executor._daily_pnl,
             "trade_count": len(self._trade_log),
@@ -1102,6 +1451,16 @@ class MemeAgent:
                             asyncio.ensure_future(self._switch_pair(new_pair))
                     elif msg.get("type") == "scan_now":
                         asyncio.ensure_future(self._run_competition_scan())
+                    elif msg.get("type") == "enable_pair":
+                        self._enabled = True
+                        await self._broadcast({
+                            "type": "pair_enabled", "pair": self.pair, "enabled": True,
+                        })
+                    elif msg.get("type") == "disable_pair":
+                        self._enabled = False
+                        await self._broadcast({
+                            "type": "pair_enabled", "pair": self.pair, "enabled": False,
+                        })
                 except Exception:
                     pass
         except Exception:
@@ -1116,6 +1475,18 @@ class MemeAgent:
         await asyncio.gather(*[c.send(data) for c in list(self._clients)],
                              return_exceptions=True)
 
+    def _get_sibling_states(self) -> list[dict]:
+        """Return summary of enabled sibling agents for cross-pair awareness."""
+        states = []
+        for s in self._sibling_agents:
+            states.append({
+                "pair": s.pair,
+                "enabled": s._enabled,
+                "has_position": s._position is not None,
+                "engine_state": s._engine_state,
+            })
+        return states
+
     # ── Pair switching ──
 
     async def _switch_pair(self, new_pair: str) -> None:
@@ -1125,7 +1496,7 @@ class MemeAgent:
         if new_pair == self.pair and self._engine_state != "idle":
             return
         if new_pair == self.pair and self._engine_state == "idle":
-            self._engine_state = "warmup" if not self._signal_engine.is_warmed_up() else "running"
+            self._engine_state = "running"
             await self._broadcast({
                 "type": "engine_state", "state": self._engine_state, "pair": self.pair,
             })
@@ -1155,7 +1526,7 @@ class MemeAgent:
             )
         except Exception as e:
             print(f"[APEX] Switch failed — cannot query {new_pair}: {e}")
-            self._engine_state = "warmup" if not self._signal_engine.is_warmed_up() else "running"
+            self._engine_state = "running"
             self._candle_agg = CandleAggregator(self.pair, self._on_bar)
             task = asyncio.create_task(self._candle_agg.run())
             task.add_done_callback(self._task_error_cb)
@@ -1164,7 +1535,11 @@ class MemeAgent:
             })
             return
         self.pair = new_pair
-        self._signal_engine = SignalEngine()
+        tag = new_pair.replace("/", "_").lower()
+        self._session_path = f"hydra_meme_session_{tag}.json"
+        self._journal_path = f"hydra_meme_journal_{tag}.json"
+        self._profile = PROFILES.get(new_pair, DEFAULT_PROFILE)
+        self._signal_engine = SignalEngine(self._profile)
         self._obi_poller = OBIPoller(new_pair)
         print(f"[APEX] {new_pair}: price_decimals={price_dec}  lot_decimals={lot_dec}  "
               f"ordermin={ordermin}  costmin=${costmin}")
@@ -1178,7 +1553,7 @@ class MemeAgent:
         self._sell_retry_count = 0
         self._bar_count = 0
         self._last_exit_bar_count = -REENTRY_COOLDOWN_BARS
-        self._engine_state = "warmup"
+        self._engine_state = "running"
         await self._seed_history()
         bars = self._signal_engine._bars
         if bars:
@@ -1195,6 +1570,7 @@ class MemeAgent:
             "type": "initial_state",
             "pair": self.pair,
             "engine_state": self._engine_state,
+            "candle_interval": CANDLE_INTERVAL,
             "position": None,
             "trades": [],
             "session_pnl": self._executor._daily_pnl,
@@ -1202,7 +1578,7 @@ class MemeAgent:
             "trade_count": len(self._trade_log),
             "win_rate": win_count / max(len(self._trade_log), 1),
         })
-        print(f"[APEX] Switched to {new_pair} — warmup in progress")
+        print(f"[APEX] Switched to {new_pair} — hot, ready to trade")
 
     # ── Bar callback (from CandleAggregator, scheduled into event loop) ──
 
@@ -1234,21 +1610,35 @@ class MemeAgent:
                     "low": bar.low, "close": bar.close, "volume": bar.volume,
                     "vwap": bar.vwap},
         })
-        if not self._signal_engine.is_warmed_up():
-            self._engine_state = "warmup"
-            await self._broadcast({
-                "type": "warmup_progress",
-                "bars_ready": len(self._signal_engine._bars),
-                "bars_required": WARMUP_BARS,
-            })
-            return
         self._engine_state = "running"
         # Broadcast signal state
         gates = self._signal_engine.evaluate_entry_gates(
             bar, self._obi_poller.obi, self._obi_poller.ask_wall_usd
         )
+        gates["btc_risk_off"] = self._btc_monitor.is_risk_off
+        gates["btc_rsi"] = round(self._btc_monitor.btc_rsi, 1)
+        gates["btc_1h_chg"] = round(self._btc_monitor.btc_1h_change, 4)
+        # Compute Half-Kelly size for this bar (0 when no entry signal)
+        confidence = gates["confidence"]
+        if confidence > 0 and len(self._trade_log) >= 5:
+            wins = [t for t in self._trade_log if t.net_pnl > 0]
+            losses = [t for t in self._trade_log if t.net_pnl < 0]
+            wr = len(wins) / len(self._trade_log)
+            avg_win = sum(t.net_pnl for t in wins) / len(wins) if wins else 0.0
+            avg_loss = abs(sum(t.net_pnl for t in losses) / len(losses)) if losses else 1.0
+            payoff = avg_win / avg_loss if avg_loss > 0 else KELLY_DEFAULT_PAYOFF
+            computed_size = half_kelly_size(wr, payoff, confidence)
+        elif confidence > 0:
+            computed_size = half_kelly_size(
+                KELLY_DEFAULT_WIN_RATE, KELLY_DEFAULT_PAYOFF, confidence
+            )
+        else:
+            computed_size = 0.0
+        gates["kelly_size"] = round(computed_size, 2)
+        gates["enabled"] = self._enabled
         await self._broadcast({"type": "signal_state", "gates": gates,
-                                "pair": self.pair, "ts": bar.ts})
+                                "pair": self.pair, "ts": bar.ts,
+                                "siblings": self._get_sibling_states()})
         # Bar-close exit check + peak tracking
         if self._position is not None:
             self._position.candles_held += 1
@@ -1258,16 +1648,19 @@ class MemeAgent:
             if reason:
                 await self._exit_position(reason)
                 return
-        # Entry check (only when no position, no pending sell, and OBI data is fresh)
-        if (self._position is None and not self._executor.is_halted()
+        # Entry check (only when enabled, no position, no pending sell, OBI fresh, BTC not dumping)
+        btc_ok = not self._btc_monitor.is_risk_off
+        loss_halted = self._bar_count < self._halt_until_bar
+        if (self._enabled and self._position is None and not self._executor.is_halted()
                 and not self._sell_pending_reason and not self._obi_poller.is_stale
+                and btc_ok and not loss_halted
                 and (self._bar_count - self._last_exit_bar_count) >= REENTRY_COOLDOWN_BARS):
-            if gates["all_pass"]:
+            if gates["all_pass"] and computed_size >= self._executor.costmin:
                 entry_mode = gates.get("entry_mode", "momentum")
                 mid = self._obi_poller.mid_price or None
                 pos = await asyncio.to_thread(
                     self._executor.place_buy, self._obi_poller.best_ask, mid,
-                    entry_mode,
+                    entry_mode, computed_size,
                 )
                 if pos:
                     self._position = pos
@@ -1321,6 +1714,14 @@ class MemeAgent:
             self._sell_pending_reason = None
             self._sell_retry_count = 0
             self._last_exit_bar_count = self._bar_count
+            if record.net_pnl < 0:
+                self._consec_stops += 1
+                if self._consec_stops >= CONSEC_LOSS_HALT_THRESHOLD:
+                    self._halt_until_bar = self._bar_count + CONSEC_LOSS_HALT_BARS
+                    print(f"[APEX] {self.pair}: {self._consec_stops} consecutive losses "
+                          f"— halting entries for {CONSEC_LOSS_HALT_BARS} bars")
+            else:
+                self._consec_stops = 0
         await self._broadcast({"type": "trade_closed",
                                "net_pnl": record.net_pnl,
                                "exit_reason": reason,
@@ -1362,6 +1763,7 @@ class MemeAgent:
                     await asyncio.sleep(OBI_POLL_INTERVAL)
                     continue
                 await asyncio.to_thread(self._obi_poller.poll)
+                await asyncio.to_thread(self._btc_monitor.poll)
                 mid = self._obi_poller.mid_price
                 # Retry failed sell with fresh bid data
                 if self._sell_pending_reason and self._position is not None and mid > 0:
@@ -1401,6 +1803,9 @@ class MemeAgent:
                         "price": mid,
                         "obi": self._obi_poller.obi,
                         "spread_bps": round(spread_bps, 1),
+                        "btc_risk_off": self._btc_monitor.is_risk_off,
+                        "btc_rsi": round(self._btc_monitor.btc_rsi, 1),
+                        "btc_1h_chg": round(self._btc_monitor.btc_1h_change, 4),
                     })
             except Exception as e:
                 print(f"[APEX] OBI loop error: {e}")
@@ -1594,11 +1999,12 @@ class MemeAgent:
         await self._seed_history()
         server = None
         ws_port = None
-        for port in range(WS_PORT_BASE, WS_PORT_BASE + WS_PORT_RANGE):
+        port_range = ([self._ws_port_fixed] if self._ws_port_fixed is not None
+                      else range(WS_PORT_BASE, WS_PORT_BASE + WS_PORT_RANGE))
+        for port in port_range:
             try:
                 server = await websockets.serve(
                     self._ws_handler, "127.0.0.1", port,
-                    reuse_address=True,
                 )
                 ws_port = port
                 break
@@ -1665,7 +2071,8 @@ class MemeAgent:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="APEX Meme Engine")
-    p.add_argument("--pair", required=True, help="Trading pair e.g. PLAY/USD")
+    p.add_argument("--pair", help="Single trading pair e.g. NIGHT/USD")
+    p.add_argument("--pairs", help="Comma-separated pairs e.g. NIGHT/USD,AAVE/USD (multi-pair)")
     p.add_argument("--position-size", type=float, default=300.0)
     p.add_argument("--daily-cap", type=float, default=30.0)
     p.add_argument("--session-path", default="hydra_meme_session.json")
@@ -1673,22 +2080,67 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--watchlist-path", default="hydra_meme_watchlist.json")
     p.add_argument("--test-fire", action="store_true",
                    help="Execute one $5 BUY→SELL cycle on startup to verify pipeline")
-    return p.parse_args()
+    args = p.parse_args()
+    if not args.pair and not args.pairs:
+        p.error("--pair or --pairs required")
+    return args
 
 
 def main() -> None:
     args = _parse_args()
+    # Write PID file for clean restarts
+    pid_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apex_meme.pid")
+    with open(pid_path, "w") as f:
+        f.write(str(os.getpid()))
+    import atexit
+    atexit.register(lambda: os.path.exists(pid_path) and os.remove(pid_path))
+
     if not os.environ.get("KRAKEN_API_KEY") or not os.environ.get("KRAKEN_API_SECRET"):
         print("[APEX] WARNING: KRAKEN_API_KEY/SECRET not found — orders will fail")
-    agent = MemeAgent(
-        pair=args.pair,
-        position_size=args.position_size,
-        daily_cap=args.daily_cap,
-        session_path=args.session_path,
-        journal_path=args.journal_path,
-        watchlist_path=args.watchlist_path,
-    )
-    asyncio.run(agent.run(test_fire=args.test_fire))
+
+    if args.pairs:
+        pairs = [p.strip() for p in args.pairs.split(",")]
+    else:
+        pairs = [args.pair]
+
+    shared_btc = BtcRegimeMonitor()
+
+    if len(pairs) == 1:
+        agent = MemeAgent(
+            pair=pairs[0],
+            position_size=args.position_size,
+            daily_cap=args.daily_cap,
+            session_path=args.session_path,
+            journal_path=args.journal_path,
+            watchlist_path=args.watchlist_path,
+            btc_monitor=shared_btc,
+        )
+        asyncio.run(agent.run(test_fire=args.test_fire))
+    else:
+        async def run_all():
+            agents = []
+            for i, pair in enumerate(pairs):
+                tag = pair.replace("/", "_").lower()
+                agent = MemeAgent(
+                    pair=pair,
+                    position_size=args.position_size,
+                    daily_cap=args.daily_cap,
+                    session_path=f"hydra_meme_session_{tag}.json",
+                    journal_path=f"hydra_meme_journal_{tag}.json",
+                    watchlist_path=args.watchlist_path,
+                    btc_monitor=shared_btc,
+                    ws_port=WS_PORT_BASE + i,
+                )
+                agents.append(agent)
+            # Wire cross-pair awareness: each agent knows its siblings
+            for a in agents:
+                a._sibling_agents = [s for s in agents if s is not a]
+            print(f"[APEX] Multi-pair mode: {len(agents)} agents — "
+                  f"{', '.join(pairs)}")
+            await asyncio.gather(
+                *[a.run(test_fire=args.test_fire) for a in agents]
+            )
+        asyncio.run(run_all())
 
 
 if __name__ == "__main__":
