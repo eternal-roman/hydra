@@ -146,12 +146,12 @@ def main() -> int:
         result = BacktestRunner(cfg).run()
         m = result.metrics
         return FoldMetrics(
-            sharpe=getattr(m, "sharpe", 0.0),
-            total_return_pct=getattr(m, "total_return_pct", 0.0),
-            max_dd_pct=getattr(m, "max_dd_pct", 0.0),
+            sharpe=m.sharpe,
+            total_return_pct=m.total_return_pct,
+            max_dd_pct=m.max_drawdown_pct,
             fee_adj_return_pct=getattr(m, "fee_adj_return_pct",
-                                       getattr(m, "total_return_pct", 0.0)),
-            n_trades=getattr(m, "n_trades", getattr(m, "trade_count", 0)),
+                                       m.total_return_pct),
+            n_trades=m.total_trades,
         )
 
     spec = WalkForwardSpec()
