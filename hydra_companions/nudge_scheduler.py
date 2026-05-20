@@ -4,7 +4,7 @@ Monitors live-state transitions and, when triggered, pushes an
 in-character message from the active companion. Rate-limited (600s
 default between nudges) and silenced if the user has typed within 90s.
 
-Kill switch: HYDRA_COMPANION_NUDGES=1 must be set explicitly to enable.
+Kill switch: HYDRA_COMPANION_NUDGES=0 disables proactive messages (default ON).
 """
 from __future__ import annotations
 import threading

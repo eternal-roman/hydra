@@ -547,6 +547,13 @@ class HydraAgent:
                 self.backtest_pool.shutdown(timeout=3.0)
             except Exception as e:
                 print(f"  [HYDRA] Backtest pool shutdown failed: {e}")
+        # Stop the dashboard WebSocket server so port 8765 is released
+        # before process exit — prevents EADDRINUSE on rapid --resume.
+        if self.broadcaster is not None:
+            try:
+                self.broadcaster.stop()
+            except Exception as e:
+                print(f"  [HYDRA] Broadcaster stop failed: {e}")
         # Flush session snapshot for --resume
         try:
             self._save_snapshot()
@@ -4083,7 +4090,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.25.0",
+            "version": "2.25.1",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

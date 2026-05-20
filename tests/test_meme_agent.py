@@ -1241,7 +1241,8 @@ def test_confidence_zero_when_no_entry():
 def test_meme_agent_enabled_flag():
     """MemeAgent has _enabled flag and respects it."""
     from hydra_meme_agent import MemeAgent
-    with patch("hydra_meme_agent._query_pair_precision", return_value=(8, 8, 0.01, 5.0)):
+    with patch("hydra_meme_agent._query_pair_precision", return_value=(8, 8, 0.01, 5.0)), \
+         patch("hydra_meme_agent.load_pair_prefs", return_value={"parked_pairs": []}):
         agent = MemeAgent(
             pair="NIGHT/USD",
             position_size=300.0,
@@ -1255,7 +1256,8 @@ def test_meme_agent_enabled_flag():
 def test_meme_agent_sibling_agents():
     """MemeAgent has sibling_agents list."""
     from hydra_meme_agent import MemeAgent
-    with patch("hydra_meme_agent._query_pair_precision", return_value=(8, 8, 0.01, 5.0)):
+    with patch("hydra_meme_agent._query_pair_precision", return_value=(8, 8, 0.01, 5.0)), \
+         patch("hydra_meme_agent.load_pair_prefs", return_value={"parked_pairs": []}):
         agent = MemeAgent(
             pair="NIGHT/USD",
             position_size=300.0,

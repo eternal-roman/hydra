@@ -222,7 +222,10 @@ class DashboardBroadcaster:
     def _run_loop(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._serve())
+        try:
+            self._loop.run_until_complete(self._serve())
+        finally:
+            self._loop.close()
 
     async def _serve(self):
         try:
@@ -253,6 +256,8 @@ class DashboardBroadcaster:
                 self._loop.call_soon_threadsafe(self._serve_future.set_result, None)
             except Exception:
                 pass
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
 
     def _origin_allowed(self, origin: str) -> bool:
         if not origin:
