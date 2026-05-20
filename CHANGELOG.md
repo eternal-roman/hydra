@@ -14,6 +14,7 @@ Audit-driven patch: walk-forward metrics bug, documentation fixes, test isolatio
 - **Walk-forward metrics silently zeroed:** `hydra_backtest_server.py` and `tools/run_regression.py` used wrong attribute names (`max_dd_pct`, `n_trades`) when reading `BacktestMetrics` fields (`max_drawdown_pct`, `total_trades`). Every walk-forward research lab result and regression run reported 0.0 max drawdown and 0 trades. Fixed by mapping to correct field names.
 - **Nudge scheduler docstring backwards:** `hydra_companions/nudge_scheduler.py` documented "NUDGES=1 must be set to enable" but nudges default ON (opt-out via `=0`). Corrected docstring.
 - **Test isolation for PARK feature:** `test_meme_agent_enabled_flag` and `test_meme_agent_sibling_agents` read real `hydra_meme_prefs.json` instead of mocking, causing failures when pairs were parked. Added `load_pair_prefs` mock.
+- **EADDRINUSE on rapid --resume:** Agent shutdown now explicitly stops `DashboardBroadcaster` before process exit, releasing port 8765. `DashboardBroadcaster.stop()` now closes the event loop and joins the thread (2s timeout) to ensure clean teardown.
 
 ---
 
