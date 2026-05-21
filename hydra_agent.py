@@ -3884,7 +3884,8 @@ class HydraAgent:
         print("")
         print("  HYDRA - Hyper-adaptive Dynamic Regime-switching Universal Agent")
         print("  ================================================================")
-        print(f"  Trading: {trade_mode} | Sizing: {sizing_mode} | Kraken CLI v0.2.3 (WSL)")
+        cli_version = KrakenCLI.version()
+        print(f"  Trading: {trade_mode} | Sizing: {sizing_mode} | Kraken CLI v{cli_version} (WSL)")
         print(f"  {brain_status}")
         if self.paper:
             print("  Paper trading — no real money at risk.")
@@ -4090,7 +4091,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.25.1",
+            "version": "2.25.2",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

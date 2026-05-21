@@ -48,7 +48,7 @@ from tests.live_harness.stubs import (
 )
 
 from hydra_agent import HydraAgent
-from hydra_kraken_cli import KrakenCLI
+from hydra_kraken_cli import KrakenCLI, WSL_DISTRO
 
 
 MOCK = frozenset({"mock"})
@@ -1054,7 +1054,7 @@ def _cancel_order_with_retry(txid: str, max_retries: int = 3) -> bool:
         time.sleep(2)
         try:
             result = subprocess.run(
-                ["wsl", "-d", "Ubuntu", "--", "bash", "-c",
+                ["wsl", "-d", WSL_DISTRO, "--", "bash", "-c",
                  f"source ~/.cargo/env && kraken order cancel {txid} --yes -o json 2>/dev/null"],
                 capture_output=True, text=True, timeout=20,
             )
@@ -1073,7 +1073,7 @@ def _cancel_all_safe():
     try:
         time.sleep(2)
         subprocess.run(
-            ["wsl", "-d", "Ubuntu", "--", "bash", "-c",
+            ["wsl", "-d", WSL_DISTRO, "--", "bash", "-c",
              "source ~/.cargo/env && kraken order cancel-all --yes -o json 2>/dev/null"],
             capture_output=True, text=True, timeout=20,
         )

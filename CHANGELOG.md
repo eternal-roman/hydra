@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.25.2] — 2026-05-21
+
+Harden Kraken CLI integration: dynamic version detection, centralized WSL distro constant.
+
+### Fixed
+- **Kraken CLI banner version stale:** `hydra_agent.py` hardcoded `v0.2.3` in the startup banner despite the CLI being at `v0.3.2`. Added `KrakenCLI.version()` that queries `kraken --version` in WSL at startup — banner now always reflects the installed version.
+
+### Changed
+- **WSL distro centralized:** All 9 `"Ubuntu"` hardcoded WSL distro references across 7 files extracted to `hydra_kraken_cli.WSL_DISTRO` (reads `HYDRA_WSL_DISTRO` env, defaults to `Ubuntu`). Isolated modules (`hydra_meme_agent.py`, `hydra_derivatives_stream.py`, tools) read the env var directly to preserve import boundaries.
+- **`HYDRA_WSL_DISTRO` env flag added:** New env flag documented in CLAUDE.md — override if distro name differs from `Ubuntu` (e.g. `Ubuntu-24.04`).
+
+---
+
 ## [2.25.1] — 2026-05-19
 
 Audit-driven patch: walk-forward metrics bug, documentation fixes, test isolation.

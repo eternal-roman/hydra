@@ -38,7 +38,7 @@ def _kraken_trades_history_page(start_ts: Optional[float] = None,
         inner += f" --start {start_ts:.6f}"
     if offset > 0:
         inner += f" --offset {offset}"
-    cmd = ["wsl", "-d", "Ubuntu", "--", "bash", "-c", inner]
+    cmd = ["wsl", "-d", os.environ.get("HYDRA_WSL_DISTRO", "Ubuntu"), "--", "bash", "-c", inner]
     out = subprocess.check_output(cmd, encoding="utf-8")
     return json.loads(out)
 

@@ -32,7 +32,7 @@ def kraken_cli(args, timeout=30):
         _cli_last_call = time.time()
     quoted = " ".join(shlex.quote(str(a)) for a in args)
     cmd_str = f"source ~/.cargo/env && kraken {quoted} -o json 2>/dev/null"
-    cmd = ["wsl", "-d", "Ubuntu", "--", "bash", "-c", cmd_str]
+    cmd = ["wsl", "-d", os.environ.get("HYDRA_WSL_DISTRO", "Ubuntu"), "--", "bash", "-c", cmd_str]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if not result.stdout.strip():

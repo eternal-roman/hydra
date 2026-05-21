@@ -47,7 +47,7 @@ regression bug, not a style issue.
   `STABLE_QUOTES = {USD, USDC, USDT}` are first-class. v2.19 flipped
   the default from USDC → USD; opt back into USDC by passing
   `--pairs SOL/USDC,SOL/BTC,BTC/USDC`.
-- **Version pin:** v2.25.1
+- **Version pin:** v2.25.2
 
 ## Defaults (inherited)
 
@@ -194,6 +194,7 @@ on every call (tokens rotate).
 | `HYDRA_TAPE_CAPTURE` | history | `=1` (default) wires CandleStream candle-close pushes into a bounded-queue writer that upserts to `hydra_history.sqlite` (`source='tape'`). Set `=0` to disable (e.g. paper-mode tests on a shared DB). |
 | `HYDRA_HISTORY_DB` | history | Path override for the canonical OHLC store. Defaults to `hydra_history.sqlite` in the working directory. Used by the agent (tape capture), `tools/refresh_history.py`, `tools/run_regression.py`, and the SqliteSource backtest path. |
 | `HYDRA_REGRESSION_GATE` | release | `=1` (default) blocks the `/release` skill on a Wilcoxon WORSE p<0.05 verdict in `tools/run_regression.py`. Set `=0` to skip the gate (override path also requires `--accept-regression "<reason>"` to populate `regression_run.override_reason`). Read only by `tools/run_regression.py`; live agent ignores it. |
+| `HYDRA_WSL_DISTRO` | cli | WSL distribution name for all `kraken` CLI invocations. Defaults to `Ubuntu`. Override if your distro is named differently (e.g. `Ubuntu-24.04`). Single source of truth: `hydra_kraken_cli.WSL_DISTRO`; isolated modules read the env var directly. |
 
 ## Build / run
 
@@ -265,7 +266,7 @@ declare done only when phase 2 is clean. Drive full cycle via `/audit`.
 - Use UTF-8 explicitly; cp1252 crashes on Unicode (dashboard regime emoji + console portfolio block share the theme — both crash on cp1252)
 - `time.time()` has ~15ms Windows resolution; in BaseStream heartbeat or `RESTART_COOLDOWN_S=30s` it silently miscounts — use `time.perf_counter()`
 - Escape parentheses in `.bat` files inside if-blocks — cmd parser drops branches silently
-- WSL: if distro is `Ubuntu-22.04` instead of `Ubuntu`, `kraken` invocation silently routes nowhere — verify `wsl -l -v`
+- WSL: if distro is `Ubuntu-22.04` instead of `Ubuntu`, `kraken` invocation silently routes nowhere — verify `wsl -l -v`; fix with `HYDRA_WSL_DISTRO=Ubuntu-22.04`
 - Vite dev server falls off :5173 to next free port if taken; dashboard WS proxy assumes :5173 — verify bound port in Vite startup log
 
 ## Common pitfalls
