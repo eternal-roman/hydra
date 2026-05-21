@@ -52,6 +52,7 @@ USDT entries here).
 
 import json
 import math
+import os
 import subprocess
 import sys
 import threading
@@ -400,7 +401,7 @@ class DerivativesStream:
         grow without any operator-visible cause.
         """
         cmd_str = "source ~/.cargo/env && kraken -o json futures tickers 2>/dev/null"
-        cmd = ["wsl", "-d", "Ubuntu", "--", "bash", "-c", cmd_str]
+        cmd = ["wsl", "-d", os.environ.get("HYDRA_WSL_DISTRO", "Ubuntu"), "--", "bash", "-c", cmd_str]
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=self.HTTP_TIMEOUT_S

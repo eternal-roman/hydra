@@ -8,7 +8,7 @@ import threading
 import queue
 from typing import Dict, List, Optional, Any, Tuple
 
-from hydra_kraken_cli import KrakenCLI
+from hydra_kraken_cli import KrakenCLI, WSL_DISTRO
 
 # ═══════════════════════════════════════════════════════════════
 # BASE STREAM — shared WS subprocess/reader/health infrastructure
@@ -74,7 +74,7 @@ class BaseStream:
             cmd_str = f"export KRAKEN_API_KEY={shlex.quote(api_key)} && export KRAKEN_API_SECRET={shlex.quote(api_secret)} && {cmd_str}"
 
         cmd = [
-            "wsl", "-d", "Ubuntu", "--", "bash", "-c", cmd_str
+            "wsl", "-d", WSL_DISTRO, "--", "bash", "-c", cmd_str
         ]
         try:
             self._proc = subprocess.Popen(

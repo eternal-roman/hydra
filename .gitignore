@@ -118,3 +118,6 @@ hydra_order_journal.json.backup-*
 
 # Superpowers plans/specs (ephemeral implementation artifacts)
 docs/superpowers/
+
+# Fix-bug scope manifest (ephemeral, per-session)
+.fix-bug-scope.json

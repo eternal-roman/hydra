@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 
+WSL_DISTRO = os.environ.get("HYDRA_WSL_DISTRO", "Ubuntu")
+
 from hydra_pair_registry import (
     PairRegistry,
     default_registry,
@@ -87,6 +89,22 @@ class KrakenCLI:
         return _registry_normalize_asset(asset)
 
     @staticmethod
+    def version() -> str:
+        """Return the installed kraken-cli version from WSL, or 'unknown' on failure."""
+        try:
+            result = subprocess.run(
+                ["wsl", "-d", WSL_DISTRO, "--", "bash", "-c",
+                 "source ~/.cargo/env && kraken --version 2>/dev/null"],
+                capture_output=True, text=True, timeout=5,
+            )
+            parts = result.stdout.strip().split()
+            if len(parts) >= 2:
+                return parts[1]
+        except Exception:
+            pass
+        return "unknown"
+
+    @staticmethod
     def _run(args: list, timeout: int = 20) -> dict:
         """Execute a kraken CLI command via WSL and return parsed JSON.
 
@@ -106,7 +124,7 @@ class KrakenCLI:
             cmd_str += f" && export KRAKEN_API_KEY={shlex.quote(api_key)} && export KRAKEN_API_SECRET={shlex.quote(api_secret)}"
 
         cmd_str += f" && kraken {quoted} -o json 2>/dev/null"
-        cmd = ["wsl", "-d", "Ubuntu", "--", "bash", "-c", cmd_str]
+        cmd = ["wsl", "-d", WSL_DISTRO, "--", "bash", "-c", cmd_str]
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout,

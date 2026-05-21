@@ -970,7 +970,7 @@ def _kraken_cli(args: list[str], timeout: int = 20) -> dict:
         cmd_str += (f" && export KRAKEN_API_KEY={shlex.quote(api_key)}"
                     f" && export KRAKEN_API_SECRET={shlex.quote(api_secret)}")
     cmd_str += f" && kraken {quoted} -o json 2>/dev/null"
-    cmd = ["wsl", "-d", "Ubuntu", "--", "bash", "-c", cmd_str]
+    cmd = ["wsl", "-d", os.environ.get("HYDRA_WSL_DISTRO", "Ubuntu"), "--", "bash", "-c", cmd_str]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         stdout = result.stdout.strip()
