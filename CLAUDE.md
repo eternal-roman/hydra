@@ -54,12 +54,12 @@ regression bug, not a style issue.
 - Engine: Python stdlib only (no numpy/pandas in engine)
 - Orders: limit post-only (`--type limit --oflags post`). Never market.
 - Engine isolation: one HydraEngine per pair, no shared state
-- Kraken CLI: `wsl -d Ubuntu -- bash -c "source ~/.cargo/env && kraken ..."`
-  (verify distro is exactly `Ubuntu` via `wsl -l -v`)
+- Kraken CLI: `wsl -d $HYDRA_WSL_DISTRO -- bash -c "source ~/.cargo/env && kraken ..."`
+  (distro from `hydra_kraken_cli.WSL_DISTRO`, default `Ubuntu`; verify via `wsl -l -v`)
 - Kraken REST min interval: **2s** between calls
 - min_confidence: 0.65 (both modes); warmup_candles: 50
 - Circuit breaker: **15% drawdown halts engine for session** (permanent)
-- WS dashboard port: 8765; Vite dev: 5173 (assumed)
+- WS dashboard port: 8765; Vite dev: 5173
 - CI authority: `.github/workflows/ci.yml` (jobs: `engine-tests`,
   `dashboard-build`)
 
@@ -74,7 +74,7 @@ regression bug, not a style issue.
 - **Ledger shield floor = 0.20 BTC** — cannot be lowered via API, ever
 - **SKIP ≠ BLOCK** — posture restriction SKIPs, BLOCK reserved for hard rules
 - **`HYDRA_COMPANION_LIVE_EXECUTION` default OFF** — proposals are paper until opted in
-- **Funding is markPrice-relative, never absolute** — Kraken Futures `PF_*` returns `fundingRate` as absolute USD-per-contract-per-period. Convert to bps via `(fundingRate / markPrice) * 10000`, never `fundingRate * 10000`. The `_absolute_to_relative_bps` helper in `hydra_derivatives_stream.py` enforces this, including a ±500 bps clamp against future API drift. Pre-v2.15.2 values were wrong by ~70000x (BTC) and ~80x (SOL); R1/R2 fires from that period are not authoritative.
+- **Funding is markPrice-relative, never absolute** — Kraken Futures `PF_*` `fundingRate` is absolute USD-per-contract-per-period. Convert to bps via `(fundingRate / markPrice) * 10000`, never `fundingRate * 10000`. The `_absolute_to_relative_bps` helper in `hydra_derivatives_stream.py` enforces this (±500 bps clamp vs API drift). Pre-v2.15.2 fires used the wrong absolute conversion — not authoritative.
 - **Synthetic pairs declare themselves to R10** — `DerivativesSnapshot.synthetic=True` propagates to `quant_indicators["synthetic_pair"]`; R10 then tracks only funding/cvd/regime (the fields the synthetic path actually populates). Adding a new pair without a direct Kraken Futures perp requires this flag, otherwise R10 will structurally force-hold every tick.
 - **`hydra_rm_features.py` is pure** — no I/O, subprocess, network, or file access; every function returns `Optional[float]` (or `Optional[dict]`) from input alone, returning `None` on insufficient data. A future contributor adding side effects breaks the "fails-silent with None" contract that lets R10 and RM reason over missing vs corrupted data and that lets `HYDRA_RM_FEATURES_DISABLED` work as an instant rollback.
 - **`PLACEMENT_FAILED` entries are session-only** — pre-exchange diagnostics (`insufficient_USD_balance`, `placement_error:api`) live in the in-memory `HydraAgent.order_journal` for live debugging but MUST NOT persist to `hydra_session_snapshot.json` or the rolling `hydra_order_journal.json`. The `_journal_for_persistence()` helper is the single chokepoint; both write paths (`_save_snapshot` and the per-tick rolling write) go through it. If you add a third write path, route it through the helper too.
@@ -128,8 +128,8 @@ shutdown) → `cbp --label hydra.engine_invariants` + `hydra.trading_invariants`
 ## CBP pointers (load on demand, one node per subsystem)
 
 Relational graph (edges: `causes` / `requires` / `contradicts` /
-`qualifies`) lives in CBP — 272+ nodes tracked there, not duplicated
-here. Session-start header surfaces top weighted nodes.
+`qualifies`) lives in CBP, not duplicated here. Session-start header
+surfaces top weighted nodes.
 
 ```
 cbp --label hydra.engine_invariants     # indicators + regime + adaptive volatility
@@ -189,7 +189,7 @@ on every call (tokens rotate).
 | `CBP_RUNNER_DIR` | memory | override sibling `cbp-runner` checkout location |
 | `HYDRA_POSTEDIT_HOOK_DISABLED` | tooling | silence hook during heavy refactors |
 | `HYDRA_RM_FEATURES_DISABLED` | rm_features | `=1` skips engine-internal feature computation in `_build_quant_indicators`; instant rollback without redeploy. Default off (features enabled). |
-| `HYDRA_BUY_OFFSET_DISABLED` | execution | `=1` disables the regime-gated BUY limit offset (BUYs revert to raw bid). Default off (offset active). Table lives in `hydra_agent.py:_BUY_LIMIT_OFFSET_BPS` keyed by `(base, quote_class, regime)`; only SOL bases carry offsets, and only in `VOLATILE`/`TREND_DOWN` (RANGING/TREND_UP and all BTC-base entries stay at raw bid to avoid missing fills — BTC empirically fills at its local floor already). SOL on stable quote gets the largest offset (90 bps in TREND_DOWN) — derived from empirical post-fill drawdown analysis (median 1h DD −0.63% vs BTC/USD −0.33% with floor=floor structure). |
+| `HYDRA_BUY_OFFSET_DISABLED` | execution | `=1` reverts BUYs to raw bid (default off). Offset table: `hydra_agent.py:_BUY_LIMIT_OFFSET_BPS` keyed by `(base, quote_class, regime)`; only SOL bases in `VOLATILE`/`TREND_DOWN` carry offsets — BTC bases and RANGING/TREND_UP stay at raw bid (avoid missed fills). Empirical derivation in the code comment. |
 | `HYDRA_QUOTE` | config | Default stable quote when `--quote` is not passed and no `--pairs` override. Choices: `USD` (v2.19+ default), `USDC`, `USDT`. Resolution order: explicit `--quote` > `HYDRA_QUOTE` env > `DEFAULT_QUOTE` (USD). |
 | `HYDRA_TAPE_CAPTURE` | history | `=1` (default) wires CandleStream candle-close pushes into a bounded-queue writer that upserts to `hydra_history.sqlite` (`source='tape'`). Set `=0` to disable (e.g. paper-mode tests on a shared DB). |
 | `HYDRA_HISTORY_DB` | history | Path override for the canonical OHLC store. Defaults to `hydra_history.sqlite` in the working directory. Used by the agent (tape capture), `tools/refresh_history.py`, `tools/run_regression.py`, and the SqliteSource backtest path. |
@@ -208,7 +208,7 @@ on every call (tokens rotate).
 
 **Launchers:**
 - `start_hydra.bat` — production watchdog (`--mode competition --resume` — **do not remove these flags**)
-- `start_all.bat` — full stack: CBP sidecar + agent + dashboard
+- `start_all.bat` — full stack: agent + dashboard (CBP sidecar not auto-launched since 2026-05-07; launch manually)
 - `start_dashboard.bat` — dashboard only
 - `start_hydra_companion.bat` — paper-mode companion testing (no real money)
 
@@ -220,10 +220,11 @@ on every call (tokens rotate).
 4. `dashboard/src/App.jsx` — footer string `HYDRA vX.Y.Z`
 5. `hydra_agent.py` — `_export_competition_results()` → `"version"` field
 6. `hydra_backtest.py` — `HYDRA_VERSION = "X.Y.Z"` (stamps every `BacktestResult`)
-7. Git tag — `git tag -s vX.Y.Z -m "vX.Y.Z"` after merge; verify `git tag -v vX.Y.Z` (Rule 3)
-8. GitHub Release — `gh release create vX.Y.Z --verify-tag --notes-from-tag`; a pushed tag alone does NOT publish a Release and leaves GitHub's "Latest" badge stale
+7. `CLAUDE.md` — `**Version pin:** vX.Y.Z` (Project section)
+8. Git tag — `git tag -s vX.Y.Z -m "vX.Y.Z"` after merge; verify `git tag -v vX.Y.Z` (Rule 3)
+9. GitHub Release — `gh release create vX.Y.Z --verify-tag --notes-from-tag`; a pushed tag alone does NOT publish a Release and leaves GitHub's "Latest" badge stale
 
-**Alignment gate:** `python scripts/check_release_alignment.py --check-tag --check-gh-release` must exit 0 at the end of every release cycle — it enumerates all 7 code sites + tag + published GH Release.
+**Alignment gate:** `python scripts/check_release_alignment.py --check-tag --check-gh-release` must exit 0 at the end of every release cycle — it enumerates all 7 code/doc sites + tag + published GH Release.
 
 **Policy:** MINOR only for material upgrades; bug fixes / doc tweaks = PATCH.
 
@@ -271,10 +272,6 @@ declare done only when phase 2 is clean. Drive full cycle via `/audit`.
 
 ## Common pitfalls
 
-- Don't add `import numpy` or `import pandas` to the engine — intentionally pure Python
-- Don't change orders to market type — limit post-only is deliberate
-- Don't reduce rate limiting below 2s — Kraken throttles/bans
-- Don't merge engine instances across pairs — they must remain independent
 - `.env` contains Kraken API keys — never commit
 - On shutdown agent cancels all resting limit orders and flushes snapshot — do not bypass
 - `start_hydra.bat` uses `--mode competition --resume` for production — do not remove
