@@ -96,6 +96,7 @@ hydra_meme_prefs.json.tmp
 *.diff
 *.patch
 AUDIT_*.md
+auto_release_*.json
 test_ws.*
 fix_host.py
 

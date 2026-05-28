@@ -47,7 +47,7 @@ regression bug, not a style issue.
   `STABLE_QUOTES = {USD, USDC, USDT}` are first-class. v2.19 flipped
   the default from USDC → USD; opt back into USDC by passing
   `--pairs SOL/USDC,SOL/BTC,BTC/USDC`.
-- **Version pin:** v2.25.3
+- **Version pin:** v2.25.4
 
 ## Defaults (inherited)
 
@@ -59,7 +59,7 @@ regression bug, not a style issue.
 - Kraken REST min interval: **2s** between calls
 - min_confidence: 0.65 (both modes); warmup_candles: 50
 - Circuit breaker: **15% drawdown halts engine for session** (permanent)
-- WS dashboard port: 8765; Vite dev: 5173
+- WS dashboard port: 8765; Vite dev: 3000 (`strictPort: true`)
 - CI authority: `.github/workflows/ci.yml` (jobs: `engine-tests`,
   `dashboard-build`)
 
@@ -181,6 +181,7 @@ on every call (tokens rotate).
 | `HYDRA_THESIS_LADDERS` | thesis | opt in to Ladder primitive (match_rung is no-op without it) |
 | `HYDRA_BACKTEST_DISABLED` | backtest | kill; worker pool off, WS rejects backtest msgs; v2.9.x exact |
 | `HYDRA_BRAIN_TOOLS_ENABLED` | brain | enables Anthropic tool-use for Analyst+RM (Grok stays text-only) |
+| `HYDRA_QUANT_INDICATORS_DISABLED` | brain/quant | `=1` skips DerivativesStream + R1-R11 quant rules; Quant sees no funding/OI/CVD block and no force_hold from rules |
 | `HYDRA_COMPANION_DISABLED` | companion | kill (no orb) |
 | `HYDRA_COMPANION_PROPOSALS_ENABLED` | companion | default on; `=0` for no trade cards |
 | `HYDRA_COMPANION_NUDGES` | companion | default on; `=0` for no proactive messages |
@@ -268,7 +269,7 @@ declare done only when phase 2 is clean. Drive full cycle via `/audit`.
 - `time.time()` has ~15ms Windows resolution; in BaseStream heartbeat or `RESTART_COOLDOWN_S=30s` it silently miscounts — use `time.perf_counter()`
 - Escape parentheses in `.bat` files inside if-blocks — cmd parser drops branches silently
 - WSL: if distro is `Ubuntu-22.04` instead of `Ubuntu`, `kraken` invocation silently routes nowhere — verify `wsl -l -v`; fix with `HYDRA_WSL_DISTRO=Ubuntu-22.04`
-- Vite dev server falls off :5173 to next free port if taken; dashboard WS proxy assumes :5173 — verify bound port in Vite startup log
+- Vite dev server is pinned to :3000 with `strictPort: true` — it FAILS (does not fall off to another port) if :3000 is taken; free the port (`npx kill-port 3000`) rather than expecting a fallback
 
 ## Common pitfalls
 
