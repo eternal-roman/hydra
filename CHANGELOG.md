@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.25.4] — 2026-05-28
+
+Documentation patch — no code logic change. Tightens `CLAUDE.md`, corrects
+cross-doc inconsistencies, and brings the README current.
+
+### Docs
+- **CLAUDE.md tightened:** fixed stale `start_all.bat` description (no longer launches the CBP sidecar), pointed the Kraken CLI default at `HYDRA_WSL_DISTRO`, added the CLAUDE.md version pin as version site 7 (the alignment script already enforced it), and trimmed two over-verbose cells (BUY-offset, funding) by relocating deep empirical detail to the code comments where it lives. No binding rule, invariant, env flag, module row, or safety reminder removed.
+- **Vite dev port corrected** (CLAUDE.md): was documented as `5173`; actual is `3000` with `strictPort: true` (per `dashboard/vite.config.js`). The stale "falls off to next free port" gotcha was corrected — `strictPort` makes it fail, not fall back.
+- **`HYDRA_QUANT_INDICATORS_DISABLED`** documented in the CLAUDE.md env-flag table (was only in the README): `=1` skips DerivativesStream + R1-R11 quant rules.
+- **README brought current:** deterministic guardrails updated R1-R10 → R1-R11 with the QFE profit-exit rule added to the pipeline, guardrails table, and design notes; live-harness scenario count reconciled (43 registered, ~35 in mock/CI).
+
+### Version
+- All 8 alignment sites bumped 2.25.3 → 2.25.4.
+
+---
+
 ## [2.25.3] — 2026-05-28
 
 Audit-driven patch (AUDIT_2026-05-28): execution-path consistency and

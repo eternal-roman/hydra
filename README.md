@@ -125,7 +125,9 @@ Engine signal (BUY/SELL)
              CONFIRM / ADJUST / OVERRIDE, size_multiplier (stacked on Quant)
   → Agent 3: Strategic Advisor (Grok 4 Reasoning) — contested decisions
              (RM OVERRIDE or ADJUST, or Quant disagrees at conviction < 0.50)
-  → hydra_quant_rules.apply_rules() — deterministic R1-R10 guardrails
+  → hydra_quant_rules.apply_rules() — deterministic R1-R11 guardrails
+  → R11/QFE (evaluate_qfe) — releases a profitable SELL back through
+             force_hold (exit-only, profit ≥0.5%, squeeze-filtered)
   → Execute or skip (final size = quant × rm × rules, clamped [0, 1.5])
 ```
 
@@ -156,6 +158,7 @@ multiplier). The Market Quant consumes:
 | R7 | \|cvd_divergence_sigma\| > 2 opposing engine | size × 0.5 |
 | R8 | engine fades crowded positioning | size × 1.15 (contrarian edge) |
 | R10 | staleness > 300s on 2+ indicators | **force_hold** (no trade without data) |
+| R11/QFE | profitable SELL blocked by force_hold, no squeeze catalyst | **release the SELL** (exit-only, profit ≥0.5%) |
 
 Rules stack multiplicatively. Any force_hold pulls the final action
 to HOLD regardless of LLM verdict. Final size clamped to [0.0, 1.5].
@@ -333,7 +336,7 @@ hydra/
 ├── hydra_engine.py         # Core: indicators, regime detection, signals, sizing, CVD (Chaikin proxy)
 ├── hydra_brain.py          # 3-agent AI: Claude Market Quant + Risk Manager + Grok Strategist
 ├── hydra_derivatives_stream.py  # Kraken Futures public data via kraken CLI (funding, OI, basis) — read-only
-├── hydra_quant_rules.py    # Deterministic R1-R10 guardrails (Python, LLM-independent)
+├── hydra_quant_rules.py    # Deterministic R1-R11 guardrails (Python, LLM-independent)
 ├── hydra_thesis.py         # Persistent thesis layer (posture, ladder, intents, evidence)
 ├── hydra_thesis_processor.py # Daemon: research docs → ProposedThesisUpdate (Grok 4)
 ├── hydra_agent.py          # Kraken CLI integration, agent loop, trade execution, WebSocket, execution stream, WS market data streams, --resume
@@ -360,7 +363,7 @@ hydra/
 │   ├── test_ticker_stream.py     # TickerStream (ws ticker) dispatch + storage
 │   ├── test_balance_stream.py    # BalanceStream (ws balances) normalization
 │   ├── test_book_stream.py       # BookStream (ws book) dispatch + conversion
-│   └── live_harness/        # Live-execution test harness (41+ scenarios)
+│   └── live_harness/        # Live-execution test harness (43 scenarios)
 │       ├── __init__.py      # Package marker
 │       ├── harness.py       # Harness class, CLI entry, harness_execute wrapper
 │       ├── scenarios.py     # All scenarios + ALL_SCENARIOS registry
@@ -411,7 +414,7 @@ HYDRA tracks and reports per pair:
 
 9. **No REST for market data (v2.14)** — all Kraken market data flows through WebSocket streams or the `kraken` CLI (WSL Ubuntu). Only the CBP sidecar (localhost IPC) uses REST. Keeps the integration surface narrow and consistent.
 
-10. **LLM teeth (v2.14)** — Quant and Risk Manager each output a `size_multiplier` that stacks multiplicatively with the engine's Kelly sizing, then passes through a Python rule layer (R1-R10) before the order is placed. Low-conviction Quant sizes down even when RM confirms; a hard rule (funding > 80 bps + BUY) can force HOLD no matter what either LLM says.
+10. **LLM teeth (v2.14)** — Quant and Risk Manager each output a `size_multiplier` that stacks multiplicatively with the engine's Kelly sizing, then passes through a Python rule layer (R1-R11) before the order is placed. Low-conviction Quant sizes down even when RM confirms; a hard rule (funding > 80 bps + BUY) can force HOLD no matter what either LLM says; R11/QFE conversely releases an already-profitable SELL back through force_hold when no squeeze catalyst is present.
 
 ## Testing
 
@@ -436,14 +439,14 @@ python hydra_engine.py                 # Synthetic 300-tick demo (no API keys ne
 
 ### Live-execution test harness
 
-`tests/live_harness/` drives `HydraAgent._place_order` across 41+ scenarios
+`tests/live_harness/` drives `HydraAgent._place_order` across 43 scenarios
 (happy, failure, edge, schema, rollback, historical regression, WS execution
 stream lifecycle transitions, real Kraken).
 It is the canonical validation tool for any change to the execution path.
 
 ```bash
 python tests/live_harness/harness.py --mode smoke    # ~1.5s, import + agent
-python tests/live_harness/harness.py --mode mock     # ~1.5s, 33+ scenarios (default)
+python tests/live_harness/harness.py --mode mock     # ~1.5s, ~35-scenario subset (default)
 python tests/live_harness/harness.py --mode validate # ~10s, real Kraken read-only
 python tests/live_harness/harness.py --mode live --i-understand-this-places-real-orders
 ```
