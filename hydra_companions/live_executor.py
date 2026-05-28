@@ -82,6 +82,20 @@ class LiveExecutor:
         return {"ok": True, "userref": userref}
 
     def execute_ladder(self, p: "LadderProposal") -> dict:
+        # Per-companion daily cap — final gate before the exchange, mirroring
+        # execute_trade(). The coordinator already pre-checks the cap for both
+        # trade and ladder confirms; this redundant check closes the
+        # concurrent-confirm TOCTOU window on the money path so a ladder cannot
+        # slip through after the coordinator's check-then-place releases its lock.
+        cap = self.coordinator.router.safety_cap(p.companion_id, "max_trades_per_day", 0)
+        if cap > 0:
+            k = (p.user_id, p.companion_id)
+            count_today = self.coordinator._daily_trades.get(k, 0)
+            if count_today >= cap:
+                self._broadcast_failed(p.proposal_id, p.companion_id,
+                                       f"daily cap hit ({count_today}/{cap})")
+                return {"ok": False, "error": "daily cap hit"}
+
         cli = self._kraken_cli()
         fn = cli.order_buy if p.side == "buy" else cli.order_sell
         placed = []

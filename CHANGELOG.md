@@ -6,6 +6,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.25.3] — 2026-05-28
+
+Audit-driven patch (AUDIT_2026-05-28): execution-path consistency and
+defense-in-depth fixes. No behavioral change to the AI decision flow.
+
+### Fixed
+- **Near-full fills mis-classified as FILLED** (`hydra_streams.py`): `_is_fully_filled` used a 1% relative tolerance, so an order filled to 99.5% of the placed amount was treated as FILLED — skipping `reconcile_partial_fill` and leaving the engine permanently over-committed by the shortfall (a small, accumulating position/PnL drift). Tolerance tightened to a dust-level `FILL_TOLERANCE = 1e-6` (absorbs float noise on genuine full fills; routes any real shortfall to the PARTIALLY_FILLED reconcile path).
+- **Volatility-regime median biased high** (`hydra_engine.py`): `RegimeDetector` computed the ATR%/BB-width median as `sorted(series)[n//2]`, which selects the upper-middle element for even-length series and nudged the VOLATILE threshold up (GRID strategy slightly under-firing). Replaced with `statistics.median` (stdlib, exact for even lengths).
+- **`apply_tuned_params` applied unclamped values** (`hydra_engine.py`): tuned params from the per-pair `hydra_params_<pair>.json` load path (and backtest/shadow overrides) were written to engine state without bounds checking, so a corrupted file could push parameters out of safe range. Every value is now clamped to `PARAM_BOUNDS`; non-numeric and unknown keys are ignored; a degenerate RSI band (lower ≥ upper) is rejected rather than applied (would otherwise suppress all momentum/mean-reversion signals).
+- **Companion ladder lacked the executor-level daily-cap gate** (`hydra_companions/live_executor.py`): `execute_trade` had a redundant "final gate before the exchange" daily-cap check; `execute_ladder` did not. The coordinator already enforces the cap for both paths, but the missing executor-side check left a concurrent-confirm TOCTOU window on the ladder money path. Added the matching gate for symmetry. (Gated behind `HYDRA_COMPANION_LIVE_EXECUTION`, default OFF.)
+- **No 2s spacing between validate and live placement** (`hydra_agent.py`): `_place_order` slept the Kraken REST floor before the validate call but fired the live placement immediately after — two distinct REST hits inside the 2s floor, risking throttle/ban. Added a `KRAKEN_REST_FLOOR_S` (2.0) sleep before placement and centralized the constant.
+- **Dashboard balance render crash on null amount** (`dashboard/src/App.jsx`): `a.amount.toFixed(6)` could throw on a null/undefined asset amount; guarded with `(a.amount ?? 0)`.
+
+### Tests
+- New coverage: fill-tolerance classification (`test_execution_stream.py`), `apply_tuned_params` clamping + unknown/non-numeric handling (`test_tuner.py`), ladder daily-cap enforcement (`test_companion_live_executor.py`), `HYDRA_COMPANION_LIVE_EXECUTION` default-OFF contract (`test_live_execution_default_off.py`), and REST-floor spacing in the order path (`test_rest_floor_spacing.py`). Replaced the misleading `test_ladder_daily_cap_not_enforced_here` (which asserted the gap this release closes).
+
+### Notes
+- Audit false positives explicitly dismissed (not bugs): backtest Sortino downside-deviation (valid target-0 convention), `_profit_factor` returning `inf` (intentional, sanitized by consumers), agent "no REST ticker fallback" (refusing to trade without a live WS price is correct — a REST fallback would violate the no-REST-market-data invariant), RM `force_hold` "ignored" (the RM has no such field by design; it vetoes via decision/final_action and the Strategist arbitrates by design), walk-forward `test_start` underflow (precluded by the slice math), quota day-boundary race (`acquire` is atomic), and ledger-shield/Sortino coverage gaps (already tested).
+
+---
+
 ## [2.25.2] — 2026-05-21
 
 Harden Kraken CLI integration: dynamic version detection, centralized WSL distro constant.

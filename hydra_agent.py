@@ -71,6 +71,12 @@ from hydra_config import TradingTriangle
 from hydra_ws_server import DashboardBroadcaster
 from hydra_streams import CandleStream, TickerStream, BalanceStream, BookStream, ExecutionStream, _is_fully_filled
 
+# Kraken REST minimum interval (seconds) between distinct REST calls.
+# Below this Kraken throttles or bans. Authoritative floor for the agent's
+# order path; every REST hit (validate, place, cancel, query) must be spaced
+# by at least this. See CLAUDE.md "2s REST floor" invariant.
+KRAKEN_REST_FLOOR_S = 2.0
+
 # ═══════════════════════════════════════════════════════════════
 # Regime-gated BUY limit offset
 # ═══════════════════════════════════════════════════════════════
@@ -2746,7 +2752,7 @@ class HydraAgent:
         entry["intent"]["buy_offset_bps"] = offset_bps
 
         # ─── Validate ───
-        time.sleep(2)
+        time.sleep(KRAKEN_REST_FLOOR_S)
         print(f"  [TRADE] Validating {action_upper} {amount:.8f} {pair} @ {limit_price} (post-only limit)...")
         if action == "buy":
             val_result = KrakenCLI.order_buy(pair, amount, price=limit_price, validate=True)
@@ -2770,6 +2776,11 @@ class HydraAgent:
             entry["intent"]["limit_price"] = limit_price
 
         # ─── Place for real ───
+        # Kraken REST 2s floor: the validate call above is a distinct REST hit;
+        # without spacing, validate→place fire ~network-latency apart (<2s) and
+        # can trip Kraken's throttle/ban. Sleep the floor before placement.
+        # (Mock-mode harness patches time.sleep to a no-op, so this is free in CI.)
+        time.sleep(KRAKEN_REST_FLOOR_S)
         userref = self._next_userref()
         print(f"  [TRADE] Placing {action_upper} {amount:.8f} {pair} @ {limit_price} "
               f"(limit post-only, userref={userref})...")
@@ -4091,7 +4102,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.25.2",
+            "version": "2.25.3",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
