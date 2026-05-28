@@ -272,6 +272,10 @@ declare done only when phase 2 is clean. Drive full cycle via `/audit`.
 
 ## Common pitfalls
 
+- Don't add `import numpy` or `import pandas` to the engine — intentionally pure Python
+- Don't change orders to market type — limit post-only is deliberate
+- Don't reduce rate limiting below 2s — Kraken throttles/bans
+- Don't merge engine instances across pairs — they must remain independent
 - `.env` contains Kraken API keys — never commit
 - On shutdown agent cancels all resting limit orders and flushes snapshot — do not bypass
 - `start_hydra.bat` uses `--mode competition --resume` for production — do not remove
