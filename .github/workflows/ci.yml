@@ -175,6 +175,12 @@ jobs:
       - name: Run companion read-only tools tests
         run: python -m pytest tests/test_companion_tools_readonly.py -v
 
+      - name: Run live-execution default-off contract tests (v2.25.3)
+        run: python -m pytest tests/test_live_execution_default_off.py -v
+
+      - name: Run Kraken REST-floor spacing tests (v2.25.3)
+        run: python -m pytest tests/test_rest_floor_spacing.py -v
+
       - name: Run apex tools tests
         run: python -m pytest tests/test_apex_tools.py -v
 

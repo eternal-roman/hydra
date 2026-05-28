@@ -328,14 +328,14 @@ class RegimeDetector:
         # the asset's own median, not a fixed absolute number.
         atr_series = Indicators.atr_pct_series(candles)
         if len(atr_series) >= 20:
-            median_atr = sorted(atr_series)[len(atr_series) // 2]
+            median_atr = statistics.median(atr_series)
             atr_threshold = max(volatile_atr_mult * median_atr, volatile_atr_floor)
         else:
             atr_threshold = volatile_atr_floor  # warmup fallback
 
         bb_series = Indicators.bb_width_series(prices)
         if len(bb_series) >= 20:
-            median_bb = sorted(bb_series)[len(bb_series) // 2]
+            median_bb = statistics.median(bb_series)
             bb_threshold = max(volatile_bb_mult * median_bb, volatile_bb_floor)
         else:
             bb_threshold = volatile_bb_floor
@@ -1712,23 +1712,76 @@ class HydraEngine:
         }
 
     def apply_tuned_params(self, params: Dict[str, float]):
-        """Apply tuned parameters from ParameterTracker."""
-        if "volatile_atr_mult" in params:
-            self.volatile_atr_mult = params["volatile_atr_mult"]
-        if "volatile_bb_mult" in params:
-            self.volatile_bb_mult = params["volatile_bb_mult"]
-        if "trend_ema_ratio" in params:
-            self.trend_ema_ratio = params["trend_ema_ratio"]
-        if "momentum_rsi_lower" in params:
-            self.momentum_rsi_lower = params["momentum_rsi_lower"]
-        if "momentum_rsi_upper" in params:
-            self.momentum_rsi_upper = params["momentum_rsi_upper"]
-        if "mean_reversion_rsi_buy" in params:
-            self.mean_reversion_rsi_buy = params["mean_reversion_rsi_buy"]
-        if "mean_reversion_rsi_sell" in params:
-            self.mean_reversion_rsi_sell = params["mean_reversion_rsi_sell"]
-        if "min_confidence_threshold" in params:
-            self.sizer.min_confidence = params["min_confidence_threshold"]
+        """Apply tuned parameters from ParameterTracker.
+
+        Defense-in-depth: every value is clamped to ``PARAM_BOUNDS`` before
+        it touches engine state. The tuner already clamps on its side, but
+        this method is also fed by the per-pair ``hydra_params_<pair>.json``
+        file at startup (``hydra_agent`` load path) and by backtest/shadow
+        overrides — any of which could carry an out-of-range or corrupted
+        value. Unknown keys are ignored (a contract relied on by
+        ``hydra_backtest_server``). A degenerate RSI band (lower >= upper)
+        would silently suppress all momentum/mean-reversion signals, so the
+        coupling is enforced after clamping and rejected (left unchanged)
+        rather than applied.
+        """
+        # Deferred import: tuner does not import engine, so this is safe and
+        # keeps the engine free of a module-level dependency on the tuner.
+        from hydra_tuner import PARAM_BOUNDS
+
+        def _clamp(key: str) -> Optional[float]:
+            if key not in params:
+                return None
+            try:
+                val = float(params[key])
+            except (TypeError, ValueError):
+                return None
+            lo, hi = PARAM_BOUNDS[key]
+            return max(lo, min(hi, val))
+
+        atr_mult = _clamp("volatile_atr_mult")
+        if atr_mult is not None:
+            self.volatile_atr_mult = atr_mult
+        bb_mult = _clamp("volatile_bb_mult")
+        if bb_mult is not None:
+            self.volatile_bb_mult = bb_mult
+        ema_ratio = _clamp("trend_ema_ratio")
+        if ema_ratio is not None:
+            self.trend_ema_ratio = ema_ratio
+
+        # Momentum RSI band — apply only if the (clamped) pair is coherent.
+        mom_lo = _clamp("momentum_rsi_lower")
+        mom_hi = _clamp("momentum_rsi_upper")
+        eff_lo = mom_lo if mom_lo is not None else self.momentum_rsi_lower
+        eff_hi = mom_hi if mom_hi is not None else self.momentum_rsi_upper
+        if eff_lo < eff_hi:
+            if mom_lo is not None:
+                self.momentum_rsi_lower = mom_lo
+            if mom_hi is not None:
+                self.momentum_rsi_upper = mom_hi
+        elif mom_lo is not None or mom_hi is not None:
+            print(f"  [TUNE] rejected momentum RSI band lower={eff_lo} >= "
+                  f"upper={eff_hi} — keeping existing "
+                  f"({self.momentum_rsi_lower}/{self.momentum_rsi_upper})")
+
+        # Mean-reversion RSI band — same coherence guard.
+        mr_buy = _clamp("mean_reversion_rsi_buy")
+        mr_sell = _clamp("mean_reversion_rsi_sell")
+        eff_buy = mr_buy if mr_buy is not None else self.mean_reversion_rsi_buy
+        eff_sell = mr_sell if mr_sell is not None else self.mean_reversion_rsi_sell
+        if eff_buy < eff_sell:
+            if mr_buy is not None:
+                self.mean_reversion_rsi_buy = mr_buy
+            if mr_sell is not None:
+                self.mean_reversion_rsi_sell = mr_sell
+        elif mr_buy is not None or mr_sell is not None:
+            print(f"  [TUNE] rejected mean-reversion RSI band buy={eff_buy} >= "
+                  f"sell={eff_sell} — keeping existing "
+                  f"({self.mean_reversion_rsi_buy}/{self.mean_reversion_rsi_sell})")
+
+        min_conf = _clamp("min_confidence_threshold")
+        if min_conf is not None:
+            self.sizer.min_confidence = min_conf
 
     def snapshot_position(self) -> Dict[str, Any]:
         """Snapshot position/balance state for rollback on failed exchange orders."""

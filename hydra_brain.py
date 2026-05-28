@@ -666,9 +666,20 @@ class HydraBrain:
             rm_size = _coerce_size_mult(risk_output.get("size_multiplier"))
             brain_stacked_size = max(0.0, min(1.5, quant_size * rm_size))
 
-            # Quant or RM force_hold pulls the final action to HOLD regardless
-            # of Strategist verdict (RM hard mandate: RM cannot unblock Quant
-            # force_hold). size_multiplier becomes 0.0.
+            # The Quant's force_hold is binding and un-overridable: it pulls the
+            # final action to HOLD regardless of Strategist verdict, and
+            # size_multiplier becomes 0.0 (RM hard mandate: the RM cannot
+            # *unblock* a Quant force_hold either).
+            #
+            # The Risk Manager has NO force_hold field by design — it vetoes via
+            # decision=OVERRIDE / final_action=HOLD (see RISK_MANAGER_PROMPT
+            # schema). That veto IS honored on the no-Strategist path (the else
+            # branch below). When the RM's override triggers an escalation, the
+            # Strategist is invoked precisely to arbitrate it (STRATEGIST_PROMPT:
+            # "resolve a SPECIFIC disagreement … whether the trade should proceed
+            # or be blocked"), so the Strategist outranking the RM there is
+            # intentional, not a missed force_hold. Deterministic R1–R11 on the
+            # agent side remain the final guardrail.
             quant_force_hold = bool(analyst_output.get("force_hold"))
             force_hold_reason = analyst_output.get("force_hold_reason", "") if quant_force_hold else ""
 

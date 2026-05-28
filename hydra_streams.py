@@ -522,10 +522,22 @@ class BalanceStream(BaseStream):
 # EXECUTION STREAM — kraken ws executions push reconciler
 # ═══════════════════════════════════════════════════════════════
 
-def _is_fully_filled(vol_exec: float, placed: float, tolerance: float = 0.01) -> bool:
-    """Shared fill-detection: True if vol_exec is within `tolerance` (1%)
-    of the placed amount. Used by ExecutionStream, restart-gap reconciliation,
-    and resume reconciliation so all paths agree."""
+# Relative tolerance for "fully filled" classification. Kept at dust level:
+# on a genuine full fill Kraken reports vol_exec == placed to exchange
+# precision (float noise ~1e-12), so 1e-6 absorbs that noise while routing any
+# real shortfall (even ~0.001%) to the PARTIALLY_FILLED path. The previous 1%
+# value mis-classified near-full fills (e.g. 99.5% of placed) as FILLED, which
+# skips reconcile_partial_fill and leaves the engine permanently over-committed
+# by the shortfall — a small but accumulating position/PnL drift.
+FILL_TOLERANCE = 1e-6
+
+
+def _is_fully_filled(vol_exec: float, placed: float, tolerance: float = FILL_TOLERANCE) -> bool:
+    """Shared fill-detection: True if vol_exec is within `tolerance` of the
+    placed amount. Used by ExecutionStream, restart-gap reconciliation, and
+    resume reconciliation so all paths agree. A genuine partial fill (vol_exec
+    materially below placed) returns False so the caller reconciles the engine
+    down to the real fill amount."""
     if placed <= 0:
         return False
     return abs(vol_exec - placed) / placed < tolerance

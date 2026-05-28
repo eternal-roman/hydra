@@ -318,7 +318,7 @@ class TestEngineIntegration:
             "momentum_rsi_upper": 75.0,
             "mean_reversion_rsi_buy": 30.0,
             "mean_reversion_rsi_sell": 70.0,
-            "min_confidence_threshold": 0.50,
+            "min_confidence_threshold": 0.60,  # in-bounds (0.55, 0.80)
         }
         engine.apply_tuned_params(new_params)
         assert engine.volatile_atr_mult == 2.5
@@ -327,7 +327,52 @@ class TestEngineIntegration:
         assert engine.momentum_rsi_upper == 75.0
         assert engine.mean_reversion_rsi_buy == 30.0
         assert engine.mean_reversion_rsi_sell == 70.0
-        assert engine.sizer.min_confidence == 0.50
+        assert engine.sizer.min_confidence == 0.60
+
+    def test_apply_tuned_params_clamps_out_of_bounds(self):
+        """Defense-in-depth: out-of-range values (e.g. from a corrupted
+        hydra_params_<pair>.json) are clamped to PARAM_BOUNDS, never applied
+        raw. Guards audit-2026-05-28 finding #6."""
+        from hydra_tuner import PARAM_BOUNDS
+        engine = HydraEngine(initial_balance=10000, asset="BTC/USD")
+        engine.apply_tuned_params({
+            "volatile_atr_mult": 99.0,            # >> hi 3.0
+            "min_confidence_threshold": 0.10,     # << lo 0.55
+            "trend_ema_ratio": 0.5,               # << lo 1.001
+        })
+        assert engine.volatile_atr_mult == PARAM_BOUNDS["volatile_atr_mult"][1]   # 3.0
+        assert engine.sizer.min_confidence == PARAM_BOUNDS["min_confidence_threshold"][0]  # 0.55
+        assert engine.trend_ema_ratio == PARAM_BOUNDS["trend_ema_ratio"][0]       # 1.001
+
+    def test_apply_tuned_params_boundary_band_applies(self):
+        """Boundary-valid RSI bands (lower at its ceiling, upper at its floor)
+        still satisfy lower < upper and apply. The lower<upper coupling guard
+        in apply_tuned_params is defense-in-depth for a future PARAM_BOUNDS
+        change where the lower/upper ranges could overlap; under the current
+        non-overlapping bounds (lower<=45 < 55<=upper) it cannot be tripped via
+        clamped input, which this test documents."""
+        engine = HydraEngine(initial_balance=10000, asset="BTC/USD")
+        engine.apply_tuned_params({
+            "momentum_rsi_lower": 45.0,        # ceiling of (10, 45)
+            "momentum_rsi_upper": 55.0,        # floor of (55, 90)
+            "mean_reversion_rsi_buy": 45.0,
+            "mean_reversion_rsi_sell": 55.0,
+        })
+        assert engine.momentum_rsi_lower == 45.0
+        assert engine.momentum_rsi_upper == 55.0
+        assert engine.mean_reversion_rsi_buy == 45.0
+        assert engine.mean_reversion_rsi_sell == 55.0
+
+    def test_apply_tuned_params_ignores_unknown_and_nonnumeric(self):
+        """Unknown keys are ignored (contract relied on by backtest_server);
+        non-numeric values are skipped rather than crashing."""
+        engine = HydraEngine(initial_balance=10000, asset="BTC/USD")
+        before = engine.volatile_atr_mult
+        engine.apply_tuned_params({
+            "totally_unknown_key": 123.0,
+            "volatile_atr_mult": "not-a-number",
+        })
+        assert engine.volatile_atr_mult == before  # unchanged, no crash
 
     def test_params_at_entry_stored_on_buy(self):
         """When a BUY creates a new position, params_at_entry should be set."""

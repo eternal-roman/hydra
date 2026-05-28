@@ -4394,7 +4394,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                       {a.asset}{a.staked && <span style={{ fontSize: 8, color: COLORS.warn, marginLeft: 4, textTransform: "uppercase" }}>staked</span>}
                     </span>
                     <span style={{ display: "flex", gap: 8 }}>
-                      <span style={{ color: COLORS.textMuted }}>{a.amount.toFixed(6)}</span>
+                      <span style={{ color: COLORS.textMuted }}>{(a.amount ?? 0).toFixed(6)}</span>
                       {a.usd_value > 0 && <span style={{ color: COLORS.text, fontWeight: 600 }}>${a.usd_value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>}
                     </span>
                   </div>
@@ -4591,7 +4591,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.25.2 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.25.3 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]

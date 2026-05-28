@@ -526,6 +526,46 @@ class TestAgentTickWarningRateLimit:
 # Test runner
 # ═══════════════════════════════════════════════════════════════
 
+class TestFillTolerance:
+    """_is_fully_filled tolerance (audit-2026-05-28 finding #5).
+
+    The previous 1% tolerance mis-classified near-full fills (e.g. 99.5% of
+    placed) as FILLED, skipping reconcile_partial_fill and leaving the engine
+    permanently over-committed. The dust-level FILL_TOLERANCE (1e-6) absorbs
+    float noise on genuine full fills while routing any real shortfall to the
+    PARTIALLY_FILLED path.
+    """
+
+    def test_exact_full_fill_is_filled(self):
+        from hydra_streams import _is_fully_filled
+        assert _is_fully_filled(1.0, 1.0) is True
+
+    def test_float_noise_full_fill_is_filled(self):
+        from hydra_streams import _is_fully_filled
+        # ~1e-9 relative noise on a genuine full fill still counts as FILLED.
+        assert _is_fully_filled(1.0 - 1e-9, 1.0) is True
+
+    def test_near_full_fill_is_partial(self):
+        from hydra_streams import _is_fully_filled
+        # 99.5% filled must NOT be treated as fully filled (the bug case).
+        assert _is_fully_filled(0.995, 1.0) is False
+        assert _is_fully_filled(99.5, 100.0) is False
+
+    def test_clear_partial_is_partial(self):
+        from hydra_streams import _is_fully_filled
+        assert _is_fully_filled(0.4, 1.0) is False
+
+    def test_tolerance_boundary(self):
+        from hydra_streams import _is_fully_filled, FILL_TOLERANCE
+        assert FILL_TOLERANCE == 1e-6
+        assert _is_fully_filled(1.0 - 5e-7, 1.0) is True    # inside dust band
+        assert _is_fully_filled(1.0 - 2e-6, 1.0) is False   # outside dust band
+
+    def test_zero_placed_is_not_filled(self):
+        from hydra_streams import _is_fully_filled
+        assert _is_fully_filled(0.0, 0.0) is False
+
+
 def run_tests():
     passed = 0
     failed = 0
@@ -539,6 +579,7 @@ def run_tests():
         TestFakeExecutionStreamParity,
         TestRestartStatePreservation,
         TestAgentTickWarningRateLimit,
+        TestFillTolerance,
     ]
 
     for cls in test_classes:
