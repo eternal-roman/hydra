@@ -77,7 +77,6 @@ class BacktestConfig:
 
     mode: str = "conservative"  # "conservative" | "competition"
     param_overrides_json: str = "{}"  # JSON-encoded Dict[pair, Dict[param, value]]; frozen-safe
-    thesis_override_json: str = "{}"  # JSON-encoded Thesis state override; frozen-safe
 
     coordinator_enabled: bool = True
 
@@ -109,10 +108,6 @@ class BacktestConfig:
     @property
     def param_overrides(self) -> Dict[str, Dict[str, float]]:
         return json.loads(self.param_overrides_json)
-
-    @property
-    def thesis_override(self) -> Dict[str, Any]:
-        return json.loads(self.thesis_override_json) if self.thesis_override_json else {}
 
     @property
     def data_source_params(self) -> Dict[str, Any]:
@@ -158,7 +153,6 @@ def _compute_param_hash(cfg: BacktestConfig) -> str:
         "candle_interval": cfg.candle_interval,
         "mode": cfg.mode,
         "param_overrides": cfg.param_overrides,
-        "thesis_override": cfg.thesis_override,
         "coordinator_enabled": cfg.coordinator_enabled,
         "data_source": cfg.data_source,
         "data_source_params": cfg.data_source_params,
@@ -628,7 +622,6 @@ class BacktestRunner:
                 asset=pair,
                 sizing=sizing_preset,
                 candle_interval=cfg.candle_interval,
-                thesis_state_override=cfg.thesis_override or None,
             )
             overrides = cfg.param_overrides.get(pair, {})
             if overrides:

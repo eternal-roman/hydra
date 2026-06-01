@@ -14,7 +14,6 @@ Usage:
     python hydra_agent.py --pairs SOL/USDC,SOL/BTC,BTC/USDC --interval 60   # opt back into USDC
 """
 
-import dataclasses
 import json
 import time
 import sys
@@ -55,8 +54,6 @@ if os.path.exists(_env_path):
 
 from hydra_engine import HydraEngine, CrossPairCoordinator, OrderBookAnalyzer, PositionSizer, SIZING_CONSERVATIVE, SIZING_COMPETITION
 from hydra_tuner import ParameterTracker
-from hydra_thesis import ThesisTracker
-from hydra_thesis_processor import ThesisProcessorWorker
 from hydra_journal_migrator import migrate_legacy_trade_log_file
 
 try:
@@ -325,57 +322,6 @@ class HydraAgent:
         if not self.json_stream:
             self.broadcaster = DashboardBroadcaster(port=ws_port)
 
-        # ─── Thesis layer (v2.13.0, Phase A — Golden Unicorn) ──────────
-        # Slow-moving persistent worldview + user-authored intent. Phase A
-        # is surface-only: state + knobs load/save, dashboard THESIS tab,
-        # WS handlers. No brain wiring, no signal gating, no ladders —
-        # those land in Phases B–E. Kill-switchable via HYDRA_THESIS_DISABLED=1
-        # (drift regression test enforces v2.12.5 bit-identical behavior
-        # when disabled). Any init failure leaves the live agent untouched.
-        self.thesis = None
-        self.thesis_processor = None
-        try:
-            self.thesis = ThesisTracker.load_or_default(save_dir=base_dir)
-            if self.thesis.disabled:
-                print("  [THESIS] subsystem disabled via HYDRA_THESIS_DISABLED=1")
-            else:
-                print(f"  [THESIS] layer loaded (posture={self.thesis.posture})")
-        except Exception as e:
-            print(f"  [THESIS] init failed ({type(e).__name__}: {e}); disabled for this run")
-            self.thesis = ThesisTracker(save_dir=base_dir, disabled=True)
-
-        # v2.13.2 (Phase C): Grok document processor. Available only when
-        # XAI_API_KEY is set AND HYDRA_THESIS_PROCESSOR_DISABLED != 1 AND
-        # the thesis layer itself is enabled. Daemon worker; failure
-        # isolation mirrors the backtest subsystem.
-        try:
-            if (self.thesis and not self.thesis.disabled
-                    and not os.environ.get("HYDRA_THESIS_PROCESSOR_DISABLED")):
-                xai_key = os.environ.get("XAI_API_KEY", "")
-                if xai_key:
-                    budget = float(
-                        (self.thesis.knobs or {}).get("grok_processing_budget_usd_per_day")
-                        or 5.0
-                    )
-                    self.thesis_processor = ThesisProcessorWorker(
-                        xai_key=xai_key,
-                        pending_dir=self.thesis._pending_dir(),
-                        get_thesis_state=lambda: self.thesis.snapshot(),
-                        on_proposal=self._on_thesis_proposal,
-                        broadcast=self.broadcaster.broadcast_message,
-                        daily_budget_usd=budget,
-                    )
-                    if self.thesis_processor.available:
-                        self.thesis_processor.start()
-                        print(f"  [THESIS_PROC] Grok document processor started (budget=${budget:.2f}/day)")
-                    else:
-                        print("  [THESIS_PROC] worker unavailable (openai client unreachable)")
-                else:
-                    print("  [THESIS_PROC] XAI_API_KEY not set — processor offline")
-        except Exception as e:
-            print(f"  [THESIS_PROC] init failed ({type(e).__name__}: {e}); disabled for this run")
-            self.thesis_processor = None
-
         # ─── Backtest subsystem (v2.10.0, Phase 6) ─────────────────────
         # Strictly additive. Kill-switchable via HYDRA_BACKTEST_DISABLED=1
         # (I6). Any failure inside init leaves the live agent completely
@@ -458,15 +404,6 @@ class HydraAgent:
         except Exception as e:
             print(f"  [COMPANION] init failed ({type(e).__name__}: {e}); disabled for this run")
             self.companion_coordinator = None
-
-        # v2.13.0: Mount Thesis WS handlers so the dashboard THESIS tab can
-        # read/update knobs, posture, and hard rules. All handlers are no-ops
-        # when the tracker is disabled (they report disabled:true back to UI
-        # so the tab can render a clear "kill-switched" state).
-        try:
-            self._mount_thesis_routes()
-        except Exception as e:
-            print(f"  [THESIS] route mount failed ({type(e).__name__}: {e})")
 
         # Cross-pair regime coordinator
         self.coordinator = CrossPairCoordinator(pairs)
@@ -826,12 +763,6 @@ class HydraAgent:
             # Persist the userref counter so a restart never re-issues a
             # userref already in-flight on the exchange from this session.
             "userref_counter": self._userref_counter,
-            # v2.13.0: Thesis layer state. Empty dict when disabled — the
-            # tracker's snapshot() returns {} so the load path is fail-soft.
-            # getattr guards tests that use object.__new__(HydraAgent) to
-            # bypass __init__ and therefore never set self.thesis.
-            "thesis_state": (getattr(self, "thesis", None).snapshot()
-                             if getattr(self, "thesis", None) else {}),
             "portfolio_drawdown": {
                 "peak_usd": getattr(self, "_portfolio_peak_usd", 0.0),
                 "max_pct": getattr(self, "_portfolio_max_drawdown_pct", 0.0),
@@ -841,7 +772,7 @@ class HydraAgent:
             # one poll cycle on `--resume` rather than after a fresh
             # 1 H warmup. Fail-soft on load (stale gate + missing key).
             # getattr guards tests that instantiate via object.__new__
-            # (same pattern as thesis_state above).
+            # (same getattr/object.__new__ guard pattern).
             "derivatives_history": (
                 getattr(self, "derivatives_stream", None).snapshot()
                 if getattr(self, "derivatives_stream", None) else {}
@@ -1024,12 +955,6 @@ class HydraAgent:
             persisted_uref = snapshot.get("userref_counter")
             if isinstance(persisted_uref, int) and 0 < persisted_uref < (1 << 31):
                 self._userref_counter = max(self._userref_counter, persisted_uref)
-            # v2.13.0: Restore thesis layer state. Missing key (older snapshots)
-            # or empty dict (disabled layer) both no-op inside tracker.restore().
-            # getattr guards tests that use object.__new__(HydraAgent).
-            thesis_attr = getattr(self, "thesis", None)
-            if thesis_attr is not None:
-                thesis_attr.restore(snapshot.get("thesis_state"))
             # v2.18.0: Rehydrate DerivativesStream OI + price history.
             # Stream already started earlier in __init__; restore is
             # lock-protected so a poll racing with this call is safe.
@@ -1046,247 +971,6 @@ class HydraAgent:
             print(f"  [SNAPSHOT] Restored session from {snapshot.get('timestamp', '?')}")
         except Exception as e:
             print(f"  [SNAPSHOT] Restore failed for {path}: {type(e).__name__}: {e} — starting fresh.")
-
-    # ─── Thesis journal helpers (v2.13.1, Phase B) ────────────────────
-
-    def _journal_thesis_posture(self) -> Optional[str]:
-        """Posture stamp for journal entries — None when thesis disabled."""
-        t = getattr(self, "thesis", None)
-        if t is None or t.disabled:
-            return None
-        return t.posture
-
-    def _journal_ladder_stamp(
-        self, pair: str, side: str, price: Optional[float],
-    ) -> Dict[str, Any]:
-        """Compute the (ladder_id, rung_idx, adhoc) fields for a journal
-        entry. Returns an empty dict when the thesis layer is disabled
-        OR HYDRA_THESIS_LADDERS is unset, so entries from users who
-        haven't opted in keep their v2.13.2 schema exactly."""
-        t = getattr(self, "thesis", None)
-        if t is None or t.disabled or not t._ladders_enabled():
-            return {}
-        if price is None:
-            return {"ladder_id": None, "rung_idx": None, "adhoc": True}
-        match = None
-        try:
-            match = t.match_rung(pair, side, price)
-        except Exception as e:
-            print(f"  [THESIS] match_rung error ({type(e).__name__}: {e})")
-        if match:
-            return {
-                "ladder_id": match.get("ladder_id"),
-                "rung_idx": match.get("rung_idx"),
-                "adhoc": False,
-            }
-        return {"ladder_id": None, "rung_idx": None, "adhoc": True}
-
-    def _journal_intents_active(self, ai: Optional[Dict[str, Any]]) -> Optional[List[str]]:
-        """List of intent_ids the analyst consulted. Prefers the analyst's
-        self-reported list (thesis_alignment.intent_prompts_consulted) — the
-        agent doesn't second-guess the LLM's attribution. Returns None when
-        thesis is disabled OR the analyst didn't report anything."""
-        if not isinstance(ai, dict):
-            return None
-        t = getattr(self, "thesis", None)
-        if t is None or t.disabled:
-            return None
-        ta = ai.get("thesis_alignment")
-        if not isinstance(ta, dict):
-            return None
-        consulted = ta.get("intent_prompts_consulted") or []
-        if not isinstance(consulted, list):
-            return None
-        return [str(x) for x in consulted]
-
-    # ─── Thesis WS routes (v2.13.0, Phase A) ──────────────────────────
-    # Handlers let the dashboard read/update knobs, posture, and hard rules.
-    # Each handler broadcasts the new thesis_state so every connected client
-    # stays in sync after a mutation. Disabled mode short-circuits to inert
-    # responses so the UI can render a "kill-switched" banner.
-
-    def _broadcast_thesis_state(self) -> None:
-        """Push current thesis_state to all dashboard clients."""
-        if not self.thesis:
-            return
-        try:
-            self.broadcaster.broadcast_message(
-                "thesis_state",
-                {"data": self.thesis.current_state()},
-            )
-        except Exception as e:
-            print(f"  [THESIS] broadcast failed: {type(e).__name__}: {e}")
-
-    def _handle_thesis_get_state(self, payload: Dict[str, Any]) -> None:
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_update_knobs(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        patch = (payload or {}).get("knobs") or {}
-        self.thesis.update_knobs(patch)
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_update_posture(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        posture = (payload or {}).get("posture")
-        if posture:
-            self.thesis.update_posture(posture)
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_update_hard_rules(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        patch = (payload or {}).get("hard_rules") or {}
-        self.thesis.update_hard_rules(patch)
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_create_intent(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        p = payload or {}
-        self.thesis.add_intent(
-            prompt_text=p.get("prompt_text", ""),
-            pair_scope=p.get("pair_scope"),
-            priority=p.get("priority", 3),
-            expires_at=p.get("expires_at"),
-            author=p.get("author", "user"),
-        )
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_delete_intent(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        intent_id = (payload or {}).get("intent_id")
-        if intent_id:
-            self.thesis.remove_intent(intent_id)
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_update_intent(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        p = payload or {}
-        intent_id = p.get("intent_id")
-        patch = p.get("patch") or {}
-        if intent_id and patch:
-            self.thesis.update_intent(intent_id, patch)
-        self._broadcast_thesis_state()
-
-    # ─── Thesis document + proposal handlers (v2.13.2, Phase C) ───
-
-    def _on_thesis_proposal(self, proposal: Dict[str, Any]) -> None:
-        """Callback invoked by ThesisProcessorWorker once Grok has produced
-        a proposal. Write to hydra_thesis_pending/ and broadcast."""
-        if not self.thesis:
-            return
-        self.thesis.write_pending_proposal(proposal)
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_upload_document(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        p = payload or {}
-        ref = self.thesis.upload_document(
-            filename=p.get("filename", "note.md"),
-            content=p.get("content", ""),
-            doc_type=p.get("doc_type", "other"),
-        )
-        if ref and self.thesis_processor and self.thesis_processor.available:
-            try:
-                with open(ref["file_path"], "r", encoding="utf-8") as f:
-                    text = f.read()
-                self.thesis_processor.submit({
-                    "doc_id": ref["doc_id"],
-                    "filename": ref["filename"],
-                    "doc_type": ref["doc_type"],
-                    "text": text,
-                })
-            except Exception as e:
-                print(f"  [THESIS] document submit failed ({type(e).__name__}: {e})")
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_list_proposals(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        proposals = self.thesis.list_pending_proposals()
-        try:
-            self.broadcaster.broadcast_message(
-                "thesis_proposals_list", {"data": proposals},
-            )
-        except Exception as e:
-            import logging; logging.warning(f"Ignored exception: {e}")
-
-    def _handle_thesis_approve_proposal(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        p = payload or {}
-        self.thesis.approve_proposal(p.get("proposal_id", ""), p.get("user_notes"))
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_reject_proposal(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        p = payload or {}
-        self.thesis.reject_proposal(p.get("proposal_id", ""), p.get("user_notes"))
-        self._broadcast_thesis_state()
-
-    # ─── Thesis ladder handlers (v2.13.3, Phase D) ────────────────
-
-    def _handle_thesis_create_ladder(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        p = payload or {}
-        try:
-            total = float(p.get("total_size", 0) or 0)
-        except (TypeError, ValueError):
-            total = 0.0
-        if total <= 0:
-            self._broadcast_thesis_state()
-            return
-        self.thesis.create_ladder(
-            pair=p.get("pair", ""),
-            side=p.get("side", "BUY"),
-            total_size=total,
-            rungs_spec=p.get("rungs") or [],
-            stop_loss_price=p.get("stop_loss_price"),
-            expiry_hours=p.get("expiry_hours"),
-            expiry_action=p.get("expiry_action", "cancel"),
-            reasoning=p.get("reasoning", ""),
-            creator=p.get("creator", "user:dashboard"),
-        )
-        self._broadcast_thesis_state()
-
-    def _handle_thesis_cancel_ladder(self, payload: Dict[str, Any]) -> None:
-        if not self.thesis:
-            return
-        lid = (payload or {}).get("ladder_id", "")
-        if lid:
-            self.thesis.cancel_ladder(lid)
-        self._broadcast_thesis_state()
-
-    def _mount_thesis_routes(self) -> None:
-        """Wire thesis WS handlers into the broadcaster. Safe on repeat
-        invocation — register_handler overwrites prior mappings."""
-        self.broadcaster.register_handler("thesis_get_state", self._handle_thesis_get_state)
-        self.broadcaster.register_handler("thesis_update_knobs", self._handle_thesis_update_knobs)
-        self.broadcaster.register_handler("thesis_update_posture", self._handle_thesis_update_posture)
-        self.broadcaster.register_handler("thesis_update_hard_rules", self._handle_thesis_update_hard_rules)
-        # v2.13.1 (Phase B) — intent prompt CRUD.
-        self.broadcaster.register_handler("thesis_create_intent", self._handle_thesis_create_intent)
-        self.broadcaster.register_handler("thesis_delete_intent", self._handle_thesis_delete_intent)
-        self.broadcaster.register_handler("thesis_update_intent", self._handle_thesis_update_intent)
-        # v2.13.2 (Phase C) — document uploads + Grok proposal approval workflow.
-        self.broadcaster.register_handler("thesis_upload_document", self._handle_thesis_upload_document)
-        self.broadcaster.register_handler("thesis_list_proposals", self._handle_thesis_list_proposals)
-        self.broadcaster.register_handler("thesis_approve_proposal", self._handle_thesis_approve_proposal)
-        self.broadcaster.register_handler("thesis_reject_proposal", self._handle_thesis_reject_proposal)
-        # v2.13.3 (Phase D) — ladder primitive. Journal stamping lands in
-        # _place_order; rungs match on (pair, side, price) within tolerance.
-        # Feature flag: HYDRA_THESIS_LADDERS=1 (otherwise match_rung is a no-op
-        # and journal schema stays v2.13.2).
-        self.broadcaster.register_handler("thesis_create_ladder", self._handle_thesis_create_ladder)
-        self.broadcaster.register_handler("thesis_cancel_ladder", self._handle_thesis_cancel_ladder)
 
     def _merge_order_journal(self):
         """Merge on-disk journal files into self.order_journal.
@@ -1518,16 +1202,6 @@ class HydraAgent:
                 tick += 1
                 elapsed = time.time() - self.start_time
                 remaining = "∞" if self.duration == 0 else f"{self.duration - elapsed:.0f}s"
-
-                # v2.13.0: Thesis on_tick is a no-op in Phase A (drift-safe)
-                # but Phase C/D extend it to drain the Grok processor queue
-                # and expire stale ladder rungs. Hook exists now so the
-                # integration point is stable across the phase rollout.
-                if self.thesis is not None:
-                    try:
-                        self.thesis.on_tick(time.time())
-                    except Exception as te:
-                        print(f"  [THESIS] on_tick error ({type(te).__name__}: {te})")
 
                 ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
                 print(f"\n  === Tick {tick} | {ts} | Elapsed: {elapsed:.0f}s | Remaining: {remaining} ===")
@@ -1822,52 +1496,11 @@ class HydraAgent:
                         ai = state.get("ai_decision", {})
                         engine = self.engines[pair]
                         pre_trade_snap = engine.snapshot_position()
-                        # v2.13.1 (Phase B): compose brain's size_multiplier
-                        # with thesis size_hint. In default advisory mode,
-                        # size_hint is 1.0 so composition is a no-op and
-                        # Phase A behavior is preserved. Only binding
-                        # enforcement (Phase E, opt-in) moves size_hint off
-                        # 1.0. Final product is clamped to [0.0, 1.5] so
-                        # no stacked modifiers can exceed Kelly's hard cap.
-                        thesis_attr = getattr(self, "thesis", None)
-                        _size_hint = 1.0
-                        if thesis_attr is not None and not thesis_attr.disabled:
-                            try:
-                                _size_hint = thesis_attr.size_hint_for(pair, sig)
-                            except Exception as te:
-                                print(f"  [THESIS] size_hint_for error ({type(te).__name__}: {te})")
+                        # Clamp the brain's size_multiplier to [0.0, 1.5] so no single
+                        # modifier can exceed Kelly's hard cap.
                         _sm = ai.get("size_multiplier")
                         _brain_mult = float(1.0 if _sm is None else _sm)
-                        _final_mult = max(0.0, min(1.5, _brain_mult * _size_hint))
-
-                        # v2.13.4 (Phase E, opt-in): posture-binding daily
-                        # entry cap. Only fires when user has set
-                        # posture_enforcement=binding in the Knobs panel.
-                        # Default advisory mode → always allowed, zero
-                        # behavior change on upgrade. Skipped trades are
-                        # broadcast via thesis_posture_restriction so the
-                        # dashboard can surface the reason.
-                        if (thesis_attr is not None and not thesis_attr.disabled
-                                and sig.get("action") in ("BUY", "SELL")):
-                            try:
-                                restriction = thesis_attr.check_posture_restriction(
-                                    pair, sig.get("action"),
-                                )
-                                if not restriction["allow"]:
-                                    print(f"  [THESIS] posture restriction: "
-                                          f"skipping {sig['action']} on {pair} "
-                                          f"({restriction['reason']}, "
-                                          f"{restriction['entries_today']}/{restriction['cap']})")
-                                    try:
-                                        self.broadcaster.broadcast_message(
-                                            "thesis_posture_restriction",
-                                            {"pair": pair, **restriction},
-                                        )
-                                    except Exception as e:
-                                        import logging; logging.warning(f"Ignored exception: {e}")
-                                    continue
-                            except Exception as te:
-                                print(f"  [THESIS] restriction check error ({type(te).__name__}: {te})")
+                        _final_mult = max(0.0, min(1.5, _brain_mult))
                         trade = engine.execute_signal(
                             action=sig.get("action", "HOLD"),
                             confidence=sig.get("confidence", 0),
@@ -2168,24 +1801,6 @@ class HydraAgent:
         if self._portfolio_guidance:
             state["portfolio_guidance"] = self._portfolio_guidance
 
-        # v2.13.1 (Phase B): inject ThesisContext so the analyst can reason
-        # with the persistent thesis layer. Absent → empty string block in
-        # the prompt, matching v2.12.5 output byte-for-byte.
-        thesis_attr = getattr(self, "thesis", None)
-        if thesis_attr is not None and not thesis_attr.disabled:
-            try:
-                ctx = thesis_attr.context_for(pair, state.get("signal"))
-                # Serialize dataclass → dict so WS broadcast can json.dumps it.
-                # brain._format_thesis_context accepts either form.
-                state["thesis_context"] = (
-                    dataclasses.asdict(ctx)
-                    if ctx is not None and dataclasses.is_dataclass(ctx)
-                    else ctx
-                )
-            except Exception as te:
-                print(f"  [THESIS] context_for error ({type(te).__name__}: {te})")
-                state["thesis_context"] = None
-
         # Fetch spread data for risk assessment. Prefer WS ticker (no API call).
         try:
             ticker = self.ticker_stream.latest_ticker(pair) or {}
@@ -2334,8 +1949,6 @@ class HydraAgent:
                 "api_down_original_reason": api_down_original_reason,
                 "tokens_used": decision.tokens_used,
                 "latency_ms": round(decision.latency_ms, 0),
-                # v2.13.1: thesis alignment (None when thesis absent).
-                "thesis_alignment": decision.thesis_alignment,
                 # v2.14: surface the indicator block that drove this decision
                 "quant_indicators": state.get("quant_indicators") or None,
                 # v2.14.1: tick counter this decision was generated at.
@@ -2685,19 +2298,6 @@ class HydraAgent:
                 "book_confidence_modifier": book_mod,
                 "brain_verdict": brain_verdict,
                 "swap_id": trade.get("swap_id"),
-                # v2.13.1 (Phase B): stamp thesis posture at decision time +
-                # list of intent-prompt IDs that the analyst consulted. None
-                # when thesis is disabled/absent — matching v2.12.5 shape.
-                "thesis_posture": self._journal_thesis_posture(),
-                "thesis_intents_active": self._journal_intents_active(ai),
-                "thesis_alignment": (ai or {}).get("thesis_alignment") if isinstance(ai, dict) else None,
-                # v2.13.3 (Phase D) — ladder alignment. Set when the placed
-                # (pair, side, price) matches a pending rung of an active
-                # ladder. Otherwise "adhoc=true" — still a legal trade, just
-                # flagged so the tape distinguishes planned from reactive.
-                # Both fields stay None when HYDRA_THESIS_LADDERS is unset
-                # so journal schema is stable for users who haven't opted in.
-                **self._journal_ladder_stamp(pair, action_upper, trade.get("price")),
             },
             "order_ref": {"order_userref": None, "order_id": None},
             "lifecycle": {
@@ -2887,18 +2487,6 @@ class HydraAgent:
         entry["order_ref"] = {"order_userref": userref, "order_id": order_id}
         self.order_journal.append(entry)
         journal_index = len(self.order_journal) - 1
-
-        # v2.13.4 (Phase E): record entry for daily-cap accounting. Called
-        # on every successful placement, not just posture-gated ones —
-        # check_posture_restriction only consults this when binding mode
-        # is enabled, so the counter is harmless when enforcement is off
-        # or advisory (the default).
-        t = getattr(self, "thesis", None)
-        if t is not None and not t.disabled:
-            try:
-                t.record_entry(pair)
-            except Exception as te:
-                print(f"  [THESIS] record_entry error ({type(te).__name__}: {te})")
 
         # Register with the execution stream so WS events can finalize this
         # order's lifecycle on subsequent ticks. Orders that come back as
@@ -3480,7 +3068,7 @@ class HydraAgent:
 
             # Paper mode: keep the legacy USD→quote conversion so strategy
             # simulations are not artificially gated by on-account holdings.
-            # Paper users are testing the thesis, not funding constraints.
+            # Paper users are testing the strategy, not funding constraints.
             if self.paper:
                 if quote in prices and prices[quote] > 0:
                     balance_quote = per_pair_usd / prices[quote]

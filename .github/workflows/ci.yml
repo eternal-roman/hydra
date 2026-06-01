@@ -73,24 +73,6 @@ jobs:
       - name: Run BookStream tests
         run: python tests/test_book_stream.py
 
-      - name: Run Thesis tracker tests (v2.13.0)
-        run: python tests/test_thesis_tracker.py
-
-      - name: Run Thesis drift regression (v2.13.0)
-        run: python tests/test_thesis_drift.py
-
-      - name: Run Thesis Phase B brain integration (v2.13.1)
-        run: python tests/test_thesis_phase_b.py
-
-      - name: Run Thesis Phase C processor + proposal workflow (v2.13.2)
-        run: python tests/test_thesis_phase_c.py
-
-      - name: Run Thesis Phase D ladder primitive (v2.13.3)
-        run: python tests/test_thesis_phase_d.py
-
-      - name: Run Thesis Phase E posture enforcement (v2.13.4)
-        run: python tests/test_thesis_phase_e.py
-
       - name: Run partial-fill reconciliation tests (HF-005)
         run: python tests/test_partial_fill_reconcile.py
 
@@ -178,6 +160,9 @@ jobs:
       - name: Run live-execution default-off contract tests (v2.25.3)
         run: python -m pytest tests/test_live_execution_default_off.py -v
 
+      - name: Run BTC ledger-shield hard-guard tests
+        run: python -m pytest tests/test_ledger_shield.py -v
+
       - name: Run Kraken REST-floor spacing tests (v2.25.3)
         run: python -m pytest tests/test_rest_floor_spacing.py -v
 
@@ -203,8 +188,6 @@ jobs:
           python -c "import hydra_engine; print('hydra_engine OK')"
           python -c "import hydra_tuner; print('hydra_tuner OK')"
           python -c "import hydra_brain; print('hydra_brain OK')"
-          python -c "import hydra_thesis; print('hydra_thesis OK')"
-          python -c "import hydra_thesis_processor; print('hydra_thesis_processor OK')"
           python -c "import hydra_derivatives_stream; print('hydra_derivatives_stream OK')"
           python -c "import hydra_quant_rules; print('hydra_quant_rules OK')"
           python -c "import hydra_agent; print('hydra_agent OK')"
