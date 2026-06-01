@@ -6,6 +6,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.26.0] — 2026-06-01
+
+Feature-offshoot trim + opsec hardening. Archives three dormant/orphaned
+subsystems (meme-trader, thesis layer, AI-reviewer + shadow-validator) to the
+git-history "closet", promotes the one valuable thesis mechanic — the BTC
+ledger shield — into a real enforced guard, and stops disclosing holdings in
+tracked source.
+
+### Safety
+- **BTC ledger shield is now a hard SELL guard** (previously an advisory
+  string the LLM brain could ignore). `_place_order` skips or clamps any
+  stable-quoted BTC sell that would drop holdings below the floor; the SOL/BTC
+  bridge is never affected (selling SOL for BTC increases BTC). Pure
+  `ledger_shield_sellable()` helper, 13 TDD unit tests, CI-gated. The floor is
+  read from `HYDRA_LEDGER_SHIELD_BTC` (operator's gitignored `.env`);
+  unset/0/invalid = disabled, warned loudly at startup. No holdings figure is
+  hardcoded in source any more (opsec).
+
+### Removed (recoverable from git history)
+- **Thesis layer** (`hydra_thesis.py`, `hydra_thesis_processor.py`): dormant —
+  advisory-only by default (no trade effect), empty state, frozen since Apr 26,
+  processor needs an unset Grok key. Removed all integration from
+  agent/brain/engine/backtest/state-migrator and the dashboard THESIS tab. Kept
+  the analyst's own one-sentence "thesis" headline (a different concept).
+  `HYDRA_THESIS_*` env flags retired.
+- **Meme-trader / Apex** (`hydra_meme_agent.py`, `dashboard/src/MemeTab.jsx`,
+  `tools/backtest_meme_*.py`, `tools/test_apex_auth.py`, `start_meme.bat`):
+  standalone, undocumented, half-CI-gated parallel engine with zero coupling to
+  core. The `apex.soul.json` companion persona and `test_apex_tools.py`
+  (companion read-only tools) are NOT the meme trader and stay.
+- **AI Reviewer + Shadow Validator** (`hydra_reviewer.py`,
+  `hydra_shadow_validator.py`): fully built + CI-tested but never wired into
+  production (`reviewer=None`; shadow validator never instantiated). Plus the
+  orphan one-shot `_measure_hid.py`.
+
+### Dashboard
+- Removed the thesis UI (component cluster, WS handlers, dead Band-7 strip) and
+  the MEME tab; swapped MEME → RESEARCH in the tab bar so the kept backtest /
+  Research-Lab UI stays reachable. Vite build green.
+
+### Docs
+- CLAUDE.md: dropped the four archived module rows, the `HYDRA_THESIS_*` flags,
+  the `hydra_thesis.json` state row, and the thesis CBP node; corrected the
+  dashboard tab list to LIVE/RESEARCH/SETTINGS; rewrote the ledger-shield
+  invariant as the env-driven hard guard; added `HYDRA_LEDGER_SHIELD_BTC`.
+
+### Version
+- All 7 alignment sites bumped 2.25.4 → 2.26.0.
+
+---
+
 ## [2.25.4] — 2026-05-28
 
 Documentation patch — no code logic change. Tightens `CLAUDE.md`, corrects

@@ -205,6 +205,13 @@ HYDRA_COMPANION_DISABLED=1         # no orb / proposals
 HYDRA_BACKTEST_DISABLED=1          # v2.9.x behavior
 ```
 
+Capital preservation (set in `.env`):
+```
+HYDRA_LEDGER_SHIELD_BTC=0.0        # hard floor — the live SELL path will never drop
+                                   # BTC holdings below this. Set to your own long-term
+                                   # hold size; 0 / unset = shield off (warned at startup).
+```
+
 ## Live Dashboard
 
 React + Vite dashboard at `http://localhost:3000` connected to the agent via WebSocket on port 8765.
