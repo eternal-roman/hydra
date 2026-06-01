@@ -3,6 +3,13 @@
 User-facing guide for the v2.10.0 backtest platform. For the full design spec,
 see [`BACKTEST_SPEC.md`](./BACKTEST_SPEC.md).
 
+> **v2.26.0 note:** the **AI Reviewer** and **Shadow Validator** described
+> below were archived in v2.26.0 (they were never wired into production —
+> `reviewer=None`). Sections referencing the Review Panel, rigor gates, and
+> shadow validation are retained as design history; the live platform today
+> is engine replay + experiments + walk-forward / Research Lab. See CHANGELOG
+> v2.26.0.
+
 ---
 
 ## What it is

@@ -44,9 +44,9 @@ case "$FILE" in
     echo "[post-edit] running companion test subset"
     python -m pytest tests/test_companion_*.py -x --tb=short 2>&1 | tail -30
     ;;
-  *hydra_backtest*.py|*hydra_experiments.py|*hydra_reviewer.py|*hydra_shadow_validator.py)
+  *hydra_backtest*.py|*hydra_experiments.py)
     echo "[post-edit] running backtest test subset"
-    python -m pytest tests/test_backtest_*.py tests/test_experiments.py tests/test_reviewer.py tests/test_shadow_validator.py -x --tb=short 2>&1 | tail -30
+    python -m pytest tests/test_backtest_*.py tests/test_experiments.py -x --tb=short 2>&1 | tail -30
     ;;
   *.py)
     # Default for any other Python file: syntax check via py_compile.

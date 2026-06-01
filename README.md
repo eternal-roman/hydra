@@ -344,8 +344,6 @@ hydra/
 ├── hydra_brain.py          # 3-agent AI: Claude Market Quant + Risk Manager + Grok Strategist
 ├── hydra_derivatives_stream.py  # Kraken Futures public data via kraken CLI (funding, OI, basis) — read-only
 ├── hydra_quant_rules.py    # Deterministic R1-R11 guardrails (Python, LLM-independent)
-├── hydra_thesis.py         # Persistent thesis layer (posture, ladder, intents, evidence)
-├── hydra_thesis_processor.py # Daemon: research docs → ProposedThesisUpdate (Grok 4)
 ├── hydra_agent.py          # Kraken CLI integration, agent loop, trade execution, WebSocket, execution stream, WS market data streams, --resume
 ├── hydra_journal_migrator.py # Legacy trade log → order journal migration
 ├── hydra_tuner.py          # Self-tuning parameters via Bayesian updating
@@ -495,28 +493,19 @@ switch is `HYDRA_BACKTEST_DISABLED=1`.
 - An experiment library: presets (`default`, `ideal`, `divergent`,
   `aggressive`, `defensive`, `regime_trending`, `regime_ranging`,
   `regime_volatile`), per-pair parameter overrides, hypothesis field.
-- An AI Reviewer (`hydra_reviewer.py`) that runs after every backtest,
-  gathers evidence (walk-forward, Monte Carlo, out-of-sample, per-regime,
-  per-pair breakdowns), and issues one of `NO_CHANGE`, `PARAM_TWEAK`,
-  `CODE_REVIEW`, `RESULT_ANOMALOUS`, `HYPOTHESIS_REFUTED`. Seven rigor
-  gates are enforced **in code** (not prompt). The reviewer can
-  `read_source_file` to ground `CODE_REVIEW` proposals; every
-  `CODE_REVIEW` emits an advisory PR draft to
-  `.hydra-experiments/pr_drafts/` (I8 invariant: reviewer never
-  auto-applies code changes).
-- Shadow validation: reviewer-approved `PARAM_TWEAK` changes run
-  alongside live as phantom trades before any write to the live tuner,
-  with single-slot FIFO enforcement and depth-1 rollback.
-- A dashboard view (LIVE / BACKTEST / COMPARE tabs) with a dual-state
-  observer modal that renders the running backtest in the same visual
-  language as LIVE.
+- Statistical rigor: walk-forward with a paired Wilcoxon verdict, bootstrap
+  confidence intervals, Monte Carlo, out-of-sample and per-regime/per-pair
+  breakdowns — surfaced by `hydra_backtest_metrics.py` and the Research Lab.
+- A dashboard view (the RESEARCH tab — dataset coverage, hypothesis lab,
+  release regression) plus a dual-state observer modal on LIVE that renders
+  a running backtest in the same visual language as live trading.
 
-**Cost disclosure policy (brain + reviewer)**
+**Cost disclosure policy (brain)**
 
 - `max_daily_cost` caps spend for **live** deliberation only
-  (`enforce_budget=True`). Backtest-triggered brain/reviewer calls pass
+  (`enforce_budget=True`). Backtest-triggered brain calls pass
   `enforce_budget=False` — experiments don't stall behind the live cap.
-- Independent of `enforce_budget`, both components emit a one-shot
+- Independent of `enforce_budget`, the brain emits a one-shot
   `cost_alert` WS broadcast (and a log line) when cumulative daily spend
   crosses **$10/day**. Resets at UTC midnight. The dashboard surfaces
   the alert as a banner.

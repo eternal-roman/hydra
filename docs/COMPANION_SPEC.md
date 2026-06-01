@@ -87,7 +87,7 @@ CHANGELOG.md         — entry per phase on merge
 
 ### Untouched (hard rule)
 - `hydra_engine.py` — zero changes.
-- Existing LIVE / BACKTEST / COMPARE tab components.
+- Existing LIVE / RESEARCH tab components.
 - Existing WS message envelope; companion messages use `type:"companion.*"` namespace.
 - `hydra_brain.py` — companions are not the brain.
 - Order journal schema (adds optional `userref` prefix only).

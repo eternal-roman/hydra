@@ -13,7 +13,7 @@ caught 7+ bugs per session that single-pass review missed.
 1. Engine + tuner: `hydra_engine.py`, `hydra_tuner.py`
 2. Agent + streams: `hydra_agent.py` + the `BaseStream` subclasses
    (`ExecutionStream`, `CandleStream`, `TickerStream`, `BalanceStream`, `BookStream`)
-3. AI layer: `hydra_brain.py`, `hydra_reviewer.py`, `hydra_shadow_validator.py`
+3. AI layer: `hydra_brain.py`
 4. Backtest platform: `hydra_backtest*.py`, `hydra_experiments.py`
 5. Companion subsystem: `hydra_companions/` package + soul JSONs
 6. Dashboard: `dashboard/src/App.jsx` (single-file React)
