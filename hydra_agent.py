@@ -66,7 +66,7 @@ except ImportError:
     HAS_BRAIN = False
 
 from hydra_kraken_cli import KrakenCLI
-from hydra_pair_registry import STABLE_QUOTES
+from hydra_pair_registry import STABLE_QUOTES, normalize_asset
 from hydra_config import TradingTriangle
 from hydra_ws_server import DashboardBroadcaster
 from hydra_streams import CandleStream, TickerStream, BalanceStream, BookStream, ExecutionStream, _is_fully_filled
@@ -130,6 +130,54 @@ def _buy_limit_offset_bps(pair: str, regime: Optional[str]) -> int:
     base = base.upper()
     quote_class = "STABLE" if quote.upper() in STABLE_QUOTES else quote.upper()
     return _BUY_LIMIT_OFFSET_BPS.get((base, quote_class, regime), 0)
+
+
+# ─── BTC ledger shield (hard capital-preservation guard) ─────────────────
+#
+# A deterministic floor: the live SELL path must never drop BTC holdings
+# below the configured shield. This REPLACES the prior advisory-string
+# implementation (the thesis layer only *suggested* the floor to the LLM
+# brain, which could ignore it) with an enforced clamp/skip in _place_order.
+#
+# The real floor is read from HYDRA_LEDGER_SHIELD_BTC (the operator's
+# gitignored .env) — no holdings figure is hardcoded in source. Unset / 0 /
+# invalid -> shield disabled; the agent warns loudly at startup so a missing
+# floor is never silent.
+
+def read_ledger_shield_btc() -> float:
+    """Read the BTC ledger-shield floor from the environment.
+
+    Returns 0.0 (shield disabled) when HYDRA_LEDGER_SHIELD_BTC is unset,
+    blank, non-numeric, or non-positive. Never raises.
+    """
+    raw = (os.environ.get("HYDRA_LEDGER_SHIELD_BTC") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return val if val > 0 else 0.0
+
+
+def ledger_shield_sellable(
+    shield_btc: float, base: str, quote: str, real_base_bal: float,
+) -> Optional[float]:
+    """Maximum BTC amount sellable without breaching the ledger floor.
+
+    Returns None when the shield does not apply — the caller imposes no extra
+    constraint. The shield applies ONLY to a stable-quoted BTC sell
+    (BTC/USD, BTC/USDC, BTC/USDT); it never fires on the SOL/BTC bridge,
+    where selling SOL for BTC INCREASES BTC holdings.
+
+    When it applies, returns max(0.0, real_base_bal - shield_btc): the caller
+    clamps the order down to this, or blocks it entirely if 0.
+    """
+    if shield_btc <= 0:
+        return None
+    if normalize_asset(base) != "BTC" or quote.upper() not in STABLE_QUOTES:
+        return None
+    return max(0.0, real_base_bal - shield_btc)
 
 
 def _apply_buy_limit_offset(pair: str, bid: float, regime: Optional[str]) -> tuple:
@@ -199,6 +247,17 @@ class HydraAgent:
         self.duration = duration_seconds
         self.mode = mode
         self.paper = paper
+        # BTC ledger shield: hard capital-preservation floor enforced in the
+        # live SELL path (_place_order). The real floor lives only in
+        # HYDRA_LEDGER_SHIELD_BTC (operator's gitignored .env); 0/unset =
+        # disabled. Warn loudly so a missing floor is never silent.
+        self.ledger_shield_btc = read_ledger_shield_btc()
+        if self.ledger_shield_btc > 0:
+            print(f"  [SHIELD] BTC ledger shield ACTIVE — floor {self.ledger_shield_btc} BTC "
+                  f"(BTC sells clamped/blocked to protect it)")
+        else:
+            print("  [SHIELD] BTC ledger shield DISABLED — set "
+                  "HYDRA_LEDGER_SHIELD_BTC in .env to protect a BTC floor")
         self.json_stream = json_stream
         self.candle_interval = candle_interval
         self.running = True
@@ -2712,6 +2771,7 @@ class HydraAgent:
                     return False
         elif action == "sell":
             base = pair.split("/")[0]
+            quote = pair.split("/")[1]
             real_base_bal = self._get_real_quote_balance(base)
             if real_base_bal is not None:
                 min_size = PositionSizer.MIN_ORDER_SIZE.get(base, 0.02)
@@ -2723,6 +2783,28 @@ class HydraAgent:
                         entry, terminal_reason=f"insufficient_{base}_balance",
                     )
                     return False
+                # ─── Ledger shield (hard guard) ───────────────────────────
+                # Never let a stable-quoted BTC sell drop holdings below the
+                # protected floor. Block if nothing is sellable above it;
+                # otherwise clamp the order down to the floor.
+                shield_max = ledger_shield_sellable(
+                    self.ledger_shield_btc, base, quote, real_base_bal)
+                if shield_max is not None and amount > shield_max:
+                    if shield_max < min_size:
+                        print(f"  [SHIELD] {pair} SELL blocked — {base} holdings "
+                              f"({real_base_bal:.8f}) at/near ledger floor "
+                              f"({self.ledger_shield_btc} BTC); nothing sellable "
+                              f"above it — skipping")
+                        self._finalize_failed_entry(
+                            entry, terminal_reason="ledger_shield_floor",
+                        )
+                        return False
+                    print(f"  [SHIELD] {pair} SELL clamped by ledger shield: "
+                          f"{amount:.8f} -> {shield_max:.8f} {base} "
+                          f"(floor {self.ledger_shield_btc} BTC)")
+                    amount = shield_max
+                    trade["amount"] = amount
+                    entry["intent"]["amount"] = amount
                 if real_base_bal < amount:
                     print(f"  [TRADE] {pair} SELL: exchange {base} balance "
                           f"({real_base_bal:.8f}) < engine amount "
