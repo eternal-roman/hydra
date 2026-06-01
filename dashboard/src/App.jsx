@@ -319,7 +319,7 @@ const PRESET_OPTIONS = [
 ];
 
 // Rigor gates — 7 code-enforced checks that must all pass before a param
-// tweak is auto-apply eligible. Backend keys (hydra_reviewer.py) ↔ plain-English
+// tweak is auto-apply eligible. Gate keys ↔ plain-English
 // pill labels + tooltips shown in the dashboard.
 const RIGOR_GATES = [
   {

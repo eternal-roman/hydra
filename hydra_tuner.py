@@ -286,8 +286,8 @@ class ParameterTracker:
             print(f"  [WARN] tuner save failed for {self.pair}: {type(e).__name__}: {e}")
 
     # ─── External write path (Phase 11, v2.10.0) ──────────────────────
-    # Used by hydra_shadow_validator after a PARAM_TWEAK candidate clears
-    # shadow validation AND receives explicit human approval. Deliberately
+    # External write path for an approved PARAM_TWEAK candidate that cleared
+    # validation and received explicit human approval. Deliberately
     # distinct from the tuner's own exponential-smoothing update loop:
     # external updates apply immediately, preserve rollback state, and
     # carry a `source` tag in the audit trail.

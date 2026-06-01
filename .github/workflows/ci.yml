@@ -112,12 +112,6 @@ jobs:
       - name: Run experiment store tests
         run: python -m pytest tests/test_experiments.py -v
 
-      - name: Run AI reviewer tests
-        run: python -m pytest tests/test_reviewer.py -v
-
-      - name: Run shadow validator tests
-        run: python -m pytest tests/test_shadow_validator.py -v
-
       - name: Run companion compiler tests
         run: python -m pytest tests/test_companion_compiler.py -v
 

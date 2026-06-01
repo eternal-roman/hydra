@@ -261,7 +261,7 @@ class Experiment:
 
     The `review` field is opaque `Dict[str, Any]` in Phase 3 — it becomes
     `ReviewDecision` in Phase 7; storing it as a plain dict avoids a
-    circular import against hydra_reviewer (which depends on this module).
+    dependency on the (now-archived) reviewer module.
     """
 
     id: str

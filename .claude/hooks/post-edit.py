@@ -46,7 +46,7 @@ def main():
 
     elif any(f.endswith(s) for s in ("hydra_backtest.py", "hydra_backtest_metrics.py",
              "hydra_backtest_server.py", "hydra_backtest_tool.py",
-             "hydra_experiments.py", "hydra_reviewer.py", "hydra_shadow_validator.py")):
+             "hydra_experiments.py")):
         print("[post-edit] running backtest test subset")
         subprocess.run([sys.executable, "-m", "pytest",
                         "tests/test_backtest_engine.py", "tests/test_backtest_metrics.py",
