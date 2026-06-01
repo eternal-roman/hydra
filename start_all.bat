@@ -16,7 +16,4 @@ timeout /t 3 /nobreak >nul
 :: Start agent in a new window
 start "HYDRA Agent" cmd /c start_hydra.bat
 
-:: Start APEX meme engine in a new window
-start "APEX Meme Engine" cmd /c start_meme.bat
-
 echo All services launched. Close the windows to stop.
