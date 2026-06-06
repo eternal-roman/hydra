@@ -9,14 +9,13 @@ You are running a release. Steps:
 
 1. Run full test suite + typecheck + lint
 2. Grep for current version string across repo, bump everywhere
-3. **Run regression harness** (`python -m tools.run_regression --version $NEW`) — gates on Wilcoxon WORSE p<0.05
-4. Create PR with summary of changes
-5. Wait for CI green (poll gh pr checks)
-6. Merge PR
-7. Create signed git tag with changelog
-8. Verify tag with `git tag -v`
-9. **Publish GitHub Release** (`gh release create`) and verify it becomes Latest
-10. Run `scripts/check_release_alignment.py --check-tag --check-gh-release` — exit 0 required
+3. Create PR with summary of changes
+4. Wait for CI green (poll gh pr checks)
+5. Merge PR
+6. Create signed git tag with changelog
+7. Verify tag with `git tag -v`
+8. **Publish GitHub Release** (`gh release create`) and verify it becomes Latest
+9. Run `scripts/check_release_alignment.py --check-tag --check-gh-release` — exit 0 required
 
 Ask user for version bump type (patch/minor/major) before starting.
 
@@ -65,36 +64,7 @@ Canonical sites:
 6. `hydra_backtest.py` — `HYDRA_VERSION = "X.Y.Z"` (stamps every BacktestResult)
 7. Git tag — `git tag -s vX.Y.Z` after merge
 
-### Step 3 expansion (regression harness — v2.20.0+)
-
-```bash
-python -m tools.run_regression --version $NEW_VERSION
-```
-
-The harness runs anchored quarterly walk-forward on `hydra_history.sqlite`
-for SOL/USD, SOL/BTC, and BTC/USD against the prior version's snapshot
-(brain stubbed; see `BacktestConfig.brain_mode='stub'`). It always persists
-a snapshot regardless of outcome. Exit codes:
-
-- **0** — no WORSE verdict, or override accepted via `--accept-regression`
-- **2** — Wilcoxon WORSE p<0.05 on any pair × any headline metric, no override
-
-If the harness exits 2, **stop the release**. Investigate which metric
-regressed and on which pair. To override (rare; document the why):
-
-```bash
-python -m tools.run_regression --version $NEW_VERSION \
-    --accept-regression "<short reason — propagates to regression_run.override_reason>"
-```
-
-The reason persists into `regression_run.override_reason` for audit.
-The `HYDRA_REGRESSION_GATE=0` env disables the gate entirely (use only
-when intentionally accepting regression — `--accept-regression` is still
-required to record the reason).
-
-CI does NOT run this on every PR (slow, depends on local SQLite). Release-time only.
-
-### Step 4 expansion (PR)
+### Step 3 expansion (PR)
 
 Use a HEREDOC for the PR body so newlines render correctly. Summary should
 reference: changes per CHANGELOG, any safety-invariant impact (I1-I12),
@@ -105,7 +75,7 @@ and any version-stamped artifacts (BacktestResult, dashboard footer).
 `gh pr checks <pr-number> --watch` until both `engine-tests` and
 `dashboard-build` are green. Never merge with red or pending CI.
 
-### Step 7 expansion (signed tag)
+### Step 6 expansion (signed tag)
 
 `git tag -s vX.Y.Z -m "vX.Y.Z"`. The changelog entry from Step 2 is the
 tag message body. Push with `git push origin vX.Y.Z`.

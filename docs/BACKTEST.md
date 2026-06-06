@@ -41,15 +41,13 @@ opt-in flag is identical to v2.9.x.
 ### Run a backtest from the dashboard
 
 1. Start the dashboard: `cd dashboard && npm run dev`.
-2. Open the **RESEARCH** tab. It has three panes:
+2. Open the **RESEARCH** tab. It has two panes:
    - **Dataset** — inspect the canonical OHLC store (`hydra_history.sqlite`) coverage.
    - **Lab** — configure and run a hypothesis backtest (pick a preset, pair, and
      window; submit). Results stream in with metrics and the equity/regime views.
-   - **Releases** — browse the release-regression snapshots (`tools/run_regression.py`).
-3. For side-by-side comparison, run two experiments in the Lab; the experiment
-   library highlights the winner per metric (Sharpe, max drawdown, win rate) and
-   flags statistically significant deltas. The CLI `compare_experiments` path
-   below does the same headlessly.
+3. For side-by-side comparison, the CLI `compare_experiments` path below
+   highlights the winner per metric (Sharpe, max drawdown, win rate) and flags
+   statistically significant deltas.
 
 ### Run a backtest from the CLI
 

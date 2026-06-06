@@ -175,7 +175,6 @@ class HydraAgent:
         candle_interval: int = 15,
         reset_params: bool = False,
         resume: bool = False,
-        json_stream: bool = False,
     ):
         self.pairs = pairs
         # Derive the active TradingTriangle from the pair list. None when
@@ -196,7 +195,6 @@ class HydraAgent:
         self.duration = duration_seconds
         self.mode = mode
         self.paper = paper
-        self.json_stream = json_stream
         self.candle_interval = candle_interval
         self.running = True
         self.start_time = None
@@ -259,9 +257,7 @@ class HydraAgent:
                 print(f"  [TUNER] {pair}: loaded tuned params (update #{self.trackers[pair].update_count})")
 
         # Dashboard broadcaster
-        self.broadcaster = None
-        if not self.json_stream:
-            self.broadcaster = DashboardBroadcaster(port=ws_port)
+        self.broadcaster = DashboardBroadcaster(port=ws_port)
 
         # ─── Backtest subsystem (v2.10.0, Phase 6) ─────────────────────
         # Strictly additive. Kill-switchable via HYDRA_BACKTEST_DISABLED=1
@@ -3690,7 +3686,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.26.0",
+            "version": "2.26.1",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
@@ -3745,8 +3741,6 @@ def main():
                         help="Reset learned tuning parameters to defaults")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from last session snapshot (engines + coordinator state)")
-    parser.add_argument("--json-stream", action="store_true",
-                        help="Stream state to stdout instead of starting a WS server")
     parser.add_argument("--user", type=str, default=None,
                         help="Run agent as specific user (fetches API keys from DB)")
 
@@ -3791,7 +3785,6 @@ def main():
         candle_interval=candle_interval,
         reset_params=args.reset_params,
         resume=args.resume,
-        json_stream=args.json_stream,
     )
     agent.run()
 

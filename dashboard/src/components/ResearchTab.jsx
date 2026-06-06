@@ -1,9 +1,8 @@
 // dashboard/src/components/ResearchTab.jsx
 //
-// v2.20.0 Research tab composer — three structured sub-panes:
+// v2.20.0 Research tab composer — two structured sub-panes:
 //   DATASET   — read-only canonical OHLC store inspector (Mode A read)
 //   LAB       — Mode B hypothesis lab
-//   RELEASES  — Mode C release regression snapshots
 //
 // Owns only the local sub-tab state. All data + ws comes from App.jsx as props.
 // v2.20.1: restyled to use shared theme tokens (COLORS, mono) — was a generic
@@ -12,13 +11,11 @@
 import React, { useState } from "react";
 import DatasetPane from "./research/DatasetPane";
 import LabPane from "./research/LabPane";
-import ReleasesPane from "./research/ReleasesPane";
 import { COLORS, mono } from "../theme";
 
 const TABS = [
   ["DATASET", "Dataset"],
   ["LAB", "Lab"],
-  ["RELEASES", "Releases"],
 ];
 
 export default function ResearchTab({
@@ -26,8 +23,6 @@ export default function ResearchTab({
   coverageData,
   labResult,
   labProgress,
-  releasesList,
-  releasesDiff,
   paramsSchema,
   clearLabRunState,
 }) {
@@ -83,13 +78,6 @@ export default function ResearchTab({
           paramsSchema={paramsSchema}
           labProgress={labProgress}
           clearLabRunState={clearLabRunState}
-        />
-      )}
-      {pane === "RELEASES" && (
-        <ReleasesPane
-          sendMessage={sendMessage}
-          releasesList={releasesList}
-          releasesDiff={releasesDiff}
         />
       )}
     </div>

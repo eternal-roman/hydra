@@ -638,103 +638,6 @@ def mount_backtest_routes(
         except Exception as e:
             return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
-    def _research_releases_list(payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Read-only: list every regression_run row with a per-pair verdict
-        summary derived from aggregate Wilcoxon p-values."""
-        try:
-            import sqlite3 as _sql3
-            db_path = os.environ.get("HYDRA_HISTORY_DB", "hydra_history.sqlite")
-            # Just connect — HistoryStore() would re-init schema; we already know it's there.
-            conn = _sql3.connect(db_path, timeout=10.0)
-            try:
-                runs = conn.execute(
-                    """SELECT run_id, hydra_version, pair, grain_sec, created_at,
-                              override_reason
-                       FROM regression_run
-                       ORDER BY created_at DESC"""
-                ).fetchall()
-                # Build verdict summary per run from aggregate (fold_idx=-1) Wilcoxon p-values.
-                # If any p<0.05 with median<0 -> "worse"; with median>0 -> "better"; else "equivocal".
-                # We don't have median stored separately, so summary just reports the smallest p.
-                summaries = {}
-                for run_id, *_ in runs:
-                    ps = [
-                        v for (v,) in conn.execute(
-                            """SELECT value FROM regression_metrics
-                               WHERE run_id=? AND fold_idx=-1 AND metric LIKE 'wilcoxon_p_%'""",
-                            (run_id,),
-                        )
-                    ]
-                    if not ps:
-                        summaries[run_id] = "no folds"
-                    else:
-                        min_p = min(ps)
-                        summaries[run_id] = "equivocal" if min_p >= 0.05 else "significant"
-            finally:
-                conn.close()
-            data = [
-                {
-                    "run_id": r[0],
-                    "hydra_version": r[1],
-                    "pair": r[2],
-                    "grain_sec": r[3],
-                    "created_at": r[4],
-                    "override_reason": r[5],
-                    "verdict_summary": summaries.get(r[0], "?"),
-                }
-                for r in runs
-            ]
-            return {"success": True, "data": data}
-        except Exception as e:
-            return {"success": False, "error": f"{type(e).__name__}: {e}"}
-
-    def _research_releases_diff(payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Compare two regression runs side-by-side. Returns aggregate metrics
-        for both run_ids and the per-fold metric rows (if any)."""
-        a_id = payload.get("a_run_id")
-        b_id = payload.get("b_run_id")
-        if not (a_id and b_id):
-            return {"success": False, "error": "a_run_id and b_run_id required"}
-        try:
-            import sqlite3 as _sql3
-            db_path = os.environ.get("HYDRA_HISTORY_DB", "hydra_history.sqlite")
-            conn = _sql3.connect(db_path, timeout=10.0)
-            try:
-                def _load(run_id):
-                    row = conn.execute(
-                        """SELECT hydra_version, pair, grain_sec, created_at, override_reason
-                           FROM regression_run WHERE run_id=?""",
-                        (run_id,),
-                    ).fetchone()
-                    if not row:
-                        return None
-                    metrics = [
-                        {"fold_idx": fi, "metric": m, "value": v}
-                        for (fi, m, v) in conn.execute(
-                            """SELECT fold_idx, metric, value FROM regression_metrics
-                               WHERE run_id=? ORDER BY fold_idx, metric""",
-                            (run_id,),
-                        )
-                    ]
-                    return {
-                        "run_id": run_id,
-                        "hydra_version": row[0],
-                        "pair": row[1],
-                        "grain_sec": row[2],
-                        "created_at": row[3],
-                        "override_reason": row[4],
-                        "metrics": metrics,
-                    }
-                a = _load(a_id)
-                b = _load(b_id)
-            finally:
-                conn.close()
-            if a is None or b is None:
-                return {"success": False, "error": "one or both run_ids not found"}
-            return {"success": True, "a": a, "b": b}
-        except Exception as e:
-            return {"success": False, "error": f"{type(e).__name__}: {e}"}
-
     def _research_lab_run(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Mode B walk-forward — async via daemon thread, streams progress."""
         import uuid
@@ -770,8 +673,8 @@ def mount_backtest_routes(
                 print(f"  [LAB] broadcast error: {type(e).__name__}: {e}")
 
         def _runner_factory(side: str, overrides: Dict[str, float]):
-            # OOS isolation (option 3): warmup-pad before oos_start.
-            # See tools/run_regression.py for the same pattern + rationale.
+            # OOS isolation (option 3): warmup-pad before oos_start so the
+            # engine's warmup_candles=50 lookback is covered before scoring.
             _WARMUP_PAD_CANDLES = 60
             def _run(pair_arg, params, fold) -> "FoldMetrics":
                 from hydra_backtest import BacktestConfig, BacktestRunner
@@ -788,7 +691,6 @@ def mount_backtest_routes(
                         "start_ts": warmup_padded_start, "end_ts": fold.oos_end,
                     }),
                     param_overrides_json=json.dumps({pair_arg: overrides}),
-                    brain_mode="stub",
                 )
                 result = BacktestRunner(cfg).run()
                 m = result.metrics
@@ -918,8 +820,6 @@ def mount_backtest_routes(
             return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
     broadcaster.register_handler("research_dataset_coverage", _research_dataset_coverage)
-    broadcaster.register_handler("research_releases_list", _research_releases_list)
-    broadcaster.register_handler("research_releases_diff", _research_releases_diff)
     broadcaster.register_handler("research_lab_run", _research_lab_run)
     broadcaster.register_handler("research_params_current", _research_params_current)
 

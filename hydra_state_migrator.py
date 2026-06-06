@@ -215,26 +215,3 @@ def migrate_snapshot_file(
             pass
         return False
     return True
-
-
-def migrate_params_file(
-    old_path: _PathLike,
-    new_path: _PathLike,
-) -> bool:
-    """Rename a per-pair tuner-params file (filename has no slash).
-
-    Pre-v2.19 file names: hydra_params_SOL_USDC.json
-    Post-v2.19 file names: hydra_params_SOL_USD.json
-
-    Returns True iff a rename occurred. Fail-soft on missing source
-    or existing destination (don't clobber if user has both).
-    """
-    src = Path(old_path)
-    dst = Path(new_path)
-    if not src.exists() or dst.exists():
-        return False
-    try:
-        os.replace(src, dst)
-    except OSError:
-        return False
-    return True

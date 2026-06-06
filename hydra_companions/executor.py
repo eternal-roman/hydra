@@ -9,7 +9,6 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, asdict
-from pathlib import Path
 from typing import Literal, Optional
 
 from hydra_companions.config import PROPOSALS_LOG
@@ -47,7 +46,6 @@ class TradeProposal:
 class LadderRung:
     pct_of_total: float
     limit_price: float
-    offset_atr: float = 0.0
 
 
 @dataclass(frozen=True)

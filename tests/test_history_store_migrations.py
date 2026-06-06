@@ -18,9 +18,9 @@ def test_existing_db_with_lower_schema_version_raises(tmp_path):
     raise AssertionError("expected RuntimeError")
 
 
-def test_v1_db_upgrades_to_v2_with_regression_tables(tmp_path):
+def test_v1_db_upgrades_to_v2_preserving_rows(tmp_path):
     """A pre-v2 (schema_version=1) DB on disk must silently upgrade to v2
-    and gain the four regression_* tables, without losing existing rows."""
+    without losing existing rows."""
     db = tmp_path / "h.sqlite"
     # Hand-build a v1 DB the way T1's HistoryStore would have created it.
     with sqlite3.connect(str(db)) as conn:
@@ -40,11 +40,6 @@ def test_v1_db_upgrades_to_v2_with_regression_tables(tmp_path):
     with sqlite3.connect(str(db)) as conn:
         v = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
         assert int(v) == SCHEMA_VERSION
-        names = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
-        for t in ("regression_run", "regression_metrics",
-                  "regression_equity_curve", "regression_trade"):
-            assert t in names, f"missing {t}"
         # Pre-existing ohlc row preserved.
         n = conn.execute("SELECT COUNT(*) FROM ohlc").fetchone()[0]
         assert n == 1

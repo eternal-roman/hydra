@@ -14,7 +14,6 @@ import pytest
 from hydra_derivatives_stream import (
     DerivativesSnapshot,
     DerivativesStream,
-    SPOT_TO_DERIVATIVES,
     _absolute_to_relative_bps,
     _delta_pct,
     _maybe_float,
@@ -154,12 +153,11 @@ def test_populate_from_ticker_updates_snapshot(stream):
     now = time.time()
     stream._populate_from_ticker(snap, tick, now)
     assert snap.mark_price == 95000.5
-    assert snap.spot_price == 94990.0
     assert snap.funding_bps_8h == 0.5
     assert snap.funding_predicted_bps == 0.4
     assert snap.open_interest == 12345.67
     assert snap.last_updated_ts == now
-    assert snap.fetch_errors == 0
+    assert snap.fetch_error_streak == 0
 
 
 def test_oi_delta_computes_against_history(stream):

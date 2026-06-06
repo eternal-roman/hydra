@@ -45,10 +45,9 @@ from hydra_engine import (
     HydraEngine,
     SIZING_COMPETITION,
     SIZING_CONSERVATIVE,  # noqa: F401 — re-exported for callers
-    SignalAction,
 )
 
-HYDRA_VERSION = "2.26.0"
+HYDRA_VERSION = "2.26.1"
 
 # Reasonable defaults; enforced at config construction and runtime.
 DEFAULT_MAX_TICKS = 200_000
@@ -92,10 +91,6 @@ class BacktestConfig:
     real_time_factor: float = 0.0  # 0 = max speed; 1 = live cadence; 60 = 60× live
     random_seed: int = 42
     max_ticks: int = DEFAULT_MAX_TICKS
-
-    brain_mode: str = "stub"   # "stub" | "replay" | "live" — only "stub" wired in v2.20.0
-    # FIXME(v2.20.1): if no consumer materializes for "replay"/"live", delete those
-    # branches and collapse this field. Currently dead-but-guarded by _validate_brain_mode().
 
     # Stamps
     git_sha: str = ""
@@ -168,17 +163,6 @@ def _compute_param_hash(cfg: BacktestConfig) -> str:
 
 def _iso_utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _stub_brain_decision(quant_signal, rules_outcome):
-    """Deterministic stand-in for the AI brain in regression/lab runs.
-    Approves the quant signal iff R10 quant_rules approve; otherwise HOLD.
-    No LLM calls, no network, no randomness. Reserved for the brain
-    integration step (deferred past v2.20.0); kept here so the contract
-    is defined when the wire-up lands."""
-    if rules_outcome and getattr(rules_outcome, "approved", True):
-        return quant_signal
-    return SignalAction.HOLD
 
 
 @dataclass
@@ -604,10 +588,9 @@ class BacktestRunner:
     ) -> None:
         self.config = finalize_stamps(config)
         # sources_override is consulted in place of make_candle_source() — used by
-        # hydra_backtest_metrics.walk_forward / out_of_sample_gap to feed candle
-        # slices without duplicating _loop. None (default) preserves live path.
+        # hydra_backtest_metrics.walk_forward to feed candle slices without
+        # duplicating _loop. None (default) preserves live path.
         self._sources_override = sources_override
-        self._validate_brain_mode()
         self._build_engines_and_coord()
 
     # ---- internal setup ----
@@ -632,16 +615,6 @@ class BacktestRunner:
         )
         self.filler = SimulatedFiller(cfg.fill_model, cfg.maker_fee_bps)
         self._pending: Dict[str, Optional[PendingOrder]] = {p: None for p in cfg.pairs}
-
-    def _validate_brain_mode(self) -> None:
-        """Enforce that only brain_mode='stub' is wired in v2.20.0.
-        Raises NotImplementedError for 'replay' or 'live'."""
-        if self.config.brain_mode == "stub":
-            return
-        raise NotImplementedError(
-            f"brain_mode={self.config.brain_mode!r} not implemented in v2.20.0; "
-            f"only 'stub' is supported. Modes 'replay' and 'live' are deferred."
-        )
 
     # ---- public API ----
 

@@ -173,8 +173,10 @@ class BacktestConfig:
     coordinator_enabled: bool = True
     order_book_enabled: bool = False                   # sim book data is fake by default
     forex_session_enabled: bool = True
-    brain_mode: str = "none"                           # none | confirm_all | mock_analyst | real
-                                                       # "real" requires API keys and hits actual LLMs
+    # brain_mode — DEFERRED design (the brain-in-backtest integration sketched
+    # in §6.1's loop is unbuilt). Not present in the shipped BacktestConfig:
+    # the replay loop runs the engine deterministically (generate_only) with no
+    # brain constructed. Planned modes: none | confirm_all | mock_analyst | real.
 
     # Data
     data_source: str = "kraken"                        # kraken | csv | snapshot | synthetic
@@ -533,11 +535,8 @@ return result
 
 - `compute_basic_metrics(equity_curve, trades) → BacktestMetrics (core fields)` — stdlib only.
 - `bootstrap_ci(values, n_iter=1000, ci=0.95) → (lower, upper)` — vanilla Python bootstrap; no scipy.
-- `regime_conditioned_pnl(trades, regime_ribbon) → Dict[regime, pnl]`
 - `walk_forward(config, train_pct, test_pct, n_windows) → List[BacktestResult]` — slides train/test windows across data; returns a result per test window. Used for `wf_sharpe_stability`.
 - `monte_carlo_resample(trades, n_iter=500) → Dict[metric, CI]` — resamples trade sequences with replacement, preserves temporal structure via block bootstrap (block length = 20 trades).
-- `parameter_sensitivity(base_config, param_ranges) → Dict[param, sensitivity_score]` — runs a sparse sweep (5 values per param) and computes `|∂sharpe/∂param|` normalized by param range.
-- `out_of_sample_gap(config, in_sample_pct=0.8) → (in_sharpe, oos_sharpe, gap_pct)`.
 - `annualization_factor(candle_interval_min) → float` — same formula as live engine: `sqrt(365*24*60/candle_interval_min)`.
 
 ### 6.3 Layer 3: Experiments Framework (`hydra_experiments.py`, ~700 LOC)

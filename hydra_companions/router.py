@@ -11,13 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from hydra_companions.config import ROUTING_CONFIG, routing_mode
+from hydra_companions.config import ROUTING_CONFIG
 
 
 @dataclass(frozen=True)
 class RouteDecision:
     provider: str          # "anthropic" | "xai"
-    model_id: str          # "claude-sonnet-4-6" | "grok-4-1-fast-reasoning" | ...
+    model_id: str          # "claude-sonnet-4-6" | "grok-4.3" | ...
     max_tokens: int
     temperature: float
     intent: str
@@ -39,12 +39,11 @@ class Router:
         self._pools = self._cfg.get("rotation_pools", {})
         self._caps = self._cfg.get("safety_caps", {})
         self._budgets = self._cfg.get("budgets", {})
-        self._mode = routing_mode()
 
     # ----- public API -----
 
     def pick(self, companion_id: str, intent: str, *,
-             serious_mode: bool = False, has_tools: Optional[bool] = None,
+             serious_mode: bool = False,
              seed: Optional[int] = None) -> RouteDecision:
         routes = self._routing.get(companion_id, {})
         intent_def = self._intents.get(intent) or self._intents["unknown"]
@@ -57,7 +56,7 @@ class Router:
             rng = random.Random(seed)
             model_id = _weighted_choice(pool, rng)
         else:
-            model_id = entry.get("primary", "xai:grok-4-1-fast-reasoning")
+            model_id = entry.get("primary", "xai:grok-4.3")
 
         temperature = float(entry.get("temperature", 0.5))
         # Broski serious-mode temperature delta
