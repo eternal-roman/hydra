@@ -148,10 +148,6 @@ YOUR TASK
 6. Conviction (0.0-1.0) is your confidence IN THE SCENARIO you painted,
    not a vibe. High conviction requires agreement across multiple
    indicator classes.
-7. THESIS ALIGNMENT: when a THESIS CONTEXT block is present, treat it
-   as the user's persistent worldview (Cowen ITC framework). It is
-   advisory, not binding. If current evidence contradicts the stated
-   posterior, SAY SO explicitly in evidence_delta.
 
 ────────────────────────────────────────────────────────────────────
 OUTPUT — JSON ONLY, NO PROSE OUTSIDE THE OBJECT

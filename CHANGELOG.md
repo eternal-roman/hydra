@@ -10,19 +10,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Feature-offshoot trim + opsec hardening. Archives three dormant/orphaned
 subsystems (meme-trader, thesis layer, AI-reviewer + shadow-validator) to the
-git-history "closet", promotes the one valuable thesis mechanic — the BTC
-ledger shield — into a real enforced guard, and stops disclosing holdings in
-tracked source.
-
-### Safety
-- **BTC ledger shield is now a hard SELL guard** (previously an advisory
-  string the LLM brain could ignore). `_place_order` skips or clamps any
-  stable-quoted BTC sell that would drop holdings below the floor; the SOL/BTC
-  bridge is never affected (selling SOL for BTC increases BTC). Pure
-  `ledger_shield_sellable()` helper, 13 TDD unit tests, CI-gated. The floor is
-  read from `HYDRA_LEDGER_SHIELD_BTC` (operator's gitignored `.env`);
-  unset/0/invalid = disabled, warned loudly at startup. No holdings figure is
-  hardcoded in source any more (opsec).
+git-history "closet", drops the advisory BTC ledger-shield floor entirely (the
+only constraint on rotation is profitability), and stops disclosing the old
+hardcoded BTC holdings figure in tracked source.
 
 ### Removed (recoverable from git history)
 - **Thesis layer** (`hydra_thesis.py`, `hydra_thesis_processor.py`): dormant —
@@ -49,8 +39,8 @@ tracked source.
 ### Docs
 - CLAUDE.md: dropped the four archived module rows, the `HYDRA_THESIS_*` flags,
   the `hydra_thesis.json` state row, and the thesis CBP node; corrected the
-  dashboard tab list to LIVE/RESEARCH/SETTINGS; rewrote the ledger-shield
-  invariant as the env-driven hard guard; added `HYDRA_LEDGER_SHIELD_BTC`.
+  dashboard tab list to LIVE/RESEARCH/SETTINGS; removed the prior BTC
+  ledger-shield invariant (the floor concept is dropped).
 
 ### Version
 - All 7 alignment sites bumped 2.25.4 → 2.26.0.

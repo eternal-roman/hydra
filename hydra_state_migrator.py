@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Union
 
 
 _PathLike = Union[str, os.PathLike, Path]

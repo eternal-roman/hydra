@@ -50,8 +50,7 @@ def main():
         print("[post-edit] running backtest test subset")
         subprocess.run([sys.executable, "-m", "pytest",
                         "tests/test_backtest_engine.py", "tests/test_backtest_metrics.py",
-                        "tests/test_experiments.py", "tests/test_reviewer.py",
-                        "tests/test_shadow_validator.py", "-x", "--tb=short"],
+                        "tests/test_experiments.py", "-x", "--tb=short"],
                        cwd=REPO_ROOT, timeout=60)
 
     elif f.endswith(".py"):

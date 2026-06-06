@@ -71,8 +71,7 @@ regression bug, not a style issue.
 - **2s REST floor** — Kraken throttles or bans below this
 - **15% drawdown kills engine for session** — both `tick()` and `_maybe_execute` check
 - **RSI/ATR = Wilder exponential smoothing, NOT SMA** (Bollinger = population variance)
-- **BTC ledger shield is a hard SELL guard** — `_place_order` skips or clamps any stable-quoted BTC sell that would drop holdings below the floor read from `HYDRA_LEDGER_SHIELD_BTC` (operator's gitignored `.env`; unset/0/invalid = disabled, warned loudly at startup). Enforced deterministically via `ledger_shield_sellable()` — NOT advisory. The floor value lives ONLY in `.env`; never hardcode a holdings figure in source or docs (opsec).
-- **SKIP ≠ BLOCK** — a soft restriction skips an action for the tick; BLOCK is reserved for hard rules (ledger shield, 15% drawdown breaker)
+- **SKIP ≠ BLOCK** — a soft restriction skips an action for the tick; BLOCK is reserved for hard rules (the 15% drawdown breaker)
 - **`HYDRA_COMPANION_LIVE_EXECUTION` default OFF** — proposals are paper until opted in
 - **Funding is markPrice-relative, never absolute** — Kraken Futures `PF_*` `fundingRate` is absolute USD-per-contract-per-period. Convert to bps via `(fundingRate / markPrice) * 10000`, never `fundingRate * 10000`. The `_absolute_to_relative_bps` helper in `hydra_derivatives_stream.py` enforces this (±500 bps clamp vs API drift). Pre-v2.15.2 fires used the wrong absolute conversion — not authoritative.
 - **Synthetic pairs declare themselves to R10** — `DerivativesSnapshot.synthetic=True` propagates to `quant_indicators["synthetic_pair"]`; R10 then tracks only funding/cvd/regime (the fields the synthetic path actually populates). Adding a new pair without a direct Kraken Futures perp requires this flag, otherwise R10 will structurally force-hold every tick.
@@ -143,7 +142,7 @@ Persist new learnings: `python $CBP_RUNNER_DIR/bin/memory-write.py --label <slug
 ## Claude Code tooling
 
 - **Skills:** `/release` (release SOP), `/audit` (zero-skip review), `/review`, `/security-review`
-- **Post-edit hook:** `.claude/hooks/post-edit.sh` — path-scoped verification; advisory; silence with `HYDRA_POSTEDIT_HOOK_DISABLED=1`
+- **Post-edit hook:** `.claude/hooks/post-edit.py` — path-scoped verification; advisory; silence with `HYDRA_POSTEDIT_HOOK_DISABLED=1` (wired in `.claude/settings.json`)
 - **Settings split:** per-user `.claude/settings.local.json` + runtime `.claude/scheduled_tasks.lock` gitignored; everything else under `.claude/` committed
 - **gitattributes pin:** `*.sh text eol=lf` — prevents Windows core.autocrlf CRLF-ing hook shebang
 
@@ -169,7 +168,6 @@ on every call (tokens rotate).
 
 | flag | scope | effect |
 |---|---|---|
-| `HYDRA_LEDGER_SHIELD_BTC` | safety | BTC floor the live SELL path will never breach. Read once at agent start; unset/0/invalid = shield disabled (warned loudly at startup). The real value lives ONLY in the operator's gitignored `.env` — never commit it. Enforced in `_place_order` via `ledger_shield_sellable()`. |
 | `HYDRA_BACKTEST_DISABLED` | backtest | kill; worker pool off, WS rejects backtest msgs; v2.9.x exact |
 | `HYDRA_BRAIN_TOOLS_ENABLED` | brain | enables Anthropic tool-use for Analyst+RM (Grok stays text-only) |
 | `HYDRA_QUANT_INDICATORS_DISABLED` | brain/quant | `=1` skips DerivativesStream + R1-R11 quant rules; Quant sees no funding/OI/CVD block and no force_hold from rules |

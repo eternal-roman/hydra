@@ -230,8 +230,6 @@ python -m pytest tests/test_experiments.py          # presets, store, sweep, com
 python -m pytest tests/test_backtest_tool.py        # tool dispatcher + quotas
 python -m pytest tests/test_brain_tool_use.py       # Anthropic tool-use loop
 python -m pytest tests/test_backtest_server.py      # worker pool + WS routing
-python -m pytest tests/test_reviewer.py             # rigor gates + verdict logic
-python -m pytest tests/test_shadow_validator.py     # FIFO, ingest, approve, rollback
 python tests/live_harness/harness.py --mode smoke   # kill-switch verified
 ```
 
