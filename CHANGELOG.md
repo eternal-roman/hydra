@@ -6,6 +6,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.26.1] — 2026-06-06
+
+Vacuity sweep — removes dead weight, abandoned scaffolding, and false-confidence
+machinery surfaced by a full-codebase review. Net ~2,250 lines deleted; no
+surviving-feature behavior changes. All deletions recoverable from git history.
+
+### Removed — release-regression gate (Mode C)
+- **`tools/run_regression.py`** and its test: the release gate was structurally
+  inert. Its runner ignored the baseline/candidate params, so it compared each
+  version **against itself** — every per-fold delta was exactly `0.0`, every
+  Wilcoxon verdict was hard-wired to `equivocal` (empirically: `p=1.0000,
+  wins=0/0` across all pairs/metrics after ~9 min of compute), and the
+  `HYDRA_REGRESSION_GATE` could never return `worse`. Removed end-to-end: the
+  runner, the `regression_*` SQLite tables, the `_research_releases_list` /
+  `_research_releases_diff` WS handlers, the dashboard **Releases** pane
+  (`ReleasesPane.jsx` + `theme.js:regressionVerdictColor`), the
+  `HYDRA_REGRESSION_GATE` env flag, the `/release` skill gate step, and the CI
+  test entry. The interactive Research **Lab** (Mode B) — which genuinely
+  differentiates baseline vs candidate — is the surviving walk-forward path and
+  is untouched (`hydra_walk_forward.py` kernel kept).
+
+### Removed — reviewer-orphaned analytics
+- `hydra_backtest_metrics.py`: `monte_carlo_improvement`, `regime_conditioned_pnl`,
+  `parameter_sensitivity`, `out_of_sample_gap` (+ `ImprovementReport`,
+  `OutOfSampleReport`, `ParamSensitivity`, `_linspace`, `_apply_param`) — their
+  only consumer, the AI Reviewer, was archived in v2.26.0; no live caller
+  remained. The never-invoked `with_oos_gap` / `oos_report` chain in
+  `hydra_experiments.py` removed with them. `monte_carlo_resample` and
+  `walk_forward` (used by the Lab/experiments) kept.
+
+### Removed — dead code, stubs, and unreachable UI
+- `hydra_engine.py`: unused `PortfolioState` dataclass; dead `macd_fading` local.
+- `hydra_backtest.py`: never-called `_stub_brain_decision`; collapsed the
+  always-`"stub"` `brain_mode` field + `_validate_brain_mode` guard.
+- `hydra_ws_server.py`: collapsed the permanently-`True` `compat_mode` flag
+  (behavior preserved — always dual-sends legacy + wrapped).
+- `dashboard/src/App.jsx`: unrendered Phase-10 `ExperimentLibrary` /
+  `CompareResults` / `CompareStep` (+ their state/WS acks), and the dead
+  AI-Reviewer `ReviewPanel` / `GatesSummary` / `RIGOR_GATES` (~800 lines).
+- Companions: dead `routing_mode` / `self._mode`, unused `has_tools` param,
+  write-only `LadderRung.offset_atr`, and the never-dispatched
+  `council_multi_agent` intent + `grok-4.20-multi-agent-0309` model.
+- `hydra_derivatives_stream.py`: write-only `spot_price` / `fetch_errors` fields.
+- `hydra_state_migrator.py`: dead `migrate_params_file`.
+- Stale/unused imports across `hydra_kraken_cli.py`, `hydra_ws_server.py`,
+  `hydra_derivatives_stream.py`, and tests.
+
+### Fixed
+- `tools/sync_kraken_trades.py`: missing `import os` (the `--incremental` /
+  full-pull paths raised `NameError` on first WSL fetch).
+- `hydra_agent.py`: removed the broken `--json-stream` flag — it set
+  `broadcaster=None` then unconditionally called `broadcaster.start()`, crashing
+  on launch; the advertised stdout path was never implemented.
+
+### Changed
+- Companions fast-tier model `grok-4-1-fast-reasoning` → canonical **`grok-4.3`**
+  (est. cost $1.25 in / $2.50 out per MTok). The 3-agent brain's Strategist
+  (`grok-4.20-0309-reasoning`) is unaffected.
+
+---
+
 ## [2.26.0] — 2026-06-05
 
 Feature-offshoot trim + opsec hardening. Archives three dormant/orphaned

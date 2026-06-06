@@ -61,9 +61,7 @@ from hydra_backtest import (
 from hydra_backtest_metrics import (
     WalkForwardReport,
     MonteCarloReport,
-    OutOfSampleReport,
     monte_carlo_resample,
-    out_of_sample_gap,
     walk_forward,
 )
 
@@ -284,7 +282,6 @@ class Experiment:
     # Optional analytics companions — populated by run_experiment when requested
     mc_report: Optional[MonteCarloReport] = None
     wf_report: Optional[WalkForwardReport] = None
-    oos_report: Optional[OutOfSampleReport] = None
 
     # --- persistence ---
 
@@ -305,7 +302,6 @@ class Experiment:
             "result": self.result.to_dict() if self.result else None,
             "mc_report": asdict(self.mc_report) if self.mc_report else None,
             "wf_report": asdict(self.wf_report) if self.wf_report else None,
-            "oos_report": asdict(self.oos_report) if self.oos_report else None,
         }
         return out
 
@@ -322,7 +318,6 @@ class Experiment:
         result = _result_from_dict(d["result"]) if d.get("result") else None
         mc_report = _report_from_dict(MonteCarloReport, d["mc_report"]) if d.get("mc_report") else None
         wf_report = _report_from_dict(WalkForwardReport, d["wf_report"]) if d.get("wf_report") else None
-        oos_report = _report_from_dict(OutOfSampleReport, d["oos_report"]) if d.get("oos_report") else None
 
         return cls(
             id=d["id"],
@@ -340,7 +335,6 @@ class Experiment:
             tags=d.get("tags", []),
             mc_report=mc_report,
             wf_report=wf_report,
-            oos_report=oos_report,
         )
 
 
@@ -410,8 +404,6 @@ def _report_from_dict(cls: type, d: Dict[str, Any]) -> Any:
             improved_slices=d.get("improved_slices", 0),
             improvement_pct_per_slice=d.get("improvement_pct_per_slice", []),
         )
-    if cls is OutOfSampleReport:
-        return OutOfSampleReport(**d)
     raise ValueError(f"unknown report class {cls}")
 
 
@@ -494,10 +486,8 @@ def run_experiment(
     store: Optional["ExperimentStore"] = None,
     with_monte_carlo: bool = False,
     with_walk_forward: bool = False,
-    with_oos_gap: bool = False,
     mc_iter: int = 300,
     wf_n_windows: int = 3,
-    oos_in_sample_pct: float = 0.8,
 ) -> Experiment:
     """Run the backtest + optional analytics companions. Persists to `store`
     if provided. Exceptions are captured on the Experiment — never propagated
@@ -534,9 +524,6 @@ def run_experiment(
 
         if with_walk_forward:
             exp.wf_report = walk_forward(exp.config, n_windows=wf_n_windows)
-
-        if with_oos_gap:
-            exp.oos_report = out_of_sample_gap(exp.config, in_sample_pct=oos_in_sample_pct)
 
     except Exception as e:
         exp.status = "failed"

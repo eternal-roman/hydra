@@ -19,32 +19,16 @@ monte_carlo_resample(trade_profits, n_iter, block_len, seed, candle_interval_min
     Block bootstrap over realized trade profits. Returns CIs for:
       total_return_pct, sharpe, max_drawdown_pct, profit_factor.
 
-monte_carlo_improvement(baseline_profits, variant_profits, n_iter, block_len, seed)
-    The "MC-on-delta" pass used by the reviewer's RepeatabilityEvidence:
-    resamples both sides jointly and reports CI + p-value for the delta in
-    mean-per-trade.
-
-regime_conditioned_pnl(trade_log, regime_ribbon)
-    Per-regime {pnl, trades, win_rate, avg_pnl} dict — evidence for the
-    "regime_not_concentrated" rigor gate.
-
 walk_forward(base_config, train_pct, test_pct, n_windows)
     Slides train/test windows across the full candle series; returns a
     WalkForwardReport with per-slice Sharpe + stability metrics.
-
-out_of_sample_gap(base_config, in_sample_pct)
-    First N% vs last (1-N)% of the candle series; reports
-    (in_sharpe, oos_sharpe, gap_pct).
-
-parameter_sensitivity(base_config, param_ranges, n_values)
-    Linear sweep of each param; returns normalized |∂sharpe/∂param|.
 
 Design invariants
 -----------------
 - Deterministic: all functions seeded; same inputs → identical outputs (I12).
 - Stdlib only: no numpy/pandas/scipy (inherits engine stance).
 - Safe reuse of Phase-1 BacktestRunner via its `sources_override` hook — no
-  duplication of `_loop`, preserving I7 (zero drift) across slice/OOS paths.
+  duplication of `_loop`, preserving I7 (zero drift) across walk-forward slices.
 - Live-state safe: consumes only completed BacktestResult / trade_log data;
   never holds refs to live agent state (I2).
 """
@@ -53,8 +37,8 @@ from __future__ import annotations
 import math
 import random
 import statistics
-from dataclasses import dataclass, field, replace
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterator, List, Sequence, Tuple
 
 from hydra_engine import Candle
 from hydra_backtest import (
@@ -118,40 +102,6 @@ class MonteCarloReport:
     sharpe_ci: MonteCarloCI
     max_drawdown_ci: MonteCarloCI
     profit_factor_ci: MonteCarloCI
-
-
-@dataclass
-class ImprovementReport:
-    n_iter: int
-    mean_improvement: float       # mean(variant) - mean(baseline) across resamples
-    ci_lower: float
-    ci_upper: float
-    p_value: float                # P(delta ≤ 0) estimated from the resample distribution
-    variant_mean: float
-    baseline_mean: float
-
-
-@dataclass
-class OutOfSampleReport:
-    in_sample_pct: float
-    in_sample_sharpe: float
-    oos_sharpe: float
-    in_sample_return_pct: float
-    oos_return_pct: float
-    gap_pct: float                # (in_sample - oos) / |in_sample| * 100, 0 if in_sample=0
-    in_sample_trades: int
-    oos_trades: int
-
-
-@dataclass
-class ParamSensitivity:
-    param: str
-    scope: str                    # "global" | "pair:SOL/USD" | ...
-    values: List[float]
-    sharpes: List[float]
-    sensitivity: float            # |slope| * (max - min) — normalized
-    best_value: float
-    best_sharpe: float
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -359,120 +309,15 @@ def monte_carlo_resample(
     )
 
 
-def monte_carlo_improvement(
-    baseline_profits: Sequence[float],
-    variant_profits: Sequence[float],
-    n_iter: int = 500,
-    block_len: int = 20,
-    seed: int = 42,
-) -> ImprovementReport:
-    """Resample both sequences jointly; report CI and p-value for the delta
-    in mean per-trade P&L.
-
-    p_value = fraction of resamples where variant mean ≤ baseline mean.
-    mc_ci_lower > 0 is the reviewer's statistical gate for a positive result.
-    """
-    if not baseline_profits or not variant_profits:
-        return ImprovementReport(
-            n_iter=0, mean_improvement=0.0, ci_lower=0.0, ci_upper=0.0,
-            p_value=1.0, variant_mean=0.0, baseline_mean=0.0,
-        )
-
-    rng = random.Random(seed)
-    deltas: List[float] = []
-    for _ in range(n_iter):
-        b = _block_bootstrap_sample(baseline_profits, block_len, rng)
-        v = _block_bootstrap_sample(variant_profits, block_len, rng)
-        delta = statistics.fmean(v) - statistics.fmean(b)
-        deltas.append(delta)
-
-    deltas.sort()
-    lo = _percentile(deltas, 0.025)
-    hi = _percentile(deltas, 0.975)
-    mean_d = statistics.fmean(deltas)
-    neg_or_zero = sum(1 for d in deltas if d <= 0)
-    p_value = neg_or_zero / len(deltas)
-
-    return ImprovementReport(
-        n_iter=n_iter,
-        mean_improvement=mean_d,
-        ci_lower=lo,
-        ci_upper=hi,
-        p_value=p_value,
-        variant_mean=statistics.fmean(variant_profits),
-        baseline_mean=statistics.fmean(baseline_profits),
-    )
-
-
 # ═══════════════════════════════════════════════════════════════
-# Regime-conditioned P&L
-# ═══════════════════════════════════════════════════════════════
-
-def regime_conditioned_pnl(
-    trade_log: Sequence[Dict[str, Any]],
-    regime_ribbon: Dict[str, List[str]],
-) -> Dict[str, Dict[str, Any]]:
-    """Attribute each realized trade's P&L to the regime active at its tick.
-
-    Trade attribution: a trade's `profit` field is set on close (SELL). We
-    look up the regime at `trade.tick` on its pair. Ribbons index by tick;
-    defensive fallback to the nearest valid tick if the tick exceeds ribbon
-    length (shouldn't happen, but keeps the math safe).
-
-    Returns: {regime: {"pnl": float, "trades": int, "wins": int,
-                       "losses": int, "win_rate_pct": float, "avg_pnl": float}}
-    """
-    agg: Dict[str, Dict[str, float]] = {}
-    for t in trade_log:
-        profit = t.get("profit")
-        if profit is None or profit == 0:
-            # SELL with nonzero realized P&L is what we attribute
-            # (BUY entries carry profit=0 in the Phase 1 trade_log)
-            continue
-        pair = t.get("pair")
-        tick = t.get("tick", 0)
-        ribbon = regime_ribbon.get(pair, [])
-        if not ribbon:
-            continue
-        idx = min(max(0, int(tick)), len(ribbon) - 1)
-        regime = ribbon[idx] or "RANGING"
-
-        bucket = agg.setdefault(regime, {
-            "pnl": 0.0, "trades": 0, "wins": 0, "losses": 0,
-        })
-        bucket["pnl"] += float(profit)
-        bucket["trades"] += 1
-        if profit > 0:
-            bucket["wins"] += 1
-        else:
-            bucket["losses"] += 1
-
-    out: Dict[str, Dict[str, Any]] = {}
-    for regime, bucket in agg.items():
-        trades = int(bucket["trades"])
-        wins = int(bucket["wins"])
-        losses = int(bucket["losses"])
-        denom = wins + losses
-        out[regime] = {
-            "pnl": bucket["pnl"],
-            "trades": trades,
-            "wins": wins,
-            "losses": losses,
-            "win_rate_pct": (wins / denom * 100.0) if denom > 0 else 0.0,
-            "avg_pnl": (bucket["pnl"] / trades) if trades > 0 else 0.0,
-        }
-    return out
-
-
-# ═══════════════════════════════════════════════════════════════
-# Walk-forward & OOS
+# Walk-forward
 # ═══════════════════════════════════════════════════════════════
 
 class ListCandleSource(CandleSource):
     """In-memory candle source. Yields a pre-materialized list per pair.
 
-    Used by walk_forward / out_of_sample_gap to feed sliced candle views into
-    a BacktestRunner without duplicating `_loop`. Kept in metrics module (not
+    Used by walk_forward to feed sliced candle views into a BacktestRunner
+    without duplicating `_loop`. Kept in metrics module (not
     hydra_backtest.py) because it's only meaningful when you already have
     materialized candles in hand.
     """
@@ -605,129 +450,6 @@ def walk_forward(
     )
 
 
-def out_of_sample_gap(
-    base_config: BacktestConfig,
-    in_sample_pct: float = 0.8,
-) -> OutOfSampleReport:
-    """Split candle series at `in_sample_pct`; run backtest on each half
-    separately; report Sharpe gap.
-
-    Gap > 30% is a red flag for overfitting and fails the `oos_gap_acceptable`
-    rigor gate in the reviewer.
-    """
-    if not (0.0 < in_sample_pct < 1.0):
-        raise ValueError("in_sample_pct must be in (0, 1)")
-
-    full = _materialize_candles(base_config)
-    total_len = _slice_length(full)
-    if total_len < 2:
-        return OutOfSampleReport(
-            in_sample_pct=in_sample_pct,
-            in_sample_sharpe=0.0, oos_sharpe=0.0,
-            in_sample_return_pct=0.0, oos_return_pct=0.0,
-            gap_pct=0.0, in_sample_trades=0, oos_trades=0,
-        )
-
-    split = max(1, min(total_len - 1, int(total_len * in_sample_pct)))
-
-    in_sources = {p: ListCandleSource({p: full[p][:split]}, label="is") for p in base_config.pairs}
-    oos_sources = {p: ListCandleSource({p: full[p][split:]}, label="oos") for p in base_config.pairs}
-
-    in_result = BacktestRunner(base_config, sources_override=in_sources).run()
-    oos_result = BacktestRunner(base_config, sources_override=oos_sources).run()
-
-    in_sh = in_result.metrics.sharpe
-    oos_sh = oos_result.metrics.sharpe
-    gap = ((in_sh - oos_sh) / abs(in_sh) * 100.0) if abs(in_sh) > 1e-9 else 0.0
-
-    return OutOfSampleReport(
-        in_sample_pct=in_sample_pct,
-        in_sample_sharpe=in_sh,
-        oos_sharpe=oos_sh,
-        in_sample_return_pct=in_result.metrics.total_return_pct,
-        oos_return_pct=oos_result.metrics.total_return_pct,
-        gap_pct=gap,
-        in_sample_trades=in_result.metrics.total_trades,
-        oos_trades=oos_result.metrics.total_trades,
-    )
-
-
-# ═══════════════════════════════════════════════════════════════
-# Parameter sensitivity
-# ═══════════════════════════════════════════════════════════════
-
-def _linspace(low: float, high: float, n: int) -> List[float]:
-    if n <= 1:
-        return [low]
-    step = (high - low) / (n - 1)
-    return [low + i * step for i in range(n)]
-
-
-def _apply_param(cfg: BacktestConfig, pair: str, param: str, value: float) -> BacktestConfig:
-    """Return a new config with overrides[pair][param] = value."""
-    import json as _json
-    overrides = dict(cfg.param_overrides)
-    pair_ov = dict(overrides.get(pair, {}))
-    pair_ov[param] = float(value)
-    overrides[pair] = pair_ov
-    return replace(cfg, param_overrides_json=_json.dumps(overrides))
-
-
-def parameter_sensitivity(
-    base_config: BacktestConfig,
-    param_ranges: Dict[str, Tuple[float, float]],
-    n_values: int = 5,
-    pair: Optional[str] = None,
-) -> Dict[str, ParamSensitivity]:
-    """Sparse linear sweep of each param in `param_ranges`.
-
-    For each param, run `n_values` backtests across its range and report:
-      sensitivity = max |dSharpe/dParam| * (high - low)
-      best_value = param value that produced max Sharpe
-
-    `pair` defaults to the first pair in base_config.
-    Caller is responsible for sweep budget — n_params * n_values backtests
-    are spawned (serial; parallelism is a Phase 6 concern via the worker pool).
-    """
-    if not param_ranges:
-        return {}
-    target_pair = pair or base_config.pairs[0]
-    out: Dict[str, ParamSensitivity] = {}
-
-    for param, (low, high) in param_ranges.items():
-        if high <= low:
-            continue
-        values = _linspace(low, high, n_values)
-        sharpes: List[float] = []
-        for v in values:
-            cfg = _apply_param(base_config, target_pair, param, v)
-            result = BacktestRunner(cfg).run()
-            sharpes.append(result.metrics.sharpe)
-
-        # Finite-difference slope magnitude, normalized by range
-        max_slope = 0.0
-        for i in range(1, len(values)):
-            dv = values[i] - values[i - 1]
-            if dv == 0:
-                continue
-            slope = abs((sharpes[i] - sharpes[i - 1]) / dv)
-            if slope > max_slope:
-                max_slope = slope
-        sensitivity = max_slope * (high - low)
-        best_idx = max(range(len(sharpes)), key=lambda i: sharpes[i])
-
-        out[param] = ParamSensitivity(
-            param=param,
-            scope=f"pair:{target_pair}",
-            values=values,
-            sharpes=sharpes,
-            sensitivity=sensitivity,
-            best_value=values[best_idx],
-            best_sharpe=sharpes[best_idx],
-        )
-    return out
-
-
 # ═══════════════════════════════════════════════════════════════
 # CLI smoke (no external deps — synthetic only)
 # ═══════════════════════════════════════════════════════════════
@@ -739,9 +461,6 @@ if __name__ == "__main__":  # pragma: no cover
     print("[metrics smoke] walk_forward…")
     wf = walk_forward(cfg, train_pct=0.6, test_pct=0.4, n_windows=3)
     print(f"  n={wf.n_windows} mean_sharpe={wf.mean_sharpe:.3f} stability={wf.sharpe_stability:.3f}")
-    print("[metrics smoke] out_of_sample_gap…")
-    oos = out_of_sample_gap(cfg, in_sample_pct=0.8)
-    print(f"  in={oos.in_sample_sharpe:.3f} oos={oos.oos_sharpe:.3f} gap={oos.gap_pct:.1f}%")
     print("[metrics smoke] bootstrap_ci on synthetic returns…")
     vals = [0.01, -0.005, 0.02, -0.01, 0.015, 0.008, -0.003, 0.012, 0.0, 0.005]
     lo, hi = bootstrap_ci(vals, n_iter=500, seed=1)

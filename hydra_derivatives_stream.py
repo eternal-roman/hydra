@@ -58,7 +58,7 @@ import sys
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Tuple
 
 # Spot pair → derivatives metadata. Do NOT add order-placement endpoints here.
@@ -136,13 +136,11 @@ class DerivativesSnapshot:
     oi_delta_1h_pct: Optional[float] = None
     oi_delta_24h_pct: Optional[float] = None
     mark_price: Optional[float] = None
-    spot_price: Optional[float] = None
     basis_apr_pct: Optional[float] = None
     oi_price_regime: str = "unknown"
     last_updated_ts: float = 0.0
     staleness_s: float = 0.0
     synthetic: bool = False
-    fetch_errors: int = 0
     # v2.14.1: consecutive-error streak (resets to 0 on successful populate).
     # Distinguishes "a transient blip at offset 17" from "this pair has been
     # dark for 4 polling cycles." R10 staleness already catches the latter,
@@ -379,7 +377,6 @@ class DerivativesStream:
         first time streak crosses FETCH_ERROR_WARN_STREAK so the operator
         notices a dark WSL bridge instead of watching staleness silently
         grow. Caller must hold self._lock."""
-        snap.fetch_errors += 1
         snap.fetch_error_streak += 1
         if snap.fetch_error_streak == self.FETCH_ERROR_WARN_STREAK:
             print(
@@ -393,7 +390,7 @@ class DerivativesStream:
     def _fetch_tickers(self) -> List[Dict]:
         """Invoke `kraken -o json futures tickers` via WSL and return
         the tickers array. Returns [] on any error — caller treats an
-        empty list as 'no update this cycle' (fetch_errors increments,
+        empty list as 'no update this cycle' (fetch_error_streak increments,
         staleness grows). NEVER calls any authenticated subcommand.
 
         v2.15.2: log per failure mode so stuck WSL bridges are visible.
@@ -444,15 +441,12 @@ class DerivativesStream:
         self, snap: DerivativesSnapshot, tick: Dict, now: float
     ) -> None:
         mark = _maybe_float(tick.get("markPrice"))
-        idx = _maybe_float(tick.get("indexPrice"))
         fr = _maybe_float(tick.get("fundingRate"))
         fr_pred = _maybe_float(tick.get("fundingRatePrediction"))
         oi = _maybe_float(tick.get("openInterest"))
 
         if mark is not None:
             snap.mark_price = mark
-        if idx is not None:
-            snap.spot_price = idx
         # Use the freshly extracted `mark` (not snap.mark_price which could be
         # stale from a prior tick where this tick lacks markPrice). If mark is
         # missing this round, both funding fields go None — we cannot guess.
@@ -499,7 +493,6 @@ class DerivativesStream:
         )
 
         snap.last_updated_ts = now
-        snap.fetch_errors = 0
         snap.fetch_error_streak = 0
 
     def _populate_synthetic(
@@ -549,12 +542,10 @@ class DerivativesStream:
         if sol_mark is not None and btc_mark is not None and btc_mark > 0:
             ratio = sol_mark / btc_mark
             snap.mark_price = round(ratio, 8)
-            snap.spot_price = snap.mark_price
 
         # No direct OI for synthetic; leave oi_* as None and regime unknown.
         snap.oi_price_regime = "balanced"
         snap.last_updated_ts = now
-        snap.fetch_errors = 0
         snap.fetch_error_streak = 0
 
     # ─── Regime classifier ───────────────────────────────────────

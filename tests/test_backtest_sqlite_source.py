@@ -1,6 +1,5 @@
 """Tests for SqliteSource and the 'sqlite' branch of make_candle_source."""
-import pytest
-from hydra_backtest import SqliteSource, BacktestConfig, BacktestRunner, make_candle_source
+from hydra_backtest import SqliteSource, BacktestConfig, make_candle_source
 from hydra_history_store import HistoryStore, CandleRow
 
 
@@ -32,22 +31,3 @@ def test_factory_default_is_sqlite(tmp_path):
     )
     src = make_candle_source(cfg)
     assert isinstance(src, SqliteSource)
-
-
-# ---- T16: brain_mode field + validation ----
-
-def test_brain_mode_stub_is_default():
-    cfg = BacktestConfig(name="t", pairs=("BTC/USD",))
-    assert cfg.brain_mode == "stub"
-
-
-def test_brain_mode_live_not_supported_yet():
-    cfg = BacktestConfig(name="t", pairs=("BTC/USD",), brain_mode="live")
-    with pytest.raises(NotImplementedError, match="not implemented in v2.20.0"):
-        BacktestRunner(cfg)
-
-
-def test_brain_mode_replay_not_supported_yet():
-    cfg = BacktestConfig(name="t", pairs=("BTC/USD",), brain_mode="replay")
-    with pytest.raises(NotImplementedError, match="not implemented in v2.20.0"):
-        BacktestRunner(cfg)

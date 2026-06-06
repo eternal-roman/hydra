@@ -225,7 +225,6 @@ class CompanionCoordinator:
             rungs = tuple(LadderRung(
                 pct_of_total=float(r["pct_of_total"]),
                 limit_price=float(r["limit_price"]),
-                offset_atr=float(r.get("offset_atr") or 0.0),
             ) for r in rungs_raw)
         except (KeyError, TypeError, ValueError) as e:
             return {"success": False, "error": f"bad payload: {e}"}

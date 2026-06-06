@@ -97,23 +97,6 @@ class Position:
         else:
             self.unrealized_pnl = 0.0
 
-@dataclass
-class PortfolioState:
-    balance: float
-    position: Position
-    equity: float
-    pnl_pct: float
-    max_drawdown: float
-    peak_equity: float
-    win_count: int
-    loss_count: int
-    total_trades: int
-    sharpe: float
-    regime: Regime
-    strategy: Strategy
-    signal: Signal
-    tick_count: int
-
 
 # ═══════════════════════════════════════════════════════════════
 # INDICATORS (Pure Python, no pandas/numpy)
@@ -558,7 +541,6 @@ class SignalGenerator:
         # overbought reading is still enough on its own (e.g., RSI > 85 on
         # default 70 threshold) — this preserves the "panic exit" capability
         # without letting moderate overbought (75-85) alone trigger.
-        macd_fading = (hist < -noise_floor and (hist < prev or prev >= 0))
         symmetric_sell = (
             rsi_lower < rsi < rsi_upper
             and hist < -noise_floor

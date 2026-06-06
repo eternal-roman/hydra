@@ -1,6 +1,5 @@
 """Unit tests for hydra_backtest_metrics (Phase 2): bootstrap CI, Monte
-Carlo block bootstrap, regime-conditioned P&L, walk-forward, out-of-sample
-gap, parameter sensitivity.
+Carlo block bootstrap, and walk-forward.
 
 Stdlib-only (unittest) to match Phase 1 + project convention.
 """
@@ -16,13 +15,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from hydra_backtest import make_quick_config  # noqa: E402
 from hydra_backtest_metrics import (  # noqa: E402
-    ImprovementReport,
     ListCandleSource,
     MonteCarloReport,
-    ParamSensitivity,
     WalkForwardReport,
     _block_bootstrap_sample,
-    _linspace,
     _max_dd_from_equity,
     _percentile,
     _profit_factor,
@@ -30,11 +26,7 @@ from hydra_backtest_metrics import (  # noqa: E402
     _sharpe_from_returns,
     annualization_factor,
     bootstrap_ci,
-    monte_carlo_improvement,
     monte_carlo_resample,
-    out_of_sample_gap,
-    parameter_sensitivity,
-    regime_conditioned_pnl,
     walk_forward,
 )
 
@@ -267,104 +259,7 @@ class TestMonteCarloResample(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Monte Carlo improvement (delta)
-# ═══════════════════════════════════════════════════════════════
-
-class TestMonteCarloImprovement(unittest.TestCase):
-    def test_empty_returns_neutral(self):
-        r = monte_carlo_improvement([], [1.0, 2.0])
-        self.assertEqual(r.n_iter, 0)
-        self.assertEqual(r.p_value, 1.0)
-
-    def test_variant_strictly_better_low_pvalue(self):
-        baseline = [0.0] * 50
-        variant = [1.0] * 50
-        r = monte_carlo_improvement(baseline, variant, n_iter=200, seed=5)
-        self.assertGreater(r.mean_improvement, 0.5)
-        self.assertLess(r.p_value, 0.05)
-        self.assertGreater(r.ci_lower, 0.0)  # strictly positive CI → reviewer gate passes
-
-    def test_variant_strictly_worse_high_pvalue(self):
-        baseline = [1.0] * 50
-        variant = [0.0] * 50
-        r = monte_carlo_improvement(baseline, variant, n_iter=200, seed=5)
-        self.assertLess(r.mean_improvement, -0.5)
-        self.assertGreater(r.p_value, 0.95)
-        self.assertLess(r.ci_upper, 0.0)
-
-    def test_no_difference_p_value_moderate(self):
-        # Under H0 (same distribution), p-value should not be extreme. Small
-        # samples + finite-iter MC give noisy p — allow a generous band and
-        # just assert "not confidently significant either way".
-        rng = random.Random(13)
-        baseline = [rng.gauss(0.0, 1.0) for _ in range(200)]
-        variant = [rng.gauss(0.0, 1.0) for _ in range(200)]
-        r = monte_carlo_improvement(baseline, variant, n_iter=300, seed=17)
-        self.assertGreater(r.p_value, 0.05)
-        self.assertLess(r.p_value, 0.95)
-
-    def test_report_type(self):
-        r = monte_carlo_improvement([1.0] * 20, [2.0] * 20, n_iter=50, seed=1)
-        self.assertIsInstance(r, ImprovementReport)
-
-
-# ═══════════════════════════════════════════════════════════════
-# Regime-conditioned P&L
-# ═══════════════════════════════════════════════════════════════
-
-class TestRegimeConditionedPnL(unittest.TestCase):
-    def test_empty_logs(self):
-        self.assertEqual(regime_conditioned_pnl([], {}), {})
-
-    def test_single_trade_attributed(self):
-        trade_log = [{"tick": 2, "pair": "SOL/USDC", "profit": 5.0, "side": "SELL"}]
-        ribbon = {"SOL/USDC": ["RANGING", "RANGING", "TREND_UP", "TREND_UP"]}
-        out = regime_conditioned_pnl(trade_log, ribbon)
-        self.assertIn("TREND_UP", out)
-        self.assertEqual(out["TREND_UP"]["pnl"], 5.0)
-        self.assertEqual(out["TREND_UP"]["trades"], 1)
-        self.assertEqual(out["TREND_UP"]["wins"], 1)
-
-    def test_skips_zero_profit_buys(self):
-        # In Phase 1 trade_log, BUYs have profit=0.0; only SELLs attribute
-        trade_log = [
-            {"tick": 0, "pair": "SOL/USDC", "profit": 0.0, "side": "BUY"},
-            {"tick": 3, "pair": "SOL/USDC", "profit": 2.5, "side": "SELL"},
-        ]
-        ribbon = {"SOL/USDC": ["TREND_UP", "TREND_UP", "TREND_UP", "VOLATILE"]}
-        out = regime_conditioned_pnl(trade_log, ribbon)
-        self.assertEqual(len(out), 1)
-        self.assertIn("VOLATILE", out)
-
-    def test_aggregates_wins_and_losses(self):
-        ribbon = {"SOL/USDC": ["TREND_UP"] * 5}
-        trade_log = [
-            {"tick": 1, "pair": "SOL/USDC", "profit": 3.0, "side": "SELL"},
-            {"tick": 2, "pair": "SOL/USDC", "profit": -1.5, "side": "SELL"},
-            {"tick": 3, "pair": "SOL/USDC", "profit": 2.0, "side": "SELL"},
-        ]
-        out = regime_conditioned_pnl(trade_log, ribbon)
-        self.assertAlmostEqual(out["TREND_UP"]["pnl"], 3.5, places=6)
-        self.assertEqual(out["TREND_UP"]["wins"], 2)
-        self.assertEqual(out["TREND_UP"]["losses"], 1)
-        self.assertAlmostEqual(out["TREND_UP"]["win_rate_pct"], 2 / 3 * 100.0, places=2)
-
-    def test_tick_exceeds_ribbon_clamps(self):
-        trade_log = [{"tick": 999, "pair": "SOL/USDC", "profit": 1.0, "side": "SELL"}]
-        ribbon = {"SOL/USDC": ["RANGING", "TREND_UP"]}
-        out = regime_conditioned_pnl(trade_log, ribbon)
-        # Tick 999 clamps to last index → TREND_UP
-        self.assertIn("TREND_UP", out)
-
-    def test_missing_pair_skipped(self):
-        trade_log = [{"tick": 0, "pair": "XRP/USD", "profit": 1.0, "side": "SELL"}]
-        ribbon = {"SOL/USDC": ["TREND_UP"]}
-        out = regime_conditioned_pnl(trade_log, ribbon)
-        self.assertEqual(out, {})
-
-
-# ═══════════════════════════════════════════════════════════════
-# ListCandleSource + walk_forward + OOS
+# ListCandleSource + walk_forward
 # ═══════════════════════════════════════════════════════════════
 
 class TestListCandleSource(unittest.TestCase):
@@ -415,68 +310,6 @@ class TestWalkForward(unittest.TestCase):
         rep = walk_forward(cfg, n_windows=2, train_pct=0.5, test_pct=0.5)
         self.assertGreaterEqual(rep.sharpe_stability, 0.0)
         self.assertEqual(len(rep.improvement_pct_per_slice), len(rep.slices))
-
-
-class TestOutOfSampleGap(unittest.TestCase):
-    def test_invalid_pct_raises(self):
-        cfg = make_quick_config(name="oos-bad")
-        with self.assertRaises(ValueError):
-            out_of_sample_gap(cfg, in_sample_pct=0.0)
-        with self.assertRaises(ValueError):
-            out_of_sample_gap(cfg, in_sample_pct=1.0)
-
-    def test_runs_clean(self):
-        cfg = make_quick_config(name="oos-ok", n_candles=300, seed=5)
-        from dataclasses import replace
-        cfg = replace(cfg, coordinator_enabled=False)
-        rep = out_of_sample_gap(cfg, in_sample_pct=0.7)
-        # In/OOS have different candle slices so at least one counter should
-        # be well-defined; just assert types + no crash.
-        self.assertIsInstance(rep.in_sample_sharpe, float)
-        self.assertIsInstance(rep.oos_sharpe, float)
-        self.assertGreaterEqual(rep.in_sample_trades, 0)
-        self.assertGreaterEqual(rep.oos_trades, 0)
-
-
-# ═══════════════════════════════════════════════════════════════
-# Parameter sensitivity
-# ═══════════════════════════════════════════════════════════════
-
-class TestLinspace(unittest.TestCase):
-    def test_single_point(self):
-        self.assertEqual(_linspace(5.0, 10.0, 1), [5.0])
-
-    def test_evenly_spaced(self):
-        self.assertEqual(_linspace(0.0, 4.0, 5), [0.0, 1.0, 2.0, 3.0, 4.0])
-
-
-class TestParameterSensitivity(unittest.TestCase):
-    def test_empty_returns_empty(self):
-        cfg = make_quick_config(name="ps-empty")
-        self.assertEqual(parameter_sensitivity(cfg, {}), {})
-
-    def test_invalid_range_skipped(self):
-        cfg = make_quick_config(name="ps-bad", n_candles=100)
-        # high == low → skipped
-        out = parameter_sensitivity(cfg, {"momentum_rsi_upper": (70.0, 70.0)}, n_values=3)
-        self.assertEqual(out, {})
-
-    def test_basic_sweep_returns_report(self):
-        cfg = make_quick_config(name="ps-ok", n_candles=200, seed=3)
-        from dataclasses import replace
-        cfg = replace(cfg, coordinator_enabled=False)
-        out = parameter_sensitivity(
-            cfg,
-            {"momentum_rsi_upper": (65.0, 80.0)},
-            n_values=3,
-        )
-        self.assertIn("momentum_rsi_upper", out)
-        ps = out["momentum_rsi_upper"]
-        self.assertIsInstance(ps, ParamSensitivity)
-        self.assertEqual(len(ps.values), 3)
-        self.assertEqual(len(ps.sharpes), 3)
-        self.assertGreaterEqual(ps.sensitivity, 0.0)
-        self.assertIn(ps.best_value, ps.values)
 
 
 if __name__ == "__main__":

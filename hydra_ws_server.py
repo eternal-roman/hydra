@@ -3,14 +3,12 @@ import subprocess
 import json
 import time
 import os
-import shlex
 import asyncio
 import threading
 import secrets
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timezone
+from typing import Dict, Any
 import hydra_auth
 
 # ═══════════════════════════════════════════════════════════════
@@ -24,10 +22,10 @@ class DashboardBroadcaster:
     backtest observer, experiment library, and review stream.
 
     Outbound:
-      - `broadcast(state)` — live per-tick state. With `compat_mode=True`
-        (default), sends BOTH the legacy raw state dict and the new
-        wrapped `{"type": "state", "data": state}` form. Existing
-        dashboards keep reading raw; the Phase 8 dashboard reads wrapped.
+      - `broadcast(state)` — live per-tick state. Sends BOTH the legacy
+        raw state dict and the wrapped `{"type": "state", "data": state}`
+        form. Existing dashboards keep reading raw; the current dashboard
+        reads wrapped.
       - `broadcast_message(type, payload)` — new type-discriminated
         message (e.g., backtest_progress). Always wrapped; legacy
         dashboards ignore unknown shapes.
@@ -81,8 +79,7 @@ class DashboardBroadcaster:
             Path("dashboard/dist/index.html"),
     }
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8765,
-                 compat_mode: bool = True):
+    def __init__(self, host: str = "0.0.0.0", port: int = 8765):
         self.host = host
         self.port = port
         self.clients = set()
@@ -92,7 +89,6 @@ class DashboardBroadcaster:
         self._handlers: Dict[str, Any] = {}
         self.active_agents: Dict[str, Dict[str, Any]] = {}
         self.next_agent_port = 8766
-        self.compat_mode = compat_mode
         self.production_mode = os.environ.get("HYDRA_PRODUCTION", "0") == "1"
         # Freshly generated per-process token. Inbound command messages
         # must include this exact value in their `auth` field — defends
@@ -290,10 +286,9 @@ class DashboardBroadcaster:
         self.clients.add(websocket)
         print(f"  [WS] Dashboard client connected ({len(self.clients)} total)")
         try:
-            # Send latest state immediately on connect (both formats if compat)
+            # Send latest state immediately on connect (legacy raw + wrapped)
             if self.latest_state:
-                if self.compat_mode:
-                    await websocket.send(json.dumps(self.latest_state))
+                await websocket.send(json.dumps(self.latest_state))
                 await websocket.send(json.dumps({
                     "type": "state", "data": self.latest_state,
                 }))
@@ -368,21 +363,18 @@ class DashboardBroadcaster:
     def broadcast(self, state: dict):
         """Broadcast live tick state to all connected dashboard clients.
 
-        `compat_mode=True` emits BOTH the legacy raw state (what v2.9.x
-        dashboards read) and the new wrapped `{type: "state", data}` form
-        (what Phase 8 dashboards read). Set `compat_mode=False` after the
-        dashboard refactor lands to halve per-tick WS bandwidth.
+        Emits BOTH the legacy raw state and the wrapped `{type: "state",
+        data}` form so older and current dashboard readers both work.
         """
         self.latest_state = state
         if not (self._loop and self.clients):
             return
         wrapped = json.dumps({"type": "state", "data": state})
-        raw = json.dumps(state) if self.compat_mode else None
+        raw = json.dumps(state)
         for client in list(self.clients):
-            if raw is not None:
-                asyncio.run_coroutine_threadsafe(
-                    self._safe_send(client, raw), self._loop
-                )
+            asyncio.run_coroutine_threadsafe(
+                self._safe_send(client, raw), self._loop
+            )
             asyncio.run_coroutine_threadsafe(
                 self._safe_send(client, wrapped), self._loop
             )
@@ -417,7 +409,7 @@ if __name__ == "__main__":
     hydra_auth.init_db()
     
     port = int(os.environ.get("HYDRA_WS_PORT", 8765))
-    server = DashboardBroadcaster(host="0.0.0.0", port=port, compat_mode=True)
+    server = DashboardBroadcaster(host="0.0.0.0", port=port)
     server.start()
     
     try:

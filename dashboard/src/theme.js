@@ -52,12 +52,3 @@ export const wilcoxonColor = (v) => {
   if (k === "worse") return COLORS.danger;
   return COLORS.textMuted;
 };
-
-// Regression-snapshot verdict colours (ReleasesPane).
-// "significant" = red (a release flagged as worse — needs human eyes).
-// "equivocal" / "no folds" = muted grey (no signal).
-export const regressionVerdictColor = (v) => {
-  const k = String(v || "").toLowerCase();
-  if (k === "significant") return COLORS.danger;
-  return COLORS.textMuted;
-};

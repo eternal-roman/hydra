@@ -2,8 +2,6 @@
 
 Covers:
   - research_dataset_coverage: returns per-(pair, grain_sec) rows from the store
-  - research_releases_list: returns [] when no regression_run rows exist
-  - research_releases_diff: returns error when a_run_id or b_run_id is missing
   - research_lab_run: T30B — functional Mode B; synchronous ack returns
     {success, job_id, n_folds, pair}; daemon thread streams progress
 """
@@ -110,38 +108,6 @@ class TestResearchDatasetCoverage(_ResearchFixture):
             os.environ["HYDRA_HISTORY_DB"] = str(self.db_path)
 
 
-class TestResearchReleasesList(_ResearchFixture):
-    def test_empty_when_no_runs(self):
-        reply = self._call("research_releases_list", {})
-        self.assertTrue(reply["success"])
-        self.assertEqual(reply["data"], [])
-
-    def test_handler_registered(self):
-        self.assertIn("research_releases_list", self.bc.handlers)
-
-
-class TestResearchReleasesDiff(_ResearchFixture):
-    def test_missing_both_args(self):
-        reply = self._call("research_releases_diff", {})
-        self.assertFalse(reply["success"])
-        self.assertIn("required", reply["error"])
-
-    def test_missing_b_run_id(self):
-        reply = self._call("research_releases_diff", {"a_run_id": "run-a"})
-        self.assertFalse(reply["success"])
-        self.assertIn("required", reply["error"])
-
-    def test_missing_a_run_id(self):
-        reply = self._call("research_releases_diff", {"b_run_id": "run-b"})
-        self.assertFalse(reply["success"])
-        self.assertIn("required", reply["error"])
-
-    def test_not_found_when_run_ids_absent(self):
-        reply = self._call("research_releases_diff", {"a_run_id": "x", "b_run_id": "y"})
-        self.assertFalse(reply["success"])
-        self.assertIn("not found", reply["error"])
-
-
 class TestResearchLabRun(_ResearchFixture):
     def test_invalid_pair_rejected(self):
         """Unknown pair returns success=False before touching the store."""
@@ -206,11 +172,9 @@ class TestResearchLabRun(_ResearchFixture):
 
 
 class TestAllResearchHandlersRegistered(_ResearchFixture):
-    def test_all_four_handlers_present(self):
+    def test_research_handlers_present(self):
         for name in (
             "research_dataset_coverage",
-            "research_releases_list",
-            "research_releases_diff",
             "research_lab_run",
         ):
             self.assertIn(name, self.bc.handlers, f"missing handler: {name}")

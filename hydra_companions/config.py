@@ -105,10 +105,6 @@ def nudges_enabled() -> bool:
     return True
 
 
-def routing_mode() -> str:
-    return os.environ.get("HYDRA_COMPANION_ROUTING_MODE", "balanced")
-
-
 def ensure_runtime_dirs() -> None:
     """Idempotent. Called once at coordinator startup."""
     RUNTIME_DIR.mkdir(exist_ok=True)

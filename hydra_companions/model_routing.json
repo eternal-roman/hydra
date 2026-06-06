@@ -20,10 +20,10 @@
     "xai": {
       "env_key": "XAI_API_KEY",
       "models": {
-        "grok-4-1-fast-reasoning": {
+        "grok-4.3": {
           "tier": "fast",
-          "est_input_per_mtok_usd": 0.20,
-          "est_output_per_mtok_usd": 0.50,
+          "est_input_per_mtok_usd": 1.25,
+          "est_output_per_mtok_usd": 2.50,
           "supports_tool_use": true,
           "supports_streaming": true,
           "use_for": "low-latency chat, banter, acks, one-liners"
@@ -35,14 +35,6 @@
           "supports_tool_use": true,
           "supports_streaming": true,
           "use_for": "trade proposals, ladders, teaching, market synthesis"
-        },
-        "grok-4.20-multi-agent-0309": {
-          "tier": "multi_agent",
-          "est_input_per_mtok_usd": 1.50,
-          "est_output_per_mtok_usd": 4.00,
-          "supports_tool_use": true,
-          "supports_streaming": true,
-          "use_for": "council mode — all three companions in one call"
         }
       }
     }
@@ -61,54 +53,50 @@
     "adherence_nudge": { "depth": "shallow", "tools": false, "default_max_tokens": 350, "note": "v1.2: bumped 200→350 for Athena/Apex mentor-mode nudges with reasoning" },
     "idle_proactive_nudge": { "depth": "shallow", "tools": true, "default_max_tokens": 250 },
     "chart_analysis": { "depth": "medium", "tools": true, "default_max_tokens": 500, "note": "v1.1 — summary-only chart reads; tools get_chart_snapshot + get_chart_summary (no raw OHLCV)" },
-    "council_multi_agent": { "depth": "deep", "tools": true, "default_max_tokens": 1200 },
     "unknown": { "depth": "medium", "tools": false, "default_max_tokens": 500, "note": "v1.2: bumped 300→500 — classifier-fallback intent must not be the thing cutting off long replies" }
   },
 
   "routing": {
     "athena": {
-      "greeting": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.6 },
-      "small_talk": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.6 },
-      "ack_confirmation": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.4 },
+      "greeting": { "primary": "xai:grok-4.3", "temperature": 0.6 },
+      "small_talk": { "primary": "xai:grok-4.3", "temperature": 0.6 },
+      "ack_confirmation": { "primary": "xai:grok-4.3", "temperature": 0.4 },
       "market_state_query": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.4 },
       "teaching_explanation": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.5 },
       "trade_proposal": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.2 },
       "ladder_proposal": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.2 },
-      "post_trade_reaction": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.5 },
-      "banter_humor": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.7, "note": "athena rarely banters — low weight on this intent" },
-      "adherence_nudge": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.4 },
-      "idle_proactive_nudge": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.5 },
-      "council_multi_agent": { "primary": "xai:grok-4.20-multi-agent-0309", "temperature": 0.4 },
+      "post_trade_reaction": { "primary": "xai:grok-4.3", "temperature": 0.5 },
+      "banter_humor": { "primary": "xai:grok-4.3", "temperature": 0.7, "note": "athena rarely banters — low weight on this intent" },
+      "adherence_nudge": { "primary": "xai:grok-4.3", "temperature": 0.4 },
+      "idle_proactive_nudge": { "primary": "xai:grok-4.3", "temperature": 0.5 },
       "chart_analysis": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.3 }
     },
     "apex": {
-      "greeting": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.3 },
-      "small_talk": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.4 },
-      "ack_confirmation": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.2 },
+      "greeting": { "primary": "xai:grok-4.3", "temperature": 0.3 },
+      "small_talk": { "primary": "xai:grok-4.3", "temperature": 0.4 },
+      "ack_confirmation": { "primary": "xai:grok-4.3", "temperature": 0.2 },
       "market_state_query": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.3, "note": "v1.1: migrated from Sonnet to Grok reasoning" },
       "teaching_explanation": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.4, "note": "v1.1: migrated from Sonnet to Grok reasoning" },
       "trade_proposal": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.15, "note": "v1.1: migrated from Sonnet; no rotation on execution-class calls" },
       "ladder_proposal": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.15, "note": "v1.1: migrated from Sonnet; no rotation on execution-class calls" },
-      "post_trade_reaction": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.3 },
-      "banter_humor": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.6, "note": "dry only" },
-      "adherence_nudge": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.3 },
-      "idle_proactive_nudge": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.3 },
-      "council_multi_agent": { "primary": "xai:grok-4.20-multi-agent-0309", "temperature": 0.3 },
+      "post_trade_reaction": { "primary": "xai:grok-4.3", "temperature": 0.3 },
+      "banter_humor": { "primary": "xai:grok-4.3", "temperature": 0.6, "note": "dry only" },
+      "adherence_nudge": { "primary": "xai:grok-4.3", "temperature": 0.3 },
+      "idle_proactive_nudge": { "primary": "xai:grok-4.3", "temperature": 0.3 },
       "chart_analysis": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.3, "note": "v1.1: new intent; Grok reasoning for structural chart reads" }
     },
     "broski": {
-      "greeting": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.8 },
-      "small_talk": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.8 },
-      "ack_confirmation": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.6 },
+      "greeting": { "primary": "xai:grok-4.3", "temperature": 0.8 },
+      "small_talk": { "primary": "xai:grok-4.3", "temperature": 0.8 },
+      "ack_confirmation": { "primary": "xai:grok-4.3", "temperature": 0.6 },
       "market_state_query": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.5 },
       "teaching_explanation": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.6 },
       "trade_proposal": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.3 },
       "ladder_proposal": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.3 },
-      "post_trade_reaction": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.8 },
-      "banter_humor": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.85, "note": "highest creative temp — bro dialect + humor is his signature" },
-      "adherence_nudge": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.6 },
-      "idle_proactive_nudge": { "primary": "xai:grok-4-1-fast-reasoning", "temperature": 0.7 },
-      "council_multi_agent": { "primary": "xai:grok-4.20-multi-agent-0309", "temperature": 0.7 },
+      "post_trade_reaction": { "primary": "xai:grok-4.3", "temperature": 0.8 },
+      "banter_humor": { "primary": "xai:grok-4.3", "temperature": 0.85, "note": "highest creative temp — bro dialect + humor is his signature" },
+      "adherence_nudge": { "primary": "xai:grok-4.3", "temperature": 0.6 },
+      "idle_proactive_nudge": { "primary": "xai:grok-4.3", "temperature": 0.7 },
       "serious_mode_override": {
         "applies_to_intents": ["trade_proposal", "ladder_proposal", "adherence_nudge", "teaching_explanation"],
         "when": "soul.mode == serious",
@@ -122,33 +110,32 @@
   "rotation_pools": {
     "comment": "Optional: rotate among models for an intent to prevent pattern fatigue. Weights sum to 1.0 per intent. Seeded per-day so a single conversation stays coherent. v1.1: Apex gets rotation on non-execution intents (teaching, market_state, chart_analysis); trade_proposal and ladder_proposal stay 100% reasoning (execution-class, no variance).",
     "broski.banter_humor": [
-      { "model": "xai:grok-4-1-fast-reasoning", "weight": 0.75 },
+      { "model": "xai:grok-4.3", "weight": 0.75 },
       { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.25 }
     ],
     "broski.idle_proactive_nudge": [
-      { "model": "xai:grok-4-1-fast-reasoning", "weight": 0.8 },
+      { "model": "xai:grok-4.3", "weight": 0.8 },
       { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.2 }
     ],
     "apex.teaching_explanation": [
       { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.85 },
-      { "model": "xai:grok-4-1-fast-reasoning", "weight": 0.15 }
+      { "model": "xai:grok-4.3", "weight": 0.15 }
     ],
     "apex.market_state_query": [
       { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.75 },
-      { "model": "xai:grok-4-1-fast-reasoning", "weight": 0.25 }
+      { "model": "xai:grok-4.3", "weight": 0.25 }
     ],
     "apex.chart_analysis": [
       { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.8 },
-      { "model": "xai:grok-4-1-fast-reasoning", "weight": 0.2 }
+      { "model": "xai:grok-4.3", "weight": 0.2 }
     ]
   },
 
   "fallbacks": {
     "comment": "If a provider errors (rate limit, 5xx, missing key), route to fallback. Classifier logs the degradation.",
-    "anthropic:claude-sonnet-4-6": ["xai:grok-4.20-0309-reasoning", "xai:grok-4-1-fast-reasoning"],
-    "xai:grok-4.20-0309-reasoning": ["xai:grok-4-1-fast-reasoning", "anthropic:claude-sonnet-4-6"],
-    "xai:grok-4-1-fast-reasoning": ["xai:grok-4.20-0309-reasoning"],
-    "xai:grok-4.20-multi-agent-0309": ["xai:grok-4.20-0309-reasoning"]
+    "anthropic:claude-sonnet-4-6": ["xai:grok-4.20-0309-reasoning", "xai:grok-4.3"],
+    "xai:grok-4.20-0309-reasoning": ["xai:grok-4.3", "anthropic:claude-sonnet-4-6"],
+    "xai:grok-4.3": ["xai:grok-4.20-0309-reasoning"]
   },
 
   "budgets": {
@@ -210,16 +197,8 @@
       { "intent": "banter_humor", "match": ["/\\b(lol|lmao|bruh|bro|fam|dude|haha|😂|💀)\\b/i"] }
     ],
     "llm_fallback_when": "heuristic_confidence_lt:0.7",
-    "llm_fallback_model": "xai:grok-4-1-fast-reasoning",
+    "llm_fallback_model": "xai:grok-4.3",
     "llm_fallback_max_tokens": 30
-  },
-
-  "routing_mode": {
-    "comment": "Selected via HYDRA_COMPANION_ROUTING_MODE env var. Affects cost/quality tradeoffs.",
-    "conservative": { "description": "borderline intents upgrade to reasoning tier. more reliable, more expensive." },
-    "balanced": { "description": "rules as written above. default." },
-    "experimental": { "description": "borderline intents downgrade to fast tier. cheaper, higher variance." },
-    "default": "balanced"
   },
 
   "audit_log": {

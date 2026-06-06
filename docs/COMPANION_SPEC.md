@@ -153,14 +153,13 @@ Broski has an additional `mode_transition_rules` block (bro_vibes ↔ serious_mo
 
 ### 4.4 Router
 
-`pick_model(companion_id, intent, context_size_tokens, has_tools, depth_required) → (provider, model_id, max_tokens, temperature)`
+`pick(companion_id, intent, *, serious_mode=False, seed=None) → RouteDecision(provider, model_id, max_tokens, temperature)`
 
 - Deterministic, reads `model_routing.json`.
 - Applies `serious_mode_override` temperature delta if Broski is in serious mode.
 - Applies `rotation_pools` (seeded per-day so one session stays coherent).
 - Logs every decision to `.hydra-companions/routing.jsonl`.
 - Fallback cascade on provider errors.
-- Respects `HYDRA_COMPANION_ROUTING_MODE` env (`conservative|balanced|experimental`).
 
 ### 4.5 Intent classifier
 
@@ -330,7 +329,7 @@ Two tiers, both per-companion per-user:
 | **6** | Proactive nudges + mood model integration in UI | Rate-limit tests, silence detection |
 | **7** | Onboarding questionnaire → custom soul.json generation | 20-question flow; LLM fills schema; user review/edit UI |
 | **8** | Multi-user (user_id, auth, per-user state) | Auth layer; per-user keyed storage; existing seams already in place |
-| **9** (stretch) | Council mode — `grok-4.20-multi-agent-0309` call yields all three companions' takes in one API round | New `<Council />` UI affordance |
+| **9** (stretch) | Council mode — a single multi-agent model call yields all three companions' takes in one API round (model TBD) | New `<Council />` UI affordance |
 
 ### Kill switch
 `HYDRA_COMPANION_DISABLED=1` → coordinator doesn't mount, Orb doesn't render. v2.10.x behavior exactly.
