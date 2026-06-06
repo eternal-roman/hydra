@@ -22,15 +22,9 @@ from pathlib import Path
 from typing import Optional
 
 from hydra_companions.config import MEMORY_DIR
-from hydra_companions.cbp_client import CbpClient
 
 
 MEMORY_BUDGET_BYTES = 4096
-
-# Single shared client — cheap to construct but we only need one. `CbpClient`
-# re-reads ready.json on every call, so this survives sidecar restarts
-# without needing reinitialization.
-_CBP = CbpClient()
 
 
 @dataclass(frozen=True)
@@ -92,40 +86,10 @@ class DistilledMemory:
                 self._entries[i] = MemoryEntry(ts=now, topic=topic, fact=fact)
                 self._enforce_budget()
                 self._persist()
-                self._cbp_mirror(topic, fact)
                 return
         self._entries.append(MemoryEntry(ts=now, topic=topic, fact=fact))
         self._enforce_budget()
         self._persist()
-        self._cbp_mirror(topic, fact)
-
-    def _cbp_mirror(self, topic: str, fact: str) -> None:
-        """Best-effort mirror into the CBP sidecar. JSONL stays authoritative
-        for the in-process companion loop; CBP is the cross-session knowledge
-        graph. Failure is silent — the sidecar MUST NOT block the companion
-        path per cbp-runner/CLAUDE.md."""
-        # label scoping: companion/<companion>/<topic>/<sha8(fact)> so the
-        # node id is both deterministic (idempotent PUT) and specific enough
-        # that two companions recording the same fact don't collide.
-        import hashlib as _h
-        fact_h = _h.sha256(fact.encode("utf-8")).hexdigest()[:8]
-        label = f"companion.{self.companion_id}.{topic}.{fact_h}"
-        try:
-            _CBP.remember(
-                label=label,
-                summary=fact,
-                tags=(
-                    f"companion:{self.companion_id}",
-                    f"user:{self.user_id}",
-                    f"topic:{topic}",
-                ),
-                weight=0.8,
-                decay="epoch",
-            )
-        except Exception:
-            # Defensive — CbpClient is already no-raise, but belt+suspenders
-            # so a companion turn NEVER crashes on memory plumbing.
-            pass
 
     def recall(self, topic: Optional[str] = None) -> list[MemoryEntry]:
         if topic is None:

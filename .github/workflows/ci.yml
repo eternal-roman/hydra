@@ -160,9 +160,6 @@ jobs:
       - name: Run apex tools tests
         run: python -m pytest tests/test_apex_tools.py -v
 
-      - name: Run CBP client tests
-        run: python -m pytest tests/test_cbp_client.py -v
-
       - name: Run v2.20 research tab tests (history store + walk-forward + tape + sqlite)
         run: python -m pytest tests/test_history_store.py tests/test_history_store_migrations.py tests/test_walk_forward.py tests/test_walk_forward_folds.py tests/test_wilcoxon.py tests/test_tape_capture.py tests/test_candle_stream_callback.py tests/test_backtest_sqlite_source.py tests/test_research_ws.py tests/test_research_params_current.py tests/test_regression_runner.py tests/test_bootstrap_history.py tests/test_refresh_history.py -v
 

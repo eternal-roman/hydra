@@ -46,6 +46,19 @@ except ImportError:
 
 
 # ═══════════════════════════════════════════════════════════════
+# TUNABLES
+# ═══════════════════════════════════════════════════════════════
+
+# Tax/fee friction floor (USD, advisory only). When a SELL would realize a
+# gain SMALLER than this, the analyst is nudged not to churn it — round-trip
+# fees + tax rarely leave a sub-floor gain worth banking. This is a soft
+# prompt line, NEVER a gate: the brain stays free to exit for risk or to
+# rotate into a better position. Tune via HYDRA_TAX_FRICTION_FLOOR_USD;
+# set it to 0 to suppress the nudge entirely.
+TAX_FRICTION_FLOOR_USD = 50.0
+
+
+# ═══════════════════════════════════════════════════════════════
 # DATA
 # ═══════════════════════════════════════════════════════════════
 
@@ -1228,6 +1241,41 @@ class HydraBrain:
             return ""
         return f"\nPORTFOLIO STRATEGIST GUIDANCE (advisory):\n  {guidance}"
 
+    @staticmethod
+    def _format_tax_friction(state: Dict) -> str:
+        """Advisory nudge against churning a sub-floor gain.
+
+        Fires ONLY on a SELL signal that would realize a small positive gain
+        (0 < unrealized < floor). Cutting a loss (pnl <= 0) or banking a gain
+        at/above the floor never triggers it, and the line is suppressed when
+        the floor is set to 0. Fails silent (returns "") on any missing or
+        malformed field — this is prompt decoration, never a gate.
+        """
+        try:
+            floor = float(os.environ.get("HYDRA_TAX_FRICTION_FLOOR_USD",
+                                         TAX_FRICTION_FLOOR_USD))
+        except (TypeError, ValueError):
+            floor = TAX_FRICTION_FLOOR_USD
+        if floor <= 0:
+            return ""
+        sig = state.get("signal") or {}
+        if str(sig.get("action", "")).upper() != "SELL":
+            return ""
+        pos = state.get("position") or {}
+        try:
+            size = float(pos.get("size", 0) or 0)
+            pnl = float(pos.get("unrealized_pnl", 0) or 0)
+        except (TypeError, ValueError):
+            return ""
+        if size <= 0 or pnl <= 0 or pnl >= floor:
+            return ""
+        return (
+            f"\nTAX/FEE FRICTION (advisory): this SELL would realize only "
+            f"${pnl:.2f} — under the ${floor:.0f} round-trip friction floor; "
+            f"banking a gain this small rarely clears fees + tax. Soft nudge, "
+            f"not a veto — still exit to cut risk or rotate into a better position."
+        )
+
     def _build_analyst_prompt(self, state: Dict) -> str:
         sig = state.get("signal", {})
         ind = state.get("indicators", {})
@@ -1259,7 +1307,7 @@ RECENT CLOSES: {recent_closes}
 
 POSITION: {pos.get('size', 0):.6f} @ avg {pos.get('avg_entry', 0)} | Unrealized: {pos.get('unrealized_pnl', 0)}
 PORTFOLIO: Balance=${port.get('balance', 0):.2f} | Equity=${port.get('equity', 0):.2f} | P&L={port.get('pnl_pct', 0):.2f}% | Max DD={port.get('max_drawdown_pct', 0):.2f}%
-RECENT AI DECISIONS: {recent or 'None yet'}{self._format_spread(state)}{self._format_quant_indicators(state)}{self._format_triangle_context(state)}{self._format_portfolio_summary(state)}{self._format_portfolio_guidance(state)}"""
+RECENT AI DECISIONS: {recent or 'None yet'}{self._format_spread(state)}{self._format_quant_indicators(state)}{self._format_triangle_context(state)}{self._format_portfolio_summary(state)}{self._format_portfolio_guidance(state)}{self._format_tax_friction(state)}"""
 
     def _build_risk_prompt(self, state: Dict, analyst: Dict) -> str:
         sig = state.get("signal", {})

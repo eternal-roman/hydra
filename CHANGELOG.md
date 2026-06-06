@@ -6,13 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [2.26.0] — 2026-06-01
+## [2.26.0] — 2026-06-05
 
 Feature-offshoot trim + opsec hardening. Archives three dormant/orphaned
 subsystems (meme-trader, thesis layer, AI-reviewer + shadow-validator) to the
-git-history "closet", removes a residual advisory capital-preservation
-constraint entirely (the only constraint on rotation is profitability), and
-stops disclosing any holdings figure in tracked source.
+git-history "closet" and fully removes the optional CBP memory sidecar (companion
+memory is now local JSONL only). Removes a residual advisory capital-preservation
+constraint entirely (the only constraint on rotation is profitability), and stops
+disclosing any holdings figure in tracked source.
 
 ### Removed (recoverable from git history)
 - **Thesis layer** (`hydra_thesis.py`, `hydra_thesis_processor.py`): dormant —
@@ -21,10 +22,12 @@ stops disclosing any holdings figure in tracked source.
   posture-cap SKIP was opt-in `binding` only — the deterministic engine/sizing/
   execution path is bit-identical without it), but in the default advisory mode
   it DID inject a soft context block into the analyst LLM prompt (a tax-friction
-  nudge against churning tiny gains, plus a capital-preservation nudge). Removing it makes the
-  brain marginally freer to take small / BTC exits — the intended "profitable
-  rotation is the only constraint" behavior; the only profit caveat is the loss
-  of the tax-friction nudge against churning tiny gains. Removed all integration
+  nudge against churning tiny gains, plus a capital-preservation nudge). The
+  capital-preservation nudge is intentionally gone — profitable rotation is now
+  the only constraint, so the brain is freer to take small / BTC exits. The
+  tax-friction nudge is **preserved**: re-added as a standalone advisory (see
+  Added) so the brain is still discouraged from churning sub-floor gains, with
+  zero thesis-layer dependency. Removed all integration
   from agent/brain/engine/backtest/state-migrator and the dashboard THESIS tab.
   Kept the analyst's own one-sentence "thesis" headline (a different concept).
   `HYDRA_THESIS_*` env flags retired.
@@ -37,6 +40,27 @@ stops disclosing any holdings figure in tracked source.
   `hydra_shadow_validator.py`): fully built + CI-tested but never wired into
   production (`reviewer=None`; shadow validator never instantiated). Plus the
   orphan one-shot `_measure_hid.py`.
+- **CBP sidecar + client** (`hydra_companions/cbp_client.py`,
+  `tests/test_cbp_client.py`): the optional Context-Binding-Protocol sidecar that
+  best-effort-mirrored per-companion distilled memory cross-session. It was never
+  authoritative — JSONL (`.hydra-companions/memory/*.jsonl`) was always the source
+  of truth — so removal is behavior-preserving: `DistilledMemory.remember()` now
+  just persists JSONL. Dropped the `_cbp_mirror` path from `memory.py`, the
+  `CBP_SIDECAR_ENABLED` / `CBP_RUNNER_DIR` env flags, the `cbp_sidecar_state`
+  file row, the CI step, and all CBP scaffolding from CLAUDE.md / README /
+  COMPANION_SPEC. The soul-graph "CBP-hybrid" *schema* (hand-authored JSON read by
+  `compiler.py`) is unrelated to the sidecar and is unchanged — it never had a
+  runtime dependency on any CBP service.
+
+### Added
+- **Standalone tax/fee friction nudge** (`hydra_brain.TAX_FRICTION_FLOOR_USD`,
+  default `$50`): on a SELL that would realize a gain below the floor, the
+  analyst prompt gets a soft advisory line ("rarely clears fees + tax").
+  Advisory only — it never gates or resizes a trade; cutting a loss or banking a
+  gain ≥ floor never triggers it, and it fails silent on malformed state. Tunable
+  via `HYDRA_TAX_FRICTION_FLOOR_USD` (`0` disables). This preserves the anti-churn
+  tax context the archived thesis layer used to inject, with zero thesis
+  dependency. Covered by `tests/test_brain_tax_friction.py` (9 cases).
 
 ### Dashboard
 - Removed the thesis UI (component cluster, WS handlers, dead Band-7 strip) and

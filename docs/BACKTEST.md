@@ -3,12 +3,11 @@
 User-facing guide for the v2.10.0 backtest platform. For the full design spec,
 see [`BACKTEST_SPEC.md`](./BACKTEST_SPEC.md).
 
-> **v2.26.0 note:** the **AI Reviewer** and **Shadow Validator** described
-> below were archived in v2.26.0 (they were never wired into production —
-> `reviewer=None`). Sections referencing the Review Panel, rigor gates, and
-> shadow validation are retained as design history; the live platform today
-> is engine replay + experiments + walk-forward / Research Lab. See CHANGELOG
-> v2.26.0.
+> **v2.26.0 note:** the **AI Reviewer** and **Shadow Validator** were archived
+> in v2.26.0 (built + CI-tested, never wired into production — `reviewer=None`).
+> The live platform today is engine replay + experiments + walk-forward, surfaced
+> through the dashboard **RESEARCH** tab. Their design is kept as history in
+> `BACKTEST_SPEC.md`. See CHANGELOG v2.26.0.
 
 ---
 
@@ -24,16 +23,16 @@ the live agent without touching its code path. You can:
 3. Watch a backtest render in real time alongside live in a dockable "observer
    modal" — the same pair-card / equity-chart / regime-ribbon components you see
    on the live tab, so "what is" and "what if" use the same visual language.
-4. Get an **AI Reviewer** verdict after each run, with seven **code-enforced
-   rigor gates** that prevent hand-waving recommendations from reaching live.
-5. Optionally let the AI Brain (Analyst + Risk Manager) run backtests
+4. Optionally let the AI Brain (Analyst + Risk Manager) run backtests
    **mid-deliberation** via Anthropic tool-use, so hypotheses are validated
    against history before they influence a live trade.
-6. Promote a vetted parameter change through **shadow validation** — it runs
-   alongside live for N trades before a human approves the write.
 
 Everything is gated behind flags and kill switches. Default behavior with no
 opt-in flag is identical to v2.9.x.
+
+> The **AI Reviewer** (rigor gates) and **Shadow Validator** were archived in
+> v2.26.0 — built and CI-tested but never wired into production. Their design
+> lives in `BACKTEST_SPEC.md` (§Layer 5, §Phase 11) as history.
 
 ---
 
@@ -42,19 +41,15 @@ opt-in flag is identical to v2.9.x.
 ### Run a backtest from the dashboard
 
 1. Start the dashboard: `cd dashboard && npm run dev`.
-2. Click the **BACKTEST** tab.
-3. Pick a preset (or leave the default), pair, and date range. Click **Submit**.
-4. The observer modal docks in; pair cards, equity chart, and regime ribbon
-   populate as the replay runs.
-5. When the run completes, the **Review Panel** appears with the reviewer
-   verdict, gate pass/fail breakdown, and any proposed parameter tweaks.
-
-### Compare two or more experiments
-
-1. Click the **COMPARE** tab.
-2. Select 2–4 experiments from the library.
-3. The compare view highlights the winner per metric (Sharpe, max drawdown,
-   win rate, etc.) and flags statistically significant deltas.
+2. Open the **RESEARCH** tab. It has three panes:
+   - **Dataset** — inspect the canonical OHLC store (`hydra_history.sqlite`) coverage.
+   - **Lab** — configure and run a hypothesis backtest (pick a preset, pair, and
+     window; submit). Results stream in with metrics and the equity/regime views.
+   - **Releases** — browse the release-regression snapshots (`tools/run_regression.py`).
+3. For side-by-side comparison, run two experiments in the Lab; the experiment
+   library highlights the winner per metric (Sharpe, max drawdown, win rate) and
+   flags statistically significant deltas. The CLI `compare_experiments` path
+   below does the same headlessly.
 
 ### Run a backtest from the CLI
 
@@ -105,54 +100,19 @@ carry a `name`, `description`, and `overrides` dict keyed by engine parameter.
 
 ---
 
-## AI Reviewer — the rigor gates
+## AI Reviewer & Shadow Validator (archived v2.26.0)
 
-After every backtest, `hydra_reviewer.py` runs and produces a `ReviewDecision`
-with one of five verdicts: `NO_CHANGE`, `PARAM_TWEAK`, `CODE_REVIEW`,
-`RESULT_ANOMALOUS`, or `HYPOTHESIS_REFUTED`.
+The post-backtest **AI Reviewer** (seven code-enforced rigor gates →
+`ReviewDecision`) and the single-slot FIFO **Shadow Validator** were built and
+CI-tested but never wired into production, and were archived in v2.26.0. Their
+full design — the gate definitions, verdict types, PR-draft flow, and phantom-
+trade validation loop — is retained as history in `BACKTEST_SPEC.md` (§Layer 5,
+§Phase 11). No reviewer runs after a backtest today.
 
-Before any `PARAM_TWEAK` is auto-apply eligible, **seven gates enforced in code**
-(not prompt) must all pass:
-
-| Gate | Check | Why |
-|---|---|---|
-| `min_trades_50` | `total_trades ≥ 50` | Avoid conclusions from too few samples. |
-| `mc_ci_lower_positive` | Monte Carlo bootstrap 95% CI lower bound > 0 | Improvement must be statistically reliable. |
-| `wf_majority_improved` | ≥ 60% of walk-forward slices show improvement | Guards against curve-fitting. |
-| `oos_gap_acceptable` | Out-of-sample degradation < 30% | Flags overfit to training window. |
-| `improvement_above_2se` | Mean improvement > 2× standard error | Anti-noise filter. |
-| `cross_pair_majority` | Improvement on ≥ 50% of pairs | Avoids single-pair lucky wins. |
-| `regime_not_concentrated` | Not concentrated in one regime | Else downgrades to a scoped `CODE_REVIEW`. |
-
-Gate thresholds (and the Opus pricing used for the `$10/day` cost-alert
-threshold) are tunable in `.hydra-experiments/reviewer_config.json`. This
-file is bootstrapped to the current defaults on first reviewer init; edit
-and restart the agent. Malformed JSON reverts silently to built-in defaults
-(regenerate by deleting the file).
-
-**Even when all gates pass, nothing is auto-applied to live.** Param changes
-queue for shadow validation (see below) and require explicit human approval in
-the dashboard. Code changes never auto-apply — for every `CODE_REVIEW` verdict
-the reviewer writes an advisory PR draft to
-`.hydra-experiments/pr_drafts/{experiment_id}_{timestamp}.md` with the
-proposed changes, rigor-gate results, evidence snapshot, risk flags, and the
-list of source files the reviewer consulted via `read_source_file`. Open a
-real PR from that draft after human review.
-
----
-
-## Shadow validation
-
-When a reviewer-approved `PARAM_TWEAK` is promoted, it enters a **single-slot
-FIFO shadow validator** (`hydra_shadow_validator.py`). The candidate engine runs
-alongside live, ingests the same candles, and generates phantom trades. After
-N shadow trades with acceptable divergence, the change becomes available for
-human approval in the dashboard's **Pending Shadow Validation** section.
-
-Human approval flows through `HydraTuner.apply_external_param_update(params,
-source="shadow")`. One-step rollback is available via
-`HydraTuner.rollback_to_previous()` (bounded depth=1 — a rollback always reverts
-exactly one apply, never cascades).
+Manual parameter promotion still flows through the tuner directly:
+`HydraTuner.apply_external_param_update(params)`, with one-step rollback via
+`HydraTuner.rollback_to_previous()` (bounded depth=1 — reverts exactly one apply,
+never cascades).
 
 ---
 
@@ -194,8 +154,6 @@ All backtest state lives under `.hydra-experiments/` (gitignored):
 ```
 .hydra-experiments/
   experiments/        # one JSON per run (config + metrics + result summary)
-  reviews/            # ReviewDecision JSON + any PR-draft code files
-  shadow_state.json   # single-slot shadow validator state
   candle_cache/       # cached Kraken OHLC by (pair, interval, start, end)
 ```
 
@@ -212,9 +170,9 @@ All twelve invariants from the spec are enforced. The highlights:
 - **I3** Separate storage; live state files are never touched.
 - **I6** Kill switch → v2.9.x behavior.
 - **I7** Zero logic drift — drift regression replays live session tick-by-tick.
-- **I8** Reviewer never auto-applies code changes.
-- **I9** Param changes require shadow validation + explicit human approval.
 - **I11** Bounded: 2 default workers (4 max), queue depth 20, 50 experiments/day.
+
+(I8/I9 governed the archived Reviewer/Shadow Validator — see the note above.)
 
 See `BACKTEST_SPEC.md` §Safety Invariants for the full list.
 
@@ -233,8 +191,7 @@ python -m pytest tests/test_backtest_server.py      # worker pool + WS routing
 python tests/live_harness/harness.py --mode smoke   # kill-switch verified
 ```
 
-All 328 new tests plus the pre-existing 139 legacy tests must pass before
-merging.
+The full `python -m pytest tests/` run must pass before merging.
 
 ---
 
@@ -243,8 +200,6 @@ merging.
 | Symptom | First place to check |
 |---|---|
 | Backtest never completes | `hydra_backtest_errors.log` |
-| Reviewer produces odd verdicts | `.hydra-experiments/reviews/*.json` |
-| Shadow validator stuck | `.hydra-experiments/shadow_state.json` |
 | Dashboard doesn't show observer modal | browser devtools — WS frame with `type: "backtest.*"` should be visible |
 | Brain never calls tools | `HYDRA_BRAIN_TOOLS_ENABLED=1`? Daily quota consumed? |
 | Live tick slows down | `HYDRA_BACKTEST_DISABLED=1` should restore v2.9.x perf — if it doesn't, file a bug |
