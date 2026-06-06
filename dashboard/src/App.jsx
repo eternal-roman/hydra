@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 import ResearchTab from "./components/ResearchTab";
-import MemeTab from "./MemeTab";
 
 // ═══════════════════════════════════════════════════════════════
 // HYDRA Live Dashboard — Connects to hydra_agent.py WebSocket
@@ -320,7 +319,7 @@ const PRESET_OPTIONS = [
 ];
 
 // Rigor gates — 7 code-enforced checks that must all pass before a param
-// tweak is auto-apply eligible. Backend keys (hydra_reviewer.py) ↔ plain-English
+// tweak is auto-apply eligible. Gate keys ↔ plain-English
 // pill labels + tooltips shown in the dashboard.
 const RIGOR_GATES = [
   {
@@ -896,33 +895,10 @@ function CompanionDrawer({
   );
 }
 
-function FeatureFlagBanner({ flag, note }) {
-  return (
-    <div style={{
-      margin: "12px 24px 0",
-      padding: "8px 12px",
-      background: `${COLORS.warn}12`,
-      border: `1px solid ${COLORS.warn}55`,
-      borderRadius: 4,
-      fontFamily: mono,
-      fontSize: 11,
-      color: COLORS.warn,
-      display: "flex",
-      gap: 10,
-      alignItems: "center",
-    }}>
-      <span style={{ fontWeight: 700, letterSpacing: 0.5 }}>EXPERIMENTAL</span>
-      <span style={{ color: COLORS.textDim }}>
-        Feature-flagged — behavior may change. {note} Kill switch: <code>{flag}=1</code>.
-      </span>
-    </div>
-  );
-}
-
 function TabSwitcher({ activeTab, onChange, backtestRunning }) {
   const tabs = [
     { key: "LIVE",     label: "LIVE",     color: COLORS.accent },
-    { key: "MEME",     label: "MEME",     color: "#8b5cf6" },
+    { key: "RESEARCH", label: "RESEARCH", color: COLORS.purple },
     { key: "SETTINGS", label: "SETTINGS", color: COLORS.text },
   ];
   return (
@@ -965,109 +941,6 @@ function TabSwitcher({ activeTab, onChange, backtestRunning }) {
         );
       })}
     </div>
-  );
-}
-
-function FieldLabel({ children, hint, labelSize = 9, hintSize = 10 }) {
-  return (
-    <div style={{ marginBottom: 4 }}>
-      <div style={{ fontSize: labelSize, color: COLORS.textDim, textTransform: "uppercase",
-                    letterSpacing: "0.1em", fontFamily: mono, fontWeight: 600 }}>
-        {children}
-      </div>
-      {hint && <div style={{ fontSize: hintSize, color: COLORS.textMuted, fontFamily: mono, marginTop: 2 }}>{hint}</div>}
-    </div>
-  );
-}
-
-function StyledInput({ value, onChange, placeholder, type = "text", fontSize = 12, padding = "7px 10px", ...rest }) {
-  return (
-    <input
-      type={type}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      style={{
-        width: "100%",
-        padding,
-        background: COLORS.bg,
-        color: COLORS.text,
-        border: `1px solid ${COLORS.panelBorder}`,
-        borderRadius: 4,
-        fontSize,
-        fontFamily: mono,
-        outline: "none",
-        boxSizing: "border-box",
-      }}
-      onFocus={(e) => (e.target.style.borderColor = COLORS.blue)}
-      onBlur={(e) => (e.target.style.borderColor = COLORS.panelBorder)}
-      {...rest}
-    />
-  );
-}
-
-function StyledSelect({ value, onChange, options, fontSize = 12, padding = "7px 10px" }) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      style={{
-        width: "100%",
-        padding,
-        background: COLORS.bg,
-        color: COLORS.text,
-        border: `1px solid ${COLORS.panelBorder}`,
-        borderRadius: 4,
-        fontSize,
-        fontFamily: mono,
-        outline: "none",
-      }}
-    >
-      {options.map(o => (
-        <option key={o.name} value={o.name} style={{ background: COLORS.panel }}>
-          {o.label} — {o.desc}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function StyledTextarea({ value, onChange, placeholder, minHeight = 70, fontSize = 12, padding = "8px 10px" }) {
-  return (
-    <textarea
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      style={{
-        width: "100%",
-        minHeight,
-        padding,
-        background: COLORS.bg,
-        color: COLORS.text,
-        border: `1px solid ${COLORS.panelBorder}`,
-        borderRadius: 4,
-        fontSize,
-        fontFamily: mono,
-        outline: "none",
-        resize: "vertical",
-        boxSizing: "border-box",
-      }}
-      onFocus={(e) => (e.target.style.borderColor = COLORS.blue)}
-      onBlur={(e) => (e.target.style.borderColor = COLORS.panelBorder)}
-    />
-  );
-}
-
-function Checkbox({ checked, onChange, label, hint }) {
-  return (
-    <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", fontFamily: mono, fontSize: 11, color: COLORS.text }}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)}
-             style={{ marginTop: 2, accentColor: COLORS.blue, cursor: "pointer" }} />
-      <span>
-        {label}
-        {hint && <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>{hint}</div>}
-      </span>
-    </label>
   );
 }
 
@@ -1938,850 +1811,6 @@ function CompareStep({ n, title, body, active, done }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════
-// v2.13.0 — Thesis tab (Golden Unicorn Phase A)
-// ═══════════════════════════════════════════════════════════════
-// Scope in Phase A: posture + knobs + hard rules + deadline are functional;
-// other sub-panels (documents, pending proposals, intents, ladders, timeline)
-// are scaffolded placeholders that light up in Phases B–E. Any change here
-// MUST preserve the "augment, don't restrict" stance from the design memory.
-
-function ThesisCard({ title, children, accent = COLORS.warn, muted = false }) {
-  return (
-    <div style={{
-      background: COLORS.panel,
-      border: `1px solid ${muted ? COLORS.panelBorder : accent + "40"}`,
-      borderRadius: 8, padding: 16, marginBottom: 16,
-    }}>
-      <div style={{ fontSize: 11, color: muted ? COLORS.textDim : accent,
-                    textTransform: "uppercase", letterSpacing: "0.12em",
-                    fontFamily: mono, fontWeight: 700, marginBottom: 12 }}>
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function PostureBadge({ posture }) {
-  const colorMap = {
-    PRESERVATION: COLORS.warn,
-    TRANSITION: COLORS.blue,
-    ACCUMULATION: COLORS.accent,
-  };
-  const c = colorMap[posture] || COLORS.textDim;
-  return (
-    <span style={{
-      display: "inline-block", padding: "4px 10px",
-      background: `${c}20`, border: `1px solid ${c}60`,
-      borderRadius: 4, color: c, fontFamily: mono,
-      fontSize: 11, fontWeight: 700, letterSpacing: "0.1em",
-    }}>
-      {posture || "—"}
-    </span>
-  );
-}
-
-function RangeSlider({ label, value, onCommit, min, max, step = 0.01, format = (v) => v.toFixed(2) }) {
-  const [local, setLocal] = useState(value);
-  useEffect(() => { setLocal(value); }, [value]);
-  return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between",
-                    fontFamily: mono, fontSize: 11, marginBottom: 4 }}>
-        <span style={{ color: COLORS.textDim, textTransform: "uppercase",
-                       letterSpacing: "0.08em" }}>{label}</span>
-        <span style={{ color: COLORS.text, fontWeight: 700 }}>{format(local)}</span>
-      </div>
-      <input
-        type="range" min={min} max={max} step={step} value={local}
-        onChange={(e) => setLocal(parseFloat(e.target.value))}
-        onMouseUp={(e) => onCommit(parseFloat(e.target.value))}
-        onTouchEnd={(e) => onCommit(parseFloat(e.target.value))}
-        style={{ width: "100%", accentColor: COLORS.warn }}
-      />
-    </div>
-  );
-}
-
-function DocumentLibraryPanel({ documentCount, sendMessage }) {
-  const [name, setName] = useState("");
-  const [body, setBody] = useState("");
-  const [kind, setKind] = useState("cowen_memo");
-  const submit = () => {
-    const content = body.trim();
-    const filename = name.trim() || `note_${Date.now()}.md`;
-    if (!content) return;
-    sendMessage({
-      type: "thesis_upload_document",
-      filename, content, doc_type: kind,
-    });
-    setName(""); setBody("");
-  };
-  return (
-    <ThesisCard title="Document Library">
-      <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: mono,
-                    lineHeight: 1.6, marginBottom: 12 }}>
-        Paste research (Cowen memos, FOMC minutes, custom analyses). Grok 4
-        reasoning synthesizes each into a pending proposal for your review.
-        Budget cap set in the Knobs panel above (default $5/day).
-      </div>
-      <div style={{ fontSize: 11, color: COLORS.textDim, fontFamily: mono,
-                    marginBottom: 10 }}>
-        Current library: {documentCount ?? 0} document(s)
-      </div>
-      <div style={{ display: "flex", gap: 10, marginBottom: 8 }}>
-        <StyledInput
-          value={name}
-          onChange={setName}
-          placeholder="filename.md (optional)"
-        />
-        <StyledSelect
-          value={kind}
-          onChange={setKind}
-          options={[
-            { value: "cowen_memo", label: "Cowen memo" },
-            { value: "fomc_minutes", label: "FOMC minutes" },
-            { value: "research_report", label: "Research" },
-            { value: "user_note", label: "User note" },
-            { value: "other", label: "Other" },
-          ]}
-        />
-      </div>
-      <StyledTextarea
-        value={body}
-        onChange={setBody}
-        placeholder="Paste document content here…"
-        minHeight={140}
-      />
-      <div style={{ marginTop: 10, textAlign: "right" }}>
-        <button
-          onClick={submit}
-          disabled={!body.trim()}
-          style={{ padding: "8px 18px",
-                   background: body.trim() ? `${COLORS.warn}20` : "transparent",
-                   color: body.trim() ? COLORS.warn : COLORS.textDim,
-                   border: `1px solid ${body.trim() ? COLORS.warn + "60" : COLORS.panelBorder}`,
-                   borderRadius: 4, cursor: body.trim() ? "pointer" : "not-allowed",
-                   fontFamily: mono, fontSize: 11, fontWeight: 700,
-                   letterSpacing: "0.08em", textTransform: "uppercase" }}>
-          Upload + process
-        </button>
-      </div>
-    </ThesisCard>
-  );
-}
-
-function PendingProposalCard({ p, sendMessage, onBacktest }) {
-  const [notes, setNotes] = useState("");
-  const meta = p._meta || {};
-  const failed = meta.failed === true;
-  const bigShift = p.requires_human === true;
-  const accent = failed ? COLORS.danger : (bigShift ? COLORS.purple : COLORS.warn);
-  const approve = () => sendMessage({
-    type: "thesis_approve_proposal", proposal_id: p.proposal_id,
-    user_notes: notes.trim() || null,
-  });
-  const reject = () => sendMessage({
-    type: "thesis_reject_proposal", proposal_id: p.proposal_id,
-    user_notes: notes.trim() || null,
-  });
-  return (
-    <div style={{ border: `1px solid ${accent}40`, borderRadius: 6,
-                  padding: 12, marginBottom: 10, background: `${accent}08` }}>
-      <div style={{ display: "flex", justifyContent: "space-between",
-                    fontFamily: mono, fontSize: 11, marginBottom: 8 }}>
-        <span style={{ color: accent, fontWeight: 700, letterSpacing: "0.08em" }}>
-          {failed ? "FAILED" : (bigShift ? "REQUIRES HUMAN" : "PENDING")}
-        </span>
-        <span style={{ color: COLORS.textDim }}>
-          conf: {(p.confidence ?? 0).toFixed(2)} · {meta.filename || "—"}
-        </span>
-      </div>
-      <div style={{ fontFamily: mono, fontSize: 12, color: COLORS.text,
-                    lineHeight: 1.5, marginBottom: 10 }}>
-        {p.reasoning || "(no reasoning)"}
-      </div>
-      {p.posterior_shift && (
-        <div style={{ fontSize: 11, fontFamily: mono, color: COLORS.textDim, marginBottom: 6 }}>
-          posterior → {p.posterior_shift.regime} @ {p.posterior_shift.confidence?.toFixed?.(2)}
-        </div>
-      )}
-      {Array.isArray(p.proposed_intents) && p.proposed_intents.length > 0 && (
-        <div style={{ fontSize: 11, fontFamily: mono, color: COLORS.textDim, marginBottom: 6 }}>
-          proposed intents: {p.proposed_intents.length}
-        </div>
-      )}
-      {!failed && (
-        <>
-          <StyledInput
-            value={notes}
-            onChange={setNotes}
-            placeholder="approval notes (optional)"
-            fontSize={11}
-          />
-          <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
-            <button onClick={reject}
-              style={{ padding: "6px 14px", background: "transparent",
-                       color: COLORS.danger,
-                       border: `1px solid ${COLORS.danger}40`, borderRadius: 4,
-                       cursor: "pointer", fontFamily: mono, fontSize: 11,
-                       fontWeight: 700, letterSpacing: "0.08em",
-                       textTransform: "uppercase" }}>
-              reject
-            </button>
-            <button onClick={approve}
-              style={{ padding: "6px 14px",
-                       background: `${COLORS.accent}20`,
-                       color: COLORS.accent,
-                       border: `1px solid ${COLORS.accent}60`, borderRadius: 4,
-                       cursor: "pointer", fontFamily: mono, fontSize: 11,
-                       fontWeight: 700, letterSpacing: "0.08em",
-                       textTransform: "uppercase" }}>
-              approve
-            </button>
-          </div>
-          {onBacktest && (
-            <div style={{ marginTop: 8 }}>
-              <button onClick={() => onBacktest(p)}
-                style={{ width: "100%", padding: "6px 14px",
-                         background: "transparent",
-                         color: COLORS.purple,
-                         border: `1px solid ${COLORS.purple}60`, borderRadius: 4,
-                         cursor: "pointer", fontFamily: mono, fontSize: 11,
-                         fontWeight: 700, letterSpacing: "0.08em",
-                         textTransform: "uppercase" }}>
-                Backtest Proposal
-              </button>
-            </div>
-          )}
-        </>
-      )}
-      {failed && (
-        <div style={{ display: "flex", gap: 8, marginTop: 4, justifyContent: "flex-end" }}>
-          <button onClick={reject}
-            style={{ padding: "4px 10px", background: "transparent",
-                     color: COLORS.textDim, border: `1px solid ${COLORS.panelBorder}`,
-                     borderRadius: 4, cursor: "pointer", fontFamily: mono, fontSize: 10 }}>
-            dismiss
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function PendingProposalsPanel({ proposals, sendMessage, onBacktest }) {
-  useEffect(() => {
-    // Refresh on mount — agent pushes updates via thesis_state broadcasts,
-    // but the explicit list request ensures we have a snapshot even if no
-    // change has fired since the user connected.
-    sendMessage({ type: "thesis_list_proposals" });
-  }, [sendMessage]);
-  const items = proposals || [];
-  return (
-    <ThesisCard title="Pending Proposals" accent={items.length > 0 ? COLORS.warn : COLORS.textDim}>
-      <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: mono,
-                    lineHeight: 1.6, marginBottom: 12 }}>
-        Grok-authored thesis updates awaiting your approval. Posterior
-        shifts above 0.30 require an explicit "requires human" review
-        regardless of auto-apply.
-      </div>
-      {items.length === 0 && (
-        <div style={{ fontSize: 12, color: COLORS.textDim, fontFamily: mono,
-                      padding: "12px 0" }}>
-          No pending proposals — upload a document on the left to get one.
-        </div>
-      )}
-      {items.map((p) => (
-        <PendingProposalCard key={p.proposal_id} p={p} sendMessage={sendMessage} onBacktest={onBacktest} />
-      ))}
-    </ThesisCard>
-  );
-}
-
-function LaddersPanel({ ladders, sendMessage, livePairs = [] }) {
-  // Default selected pair: first BTC-quoted-stable in livePairs (matches
-  // the pre-v2.19 hardcoded "BTC/USDC" intent), falling back to the first
-  // available pair, falling back to "BTC/USD" (v2.19+ default).
-  const defaultPair = livePairs.find((p) => p.startsWith("BTC/")) || livePairs[0] || "BTC/USD";
-  const [pair, setPair] = useState(defaultPair);
-  const [side, setSide] = useState("BUY");
-  const [total, setTotal] = useState("");
-  const [nRungs, setNRungs] = useState(5);
-  const [topPx, setTopPx] = useState("");
-  const [botPx, setBotPx] = useState("");
-  const [stop, setStop] = useState("");
-  const [expiryHrs, setExpiryHrs] = useState(24);
-  const [reasoning, setReasoning] = useState("");
-
-  const canSubmit = total && topPx && botPx && Number(total) > 0 &&
-                    Number(topPx) > 0 && Number(botPx) > 0;
-
-  const submit = () => {
-    if (!canSubmit) return;
-    const totalSz = Number(total);
-    const n = Math.max(1, Math.min(20, Number(nRungs) || 5));
-    const top = Number(topPx), bot = Number(botPx);
-    const hi = Math.max(top, bot), lo = Math.min(top, bot);
-    const sizePerRung = totalSz / n;
-    const rungs = [];
-    for (let i = 0; i < n; i++) {
-      // Distribute prices evenly. For BUY, start high; for SELL, start low.
-      const frac = n === 1 ? 0 : i / (n - 1);
-      const price = side === "BUY" ? hi - (hi - lo) * frac : lo + (hi - lo) * frac;
-      rungs.push({ price: Number(price.toFixed(8)), size: sizePerRung });
-    }
-    sendMessage({
-      type: "thesis_create_ladder",
-      pair, side, total_size: totalSz,
-      rungs,
-      stop_loss_price: stop ? Number(stop) : null,
-      expiry_hours: Number(expiryHrs) || 24,
-      expiry_action: "cancel",
-      reasoning,
-      creator: "user:dashboard",
-    });
-    setTotal(""); setTopPx(""); setBotPx(""); setStop(""); setReasoning("");
-  };
-
-  const active = (ladders || []).filter((l) => l.status === "ACTIVE");
-  const rest = (ladders || []).filter((l) => l.status !== "ACTIVE");
-
-  return (
-    <ThesisCard title="Active Ladders" accent={active.length > 0 ? COLORS.warn : COLORS.textDim}>
-      <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: mono,
-                    lineHeight: 1.6, marginBottom: 12 }}>
-        Multi-tick capital deployment with predetermined total size,
-        stop-loss, and rung prices. Orders matching a pending rung stamp
-        the journal with (ladder_id, rung_idx); non-matching trades stay
-        legal but flag adhoc=true. Set <code>HYDRA_THESIS_LADDERS=1</code> on the
-        agent to activate journal-schema changes.
-      </div>
-      {active.length === 0 && rest.length === 0 && (
-        <div style={{ fontSize: 12, color: COLORS.textDim, fontFamily: mono,
-                      padding: "8px 0 16px" }}>
-          No ladders — author one below.
-        </div>
-      )}
-      {[...active, ...rest].map((l) => (
-        <div key={l.ladder_id}
-             style={{ border: `1px solid ${COLORS.panelBorder}`,
-                      borderRadius: 6, padding: 10, marginBottom: 8 }}>
-          <div style={{ display: "flex", justifyContent: "space-between",
-                        fontFamily: mono, fontSize: 11, marginBottom: 6 }}>
-            <span style={{ color: COLORS.text, fontWeight: 700 }}>
-              {l.pair} {l.side} · {l.total_size}
-            </span>
-            <span style={{ color: l.status === "ACTIVE" ? COLORS.warn
-                                 : l.status === "STOPPED_OUT" ? COLORS.danger
-                                 : COLORS.textDim }}>
-              {l.status}
-            </span>
-          </div>
-          <div style={{ display: "flex", gap: 4, marginBottom: 6, flexWrap: "wrap" }}>
-            {(l.rungs || []).map((r) => (
-              <span key={r.rung_idx}
-                    style={{ fontSize: 10, fontFamily: mono,
-                             padding: "2px 5px", borderRadius: 3,
-                             background: r.status === "FILLED" ? `${COLORS.accent}20`
-                                         : r.status === "PLACED" ? `${COLORS.blue}20`
-                                         : r.status === "CANCELLED" ? `${COLORS.panelBorder}`
-                                         : `${COLORS.warn}10`,
-                             color: r.status === "FILLED" ? COLORS.accent
-                                   : r.status === "PLACED" ? COLORS.blue
-                                   : r.status === "CANCELLED" ? COLORS.textDim
-                                   : COLORS.warn }}>
-                {r.price}
-              </span>
-            ))}
-          </div>
-          <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: mono,
-                        display: "flex", justifyContent: "space-between" }}>
-            <span>stop: {l.stop_loss_price ?? "—"} · expires: {l.expires_at}</span>
-            {l.status === "ACTIVE" && (
-              <button onClick={() => sendMessage({
-                type: "thesis_cancel_ladder", ladder_id: l.ladder_id,
-              })}
-                style={{ background: "transparent", color: COLORS.danger,
-                         border: `1px solid ${COLORS.danger}40`, borderRadius: 3,
-                         padding: "1px 8px", cursor: "pointer", fontFamily: mono,
-                         fontSize: 10 }}>
-                cancel
-              </button>
-            )}
-          </div>
-        </div>
-      ))}
-
-      {/* Composer */}
-      <div style={{ marginTop: 14, paddingTop: 14,
-                    borderTop: `1px solid ${COLORS.panelBorder}` }}>
-        <FieldLabel>New ladder</FieldLabel>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
-          <div>
-            <FieldLabel labelSize={9}>Pair</FieldLabel>
-            <StyledSelect
-              value={pair} onChange={setPair}
-              options={(livePairs.length ? livePairs : ["BTC/USD", "SOL/USD", "SOL/BTC"]).map((v) => ({ value: v, label: v }))}
-            />
-          </div>
-          <div>
-            <FieldLabel labelSize={9}>Side</FieldLabel>
-            <StyledSelect
-              value={side} onChange={setSide}
-              options={[{ value: "BUY", label: "BUY" }, { value: "SELL", label: "SELL" }]}
-            />
-          </div>
-          <div>
-            <FieldLabel labelSize={9}>Total size</FieldLabel>
-            <StyledInput value={total} onChange={setTotal} placeholder="0.005" type="number" />
-          </div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
-          <div>
-            <FieldLabel labelSize={9}>Rungs</FieldLabel>
-            <StyledInput
-              value={String(nRungs)}
-              onChange={(v) => setNRungs(Number(v) || 5)}
-              type="number"
-            />
-          </div>
-          <div>
-            <FieldLabel labelSize={9}>Top px</FieldLabel>
-            <StyledInput value={topPx} onChange={setTopPx} placeholder="74000" type="number" />
-          </div>
-          <div>
-            <FieldLabel labelSize={9}>Bot px</FieldLabel>
-            <StyledInput value={botPx} onChange={setBotPx} placeholder="73000" type="number" />
-          </div>
-          <div>
-            <FieldLabel labelSize={9}>Stop px</FieldLabel>
-            <StyledInput value={stop} onChange={setStop} placeholder="72000" type="number" />
-          </div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: 10, marginBottom: 10 }}>
-          <div>
-            <FieldLabel labelSize={9}>Expiry (hrs)</FieldLabel>
-            <StyledInput value={String(expiryHrs)}
-                         onChange={(v) => setExpiryHrs(Number(v) || 24)}
-                         type="number" />
-          </div>
-          <div>
-            <FieldLabel labelSize={9}>Reasoning (why this ladder)</FieldLabel>
-            <StyledInput value={reasoning} onChange={setReasoning}
-                         placeholder='e.g. "Cowen Apr memo → partial on-chain reset"' />
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <button onClick={submit} disabled={!canSubmit}
-            style={{ padding: "8px 18px",
-                     background: canSubmit ? `${COLORS.warn}20` : "transparent",
-                     color: canSubmit ? COLORS.warn : COLORS.textDim,
-                     border: `1px solid ${canSubmit ? COLORS.warn + "60" : COLORS.panelBorder}`,
-                     borderRadius: 4, cursor: canSubmit ? "pointer" : "not-allowed",
-                     fontFamily: mono, fontSize: 11, fontWeight: 700,
-                     letterSpacing: "0.08em", textTransform: "uppercase" }}>
-            Author ladder
-          </button>
-        </div>
-      </div>
-    </ThesisCard>
-  );
-}
-
-function IntentPromptsPanel({ intents, max, sendMessage, livePairs = [] }) {
-  const [draft, setDraft] = useState("");
-  const [scope, setScope] = useState("*");
-  const [priority, setPriority] = useState(3);
-  const sorted = [...(intents || [])].sort((a, b) => (b.priority || 3) - (a.priority || 3));
-  const full = sorted.length >= (max ?? 5);
-
-  const submit = () => {
-    const text = draft.trim();
-    if (!text) return;
-    sendMessage({
-      type: "thesis_create_intent",
-      prompt_text: text,
-      pair_scope: scope === "*" ? ["*"] : [scope],
-      priority: Number(priority) || 3,
-      author: "user:dashboard",
-    });
-    setDraft("");
-  };
-
-  return (
-    <ThesisCard title="Active Intent Prompts">
-      <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: mono,
-                    lineHeight: 1.6, marginBottom: 12 }}>
-        Author text prompts — injected verbatim into the Analyst's prompt,
-        priority-ranked, scoped per pair. This is how you tell Hydra's brain
-        "lean defensive ahead of CPI" or "favor BTC accumulation on dips
-        below 75k" without touching a knob.
-      </div>
-      {/* List */}
-      {sorted.length === 0 && (
-        <div style={{ fontSize: 12, color: COLORS.textDim, fontFamily: mono,
-                      padding: "12px 0" }}>
-          No active intents — compose one below.
-        </div>
-      )}
-      {sorted.map((it) => (
-        <div key={it.intent_id}
-             style={{ display: "flex", alignItems: "flex-start", gap: 10,
-                      padding: "8px 0", borderBottom: `1px solid ${COLORS.panelBorder}`,
-                      fontFamily: mono, fontSize: 12 }}>
-          <span style={{ padding: "2px 6px", background: `${COLORS.warn}20`,
-                         color: COLORS.warn, borderRadius: 3, fontWeight: 700,
-                         minWidth: 18, textAlign: "center" }}>
-            {it.priority}
-          </span>
-          <span style={{ padding: "2px 6px", background: `${COLORS.blue}10`,
-                         color: COLORS.blue, borderRadius: 3, fontSize: 10,
-                         alignSelf: "center" }}>
-            {(it.pair_scope || ["*"]).join(",")}
-          </span>
-          <span style={{ flex: 1, color: COLORS.text }}>{it.prompt_text}</span>
-          <span style={{ color: COLORS.textDim, fontSize: 10, alignSelf: "center" }}>
-            {it.author || "user"}
-          </span>
-          <button
-            onClick={() => sendMessage({ type: "thesis_delete_intent", intent_id: it.intent_id })}
-            style={{ background: "transparent", color: COLORS.danger,
-                     border: `1px solid ${COLORS.danger}40`, borderRadius: 3,
-                     padding: "2px 8px", cursor: "pointer", fontFamily: mono,
-                     fontSize: 10 }}>
-            delete
-          </button>
-        </div>
-      ))}
-      {/* Composer */}
-      <div style={{ marginTop: 14, paddingTop: 14,
-                    borderTop: `1px solid ${COLORS.panelBorder}` }}>
-        <FieldLabel hint={`${sorted.length} / ${max ?? 5} active${full ? " — next add will evict oldest" : ""}`}>
-          New intent
-        </FieldLabel>
-        <StyledTextarea
-          value={draft}
-          onChange={setDraft}
-          placeholder='e.g. "lean defensive ahead of the Apr 30 FOMC release"'
-          minHeight={60}
-        />
-        <div style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "center" }}>
-          <StyledSelect
-            value={scope}
-            onChange={setScope}
-            options={[
-              { value: "*", label: "all pairs" },
-              ...(livePairs.length ? livePairs : ["BTC/USD", "SOL/USD", "SOL/BTC"]).map(
-                (p) => ({ value: p, label: `${p} only` })
-              ),
-            ]}
-          />
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 11, color: COLORS.textDim, fontFamily: mono }}>priority:</span>
-            <StyledSelect
-              value={String(priority)}
-              onChange={(v) => setPriority(Number(v))}
-              options={[1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: String(n) }))}
-            />
-          </div>
-          <button
-            onClick={submit}
-            disabled={!draft.trim()}
-            style={{ marginLeft: "auto", padding: "8px 16px",
-                     background: draft.trim() ? `${COLORS.warn}20` : "transparent",
-                     color: draft.trim() ? COLORS.warn : COLORS.textDim,
-                     border: `1px solid ${draft.trim() ? COLORS.warn + "60" : COLORS.panelBorder}`,
-                     borderRadius: 4, cursor: draft.trim() ? "pointer" : "not-allowed",
-                     fontFamily: mono, fontSize: 11, fontWeight: 700,
-                     letterSpacing: "0.08em", textTransform: "uppercase" }}>
-            Add intent
-          </button>
-        </div>
-      </div>
-    </ThesisCard>
-  );
-}
-
-function ThesisPanel({ thesisState, sendMessage, pendingProposals, onBacktest, livePairs = [] }) {
-  // Before the first thesis_state response, show a loading shell.
-  if (thesisState == null) {
-    return (
-      <div style={{ padding: "24px 24px", color: COLORS.textDim, fontFamily: mono, fontSize: 13 }}>
-        Awaiting thesis_state from agent…
-      </div>
-    );
-  }
-  if (thesisState.disabled) {
-    return (
-      <div style={{ padding: "24px 24px", fontFamily: mono }}>
-        <ThesisCard title="Kill switch active" accent={COLORS.danger}>
-          <div style={{ color: COLORS.text, fontSize: 13, lineHeight: 1.6 }}>
-            <code>HYDRA_THESIS_DISABLED=1</code> is set on the agent. The thesis
-            layer is inert — live behavior matches v2.12.5 bit-for-bit. Unset
-            the env var and restart the agent to enable thesis features.
-          </div>
-        </ThesisCard>
-      </div>
-    );
-  }
-
-  const knobs = thesisState.knobs || {};
-  const rules = thesisState.hard_rules || {};
-  const deadline = thesisState.deadline || {};
-  const posterior = thesisState.posterior || {};
-  const checklist = thesisState.checklist || {};
-  const checklistKeys = Object.keys(checklist);
-  const checklistMetCount = checklistKeys.filter(
-    (k) => (checklist[k]?.status || "") === "MET"
-  ).length;
-
-  const updateKnob = (patch) =>
-    sendMessage({ type: "thesis_update_knobs", knobs: patch });
-  const updatePosture = (p) =>
-    sendMessage({ type: "thesis_update_posture", posture: p });
-  const updateHardRule = (patch) =>
-    sendMessage({ type: "thesis_update_hard_rules", hard_rules: patch });
-
-  const sizeRange = Array.isArray(knobs.size_hint_range)
-    ? knobs.size_hint_range : [0.85, 1.15];
-
-  return (
-    <div style={{ padding: "16px 24px", maxWidth: 1400, margin: "0 auto" }}>
-      {/* Header: posture + posterior + checklist summary */}
-      <ThesisCard title="Posture & Posterior">
-        <div style={{ display: "flex", gap: 24, flexWrap: "wrap",
-                      alignItems: "center", marginBottom: 10 }}>
-          <div>
-            <FieldLabel>Posture</FieldLabel>
-            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-              {["PRESERVATION", "TRANSITION", "ACCUMULATION"].map((p) => {
-                const active = thesisState.posture === p;
-                return (
-                  <button key={p} onClick={() => updatePosture(p)}
-                    style={{
-                      padding: "6px 12px", fontFamily: mono, fontSize: 11,
-                      fontWeight: 700, letterSpacing: "0.08em",
-                      borderRadius: 4, cursor: "pointer",
-                      background: active ? `${COLORS.warn}20` : "transparent",
-                      color: active ? COLORS.warn : COLORS.textDim,
-                      border: `1px solid ${active ? COLORS.warn + "60" : COLORS.panelBorder}`,
-                    }}>
-                    {p}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <div>
-            <FieldLabel>Active</FieldLabel>
-            <div style={{ marginTop: 6 }}><PostureBadge posture={thesisState.posture} /></div>
-          </div>
-          <div>
-            <FieldLabel>Posterior</FieldLabel>
-            <div style={{ fontFamily: mono, fontSize: 12, color: COLORS.text, marginTop: 8 }}>
-              {posterior.regime || "—"} · <span style={{ color: COLORS.textDim }}>
-                {typeof posterior.confidence === "number"
-                  ? posterior.confidence.toFixed(2) : "—"}</span>
-            </div>
-          </div>
-          <div>
-            <FieldLabel>Checklist</FieldLabel>
-            <div style={{ fontFamily: mono, fontSize: 12, color: COLORS.text, marginTop: 8 }}>
-              {checklistMetCount}/{checklistKeys.length} met
-            </div>
-          </div>
-        </div>
-        <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: mono,
-                      marginTop: 10, lineHeight: 1.6 }}>
-          Posture is user-set in Phase A. Grok-assisted recommendations land in
-          Phase C; opt-in enforcement lands in Phase E. Current default is
-          <code> advisory </code>— posture surfaces in brain context, it never
-          blocks a trade. Hydra is the flywheel.
-        </div>
-      </ThesisCard>
-
-      {/* Knobs — every field persisted to hydra_thesis.json on commit */}
-      <ThesisCard title="Ideological Knobs">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-          <div>
-            <RangeSlider
-              label="Conviction floor adjustment"
-              value={Number(knobs.conviction_floor_adjustment ?? 0)}
-              min={-0.10} max={0.15} step={0.01}
-              format={(v) => (v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2))}
-              onCommit={(v) => updateKnob({ conviction_floor_adjustment: v })}
-            />
-            <RangeSlider
-              label="Size hint min"
-              value={Number(sizeRange[0] ?? 0.85)}
-              min={0.50} max={1.50} step={0.01}
-              onCommit={(v) => updateKnob({ size_hint_range: [v, sizeRange[1]] })}
-            />
-            <RangeSlider
-              label="Size hint max"
-              value={Number(sizeRange[1] ?? 1.15)}
-              min={0.50} max={1.50} step={0.01}
-              onCommit={(v) => updateKnob({ size_hint_range: [sizeRange[0], v] })}
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 12 }}>
-              <FieldLabel hint="off = surface only · advisory = show in brain context · binding = apply daily entry caps (opt-in, Phase E)">
-                Posture enforcement
-              </FieldLabel>
-              <StyledSelect
-                value={knobs.posture_enforcement || "advisory"}
-                onChange={(v) => updateKnob({ posture_enforcement: v })}
-                options={[
-                  { value: "off", label: "off" },
-                  { value: "advisory", label: "advisory (default)" },
-                  { value: "binding", label: "binding (Phase E)" },
-                ]}
-              />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div>
-                <FieldLabel>Max ladders / pair</FieldLabel>
-                <StyledInput
-                  type="number"
-                  value={String(knobs.max_active_ladders_per_pair ?? 3)}
-                  onChange={(v) => updateKnob({ max_active_ladders_per_pair: parseInt(v) || 0 })}
-                />
-              </div>
-              <div>
-                <FieldLabel>Ladder expiry (hrs)</FieldLabel>
-                <StyledInput
-                  type="number"
-                  value={String(knobs.ladder_default_expiry_hours ?? 24)}
-                  onChange={(v) => updateKnob({ ladder_default_expiry_hours: parseInt(v) || 1 })}
-                />
-              </div>
-              <div>
-                <FieldLabel>Intent max active</FieldLabel>
-                <StyledInput
-                  type="number"
-                  value={String(knobs.intent_prompt_max_active ?? 5)}
-                  onChange={(v) => updateKnob({ intent_prompt_max_active: parseInt(v) || 0 })}
-                />
-              </div>
-              <div>
-                <FieldLabel>Grok $/day cap</FieldLabel>
-                <StyledInput
-                  type="number"
-                  value={String(knobs.grok_processing_budget_usd_per_day ?? 5)}
-                  onChange={(v) => updateKnob({ grok_processing_budget_usd_per_day: parseFloat(v) || 0 })}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-      </ThesisCard>
-
-      {/* Hard rules — ledger shield is floored at 0.20 on the agent side */}
-      <ThesisCard title="Hard Rules (absolute — only place BLOCK lives)" accent={COLORS.danger}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
-          <div>
-            <FieldLabel hint="Untouchable long-term hold. Floor is 0.20 BTC — the agent rejects lower values.">
-              Ledger shield (BTC)
-            </FieldLabel>
-            <StyledInput
-              type="number"
-              value={String(rules.ledger_shield_btc ?? 0.20)}
-              onChange={(v) => updateHardRule({ ledger_shield_btc: parseFloat(v) || 0.20 })}
-            />
-          </div>
-          <div>
-            <FieldLabel hint="Minimum realized gain in USD before an exit is considered worth the tax friction.">
-              Tax friction floor (USD)
-            </FieldLabel>
-            <StyledInput
-              type="number"
-              value={String(rules.tax_friction_min_realized_pnl_usd ?? 50)}
-              onChange={(v) => updateHardRule({ tax_friction_min_realized_pnl_usd: parseFloat(v) || 0 })}
-            />
-          </div>
-          <div>
-            <FieldLabel hint="No alts until ASI > 75 AND BTC dominance < 57.">
-              No-altcoin gate
-            </FieldLabel>
-            <div style={{ marginTop: 6 }}>
-              <Checkbox
-                checked={Boolean(rules.no_altcoin_gate)}
-                onChange={(v) => updateHardRule({ no_altcoin_gate: v })}
-                label={rules.no_altcoin_gate ? "enabled" : "disabled"}
-              />
-            </div>
-          </div>
-        </div>
-      </ThesisCard>
-
-      {/* Deadline — diagnostic only, never coerces trades */}
-      <ThesisCard title="Accumulation Deadline (diagnostic)">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20,
-                      fontFamily: mono, fontSize: 12, color: COLORS.text }}>
-          <div>
-            <div style={{ color: COLORS.textDim, fontSize: 10,
-                          textTransform: "uppercase", letterSpacing: "0.1em",
-                          marginBottom: 4 }}>Near target</div>
-            <div>{deadline.near_btc_target ?? "—"} BTC by {deadline.near_iso || "—"}</div>
-          </div>
-          <div>
-            <div style={{ color: COLORS.textDim, fontSize: 10,
-                          textTransform: "uppercase", letterSpacing: "0.1em",
-                          marginBottom: 4 }}>Far target</div>
-            <div>{deadline.far_btc_target ?? "—"} BTC by {deadline.far_iso || "—"}</div>
-          </div>
-        </div>
-      </ThesisCard>
-
-      {/* Placeholder sub-panels for Phases B–E. Showing the target shape now
-          so the UX contract is clear and future phases slot in without layout
-          churn. */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <DocumentLibraryPanel
-          documentCount={thesisState.document_library_count}
-          sendMessage={sendMessage}
-        />
-        <PendingProposalsPanel
-          proposals={pendingProposals}
-          sendMessage={sendMessage}
-          onBacktest={onBacktest}
-        />
-        <IntentPromptsPanel
-          intents={thesisState.active_intents || []}
-          max={knobs.intent_prompt_max_active ?? 5}
-          sendMessage={sendMessage}
-          livePairs={livePairs}
-        />
-        <LaddersPanel
-          ladders={thesisState.active_ladders || []}
-          max={knobs.max_active_ladders_per_pair ?? 3}
-          sendMessage={sendMessage}
-          livePairs={livePairs}
-        />
-        <ThesisCard title="Thesis Timeline (Phase B)" muted>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: mono, lineHeight: 1.6 }}>
-            Posterior gauge, 90-day drift chart, checklist scorecard, evidence
-            log. Populates as evidence accumulates.
-          </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: COLORS.textDim, fontFamily: mono }}>
-            Evidence log: {thesisState.evidence_log_count ?? 0} entries
-          </div>
-        </ThesisCard>
-        <ThesisCard title="FOMC Window (Phase C)" muted>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, fontFamily: mono, lineHeight: 1.6 }}>
-            Pre-FOMC / post-FOMC / inter-meeting phase with 25/60/15 reserve
-            split per user's stated rule. User-maintained calendar (auto-fetch
-            is post-Phase E).
-          </div>
-        </ThesisCard>
-      </div>
-    </div>
-  );
-}
-
 function ConnectionStatus({ connected, tick }) {
   // The colored, optionally-pulsing dot conveys the live/disconnected state
   // visually. The text redundantly saying "LIVE" on top of that competes
@@ -2886,7 +1915,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
   const [renderLoading, setRenderLoading] = useState(true);
   const [loadingOpacity, setLoadingOpacity] = useState(1);
   // Phase 8: tab switcher + backtest message stash
-  const [activeTab, setActiveTab] = useState("LIVE");   // LIVE | RESEARCH | THESIS | SETTINGS
+  const [activeTab, setActiveTab] = useState("LIVE");   // LIVE | RESEARCH | SETTINGS
   // v2.20.0 Research tab state — populated by ws.onmessage cases below.
   const [researchCoverage, setResearchCoverage] = useState(null);
   const [researchLabResult, setResearchLabResult] = useState(null);
@@ -2904,14 +1933,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
     try { return localStorage.getItem("hydra.statcards.hydra_only") === "1"; }
     catch { return false; }
   });
-  // v2.13.0 (Golden Unicorn Phase A): thesis_state snapshot for the THESIS tab.
-  // null until agent responds to thesis_get_state; {disabled:true} when
-  // HYDRA_THESIS_DISABLED=1 is set on the agent.
-  const [thesisState, setThesisState] = useState(null);
-  // v2.13.2 (Phase C): pending Grok proposals list. Agent pushes updates
-  // via thesis_proposals_list messages; individual thesis_proposal_pending
-  // pushes also trigger a re-fetch so the list stays fresh.
-  const [pendingProposals, setPendingProposals] = useState([]);
   const [btProgress, setBtProgress] = useState({});     // experiment_id -> progress msg
   const [btResults, setBtResults] = useState({});       // experiment_id -> result summary
   const [btReviews, setBtReviews] = useState({});       // experiment_id -> review
@@ -2925,7 +1946,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
   const [libExperiments, setLibExperiments] = useState([]);    // full list from WS
   const [libLoading, setLibLoading] = useState(false);
   const [compareSelected, setCompareSelected] = useState([]);  // ids chosen for compare
-  const [stagedProposal, setStagedProposal] = useState(null);
   const [compareReport, setCompareReport] = useState(null);    // last compare ack
   const [viewingExpId, setViewingExpId] = useState(null);      // single-experiment detail view (stretch)
   // ─── Companion state (Phase 1+) ───
@@ -3309,25 +2329,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
               }].slice(-200));
               return;
             }
-            case "thesis_state":
-              // v2.13.0: THESIS tab snapshot. `msg.data` follows the shape
-              // returned by ThesisTracker.current_state() (Python side).
-              if (msg.data) setThesisState(msg.data);
-              return;
-            case "thesis_proposals_list":
-              // v2.13.2 (Phase C): full pending list refresh.
-              if (Array.isArray(msg.data)) setPendingProposals(msg.data);
-              return;
-            case "thesis_proposal_pending":
-              // v2.13.2 (Phase C): incremental push from processor worker.
-              if (msg.data) setPendingProposals((prev) => {
-                const next = prev.filter(
-                  (p) => p.proposal_id !== msg.data.proposal_id
-                );
-                next.push(msg.data);
-                return next;
-              });
-              return;
             case "error":
               // Backtest channel errors land here; keep quiet otherwise.
               if (msg.channel === "backtest") setBtLastAck(msg);
@@ -3636,15 +2637,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
     if (activeTab === "COMPARE" && connected) fetchLibrary();
   }, [activeTab, connected, fetchLibrary]);
 
-  // v2.13.0 (Golden Unicorn Phase A): fetch thesis_state on connect and on
-  // THESIS tab activation. Agent responds with a typed thesis_state message
-  // we handle in the WS switch above.
-  useEffect(() => {
-    if (connected) sendMessage({ type: "thesis_get_state" });
-  }, [connected, sendMessage]);
-  useEffect(() => {
-    if (activeTab === "THESIS" && connected) sendMessage({ type: "thesis_get_state" });
-  }, [activeTab, connected, sendMessage]);
 
   // Compare only works on experiments that are in a comparable state —
   // the run must be "complete" AND have at least one non-null primary metric.
@@ -3817,9 +2809,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
 
         return (
           <>
-            {activeTab === "MEME" && (
-              <MemeTab />
-            )}
             {activeTab === "SETTINGS" && (
               <div style={{ padding: "16px 24px" }}>
                 <SettingsSurface wsSend={sendMessage} />
@@ -3839,24 +2828,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                   setResearchLabProgress(null);
                 }}
               />
-            )}
-            {activeTab === "THESIS" && (
-              <>
-              <FeatureFlagBanner
-                flag="HYDRA_THESIS_DISABLED"
-                note="Posture, ladders, and Grok document processor are prototype-stage."
-              />
-              <ThesisPanel
-                thesisState={thesisState}
-                sendMessage={sendMessage}
-                pendingProposals={pendingProposals}
-                livePairs={Object.keys(state?.pairs || {})}
-                onBacktest={(p) => {
-                  setStagedProposal(p);
-                  setActiveTab("RESEARCH");
-                }}
-              />
-              </>
             )}
             {/* Floating observer on LIVE tab — dual-state view. Appears
                 whenever a backtest is mid-run or just completed; user can
@@ -4066,7 +3037,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                     {/* AI Reasoning — v2.14.2 7-band redesign. Each band
                         surfaces one layer of the brain's structured output
                         (header → QUANT text+chips → quant indicators grid →
-                        RISK → GROK → SIZE/rules → thesis alignment). The
+                        RISK → GROK → SIZE/rules). The
                         raw payload is produced by hydra_agent.py:3245
                         (ai_decision dict) and hydra_brain.py:662
                         (BrainDecision dataclass); if a field is null/empty
@@ -4086,8 +3057,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                         : tickDelta > 30 ? COLORS.sell
                         : tickDelta > 10 ? COLORS.warn
                         : COLORS.textMuted;
-                      const ta = ai.thesis_alignment || null;
-                      const showThesisStrip = ta && (ta.in_thesis === false || (typeof ta.posterior_shift_request === "number" && Math.abs(ta.posterior_shift_request) > 0.001));
                       const pill = (txt, color, bg = null, extra = {}) => (
                         <span style={{
                           fontSize: 8, fontFamily: mono, fontWeight: 700, letterSpacing: "0.06em",
@@ -4306,23 +3275,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                             </div>
                           )}
 
-                          {/* Band 7 — Thesis alignment strip (only when non-trivial) */}
-                          {showThesisStrip && (
-                            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: `${COLORS.purple}15`, borderRadius: 3, flexWrap: "wrap" }}>
-                              {pill("THESIS", COLORS.purple)}
-                              {ta.in_thesis === false && pill("OUT OF THESIS", COLORS.warn)}
-                              {typeof ta.posterior_shift_request === "number" && Math.abs(ta.posterior_shift_request) > 0.001 && (
-                                <span style={{ fontSize: 9, fontFamily: mono, color: ta.posterior_shift_request > 0 ? COLORS.buy : COLORS.sell, fontWeight: 700 }}>
-                                  Δp {ta.posterior_shift_request > 0 ? "+" : ""}{ta.posterior_shift_request.toFixed(2)}
-                                </span>
-                              )}
-                              {ta.evidence_delta && (
-                                <span style={{ fontSize: 9, fontFamily: mono, color: COLORS.textDim, lineHeight: 1.4, flex: 1 }}>
-                                  {ta.evidence_delta}
-                                </span>
-                              )}
-                            </div>
-                          )}
                         </div>
                       );
                     })()}
@@ -4591,7 +3543,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.25.4 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.26.0 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]

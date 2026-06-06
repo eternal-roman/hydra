@@ -71,27 +71,6 @@ hydra_brain.jsonl
 # Companion runtime artifacts (transcripts, memory, proposals, routing/cost logs)
 .hydra-companions/
 
-# Thesis layer (v2.13.0+; runtime state + user-uploaded research, not tracked)
-hydra_thesis.json
-hydra_thesis.json.tmp
-hydra_thesis_documents/
-hydra_thesis_processed/
-hydra_thesis_pending/
-hydra_thesis_evidence_archive/
-
-# APEX meme engine runtime state (v2.21+)
-apex_meme.pid
-meme_stdout.log
-meme_stderr.log
-hydra_meme_session*.json
-hydra_meme_session*.json.tmp
-hydra_meme_journal*.json
-hydra_meme_journal*.json.tmp
-hydra_meme_watchlist.json
-hydra_meme_watchlist.json.tmp
-hydra_meme_prefs.json
-hydra_meme_prefs.json.tmp
-
 # Temporary / Junk / Scratch
 *.diff
 *.patch

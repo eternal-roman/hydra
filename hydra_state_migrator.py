@@ -3,8 +3,8 @@
 WHY THIS MODULE EXISTS
 ──────────────────────
 v2.19 flips the default stable quote from USDC → USD. On-disk state
-written by pre-v2.19 agents (session snapshot, derivatives history,
-thesis intents) is keyed by old pair names. Without migration, a
+written by pre-v2.19 agents (session snapshot, derivatives history)
+is keyed by old pair names. Without migration, a
 USD-default agent booting `--resume` would build engines under new
 keys (SOL/USD, BTC/USD) and silently abandon the learned engine
 state, regime history, and OI deques captured under the old keys
@@ -21,7 +21,6 @@ Migrated (active runtime state under stale keys):
   - `engines`                  — dict keyed by pair (engine snapshots)
   - `coordinator_regime_history` — dict keyed by pair
   - `derivatives_history`      — dict keyed by pair (OI / mark-price deques)
-  - `thesis_state.active_intents[*].pair_scope` — list of pair symbols
 
 Preserved (historical record):
   - `order_journal[*].pair`    — A SOL/USDC trade was placed on the
@@ -47,7 +46,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Union
 
 
 _PathLike = Union[str, os.PathLike, Path]
@@ -148,20 +147,6 @@ def migrate_snapshot(
         val = snapshot.get(field)
         if isinstance(val, dict):
             snapshot[field] = _remap_keys(val, src, tgt)
-
-    # Thesis intents — pair_scope arrays inside active_intents.
-    thesis = snapshot.get("thesis_state")
-    if isinstance(thesis, dict):
-        intents = thesis.get("active_intents")
-        if isinstance(intents, list):
-            for intent in intents:
-                if not isinstance(intent, dict):
-                    continue
-                scope = intent.get("pair_scope")
-                if isinstance(scope, list):
-                    intent["pair_scope"] = [
-                        migrate_pair_key(p, src, tgt) for p in scope
-                    ]
 
     # NOTE: order_journal entries are deliberately NOT migrated.
     # See module docstring for rationale.

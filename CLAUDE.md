@@ -7,12 +7,9 @@
 > leave `TODO(claude-md):` in code AND a matching `<!-- TODO(claude-md): -->`
 > here. Stale CLAUDE.md = CI failure waiting to happen.
 >
-> **Cold subsystem detail lives in CBP, not here.** When you touch a
-> subsystem, load its node first:
-> `python $CBP_RUNNER_DIR/bin/memory-read.py --label <slug>` (default
-> `CBP_RUNNER_DIR` resolves to a sibling `../cbp-runner` checkout).
 > This file is the hot index — pointers, rules, and cross-cutting
-> invariants only. Point, don't duplicate.
+> invariants only. Point, don't duplicate; cold subsystem detail lives in
+> the module docstrings, `SKILL.md`, and `CHANGELOG.md`.
 
 ## Operating Rules (binding, non-negotiable)
 
@@ -47,7 +44,7 @@ regression bug, not a style issue.
   `STABLE_QUOTES = {USD, USDC, USDT}` are first-class. v2.19 flipped
   the default from USDC → USD; opt back into USDC by passing
   `--pairs SOL/USDC,SOL/BTC,BTC/USDC`.
-- **Version pin:** v2.25.4
+- **Version pin:** v2.26.0
 
 ## Defaults (inherited)
 
@@ -67,12 +64,11 @@ regression bug, not a style issue.
 
 - **SPOT-ONLY execution** — Hydra places orders ONLY on Kraken spot pairs (the active triangle: stable-quoted SOL, stable-quoted BTC, and SOL/BTC; default v2.19+ is SOL/USD, SOL/BTC, BTC/USD). Derivatives data (Kraken Futures funding/OI via `kraken futures tickers` CLI) is SIGNAL INPUT ONLY. No futures, no options, no margin orders placed. `hydra_derivatives_stream.py` is read-only by construction; its test suite greps for authenticated subcommand names and fails if any appear.
 - **Limit post-only, never market** — deliberate design choice
-- **No REST for market data** — all Kraken market data flows through the WebSocket streams or the `kraken` CLI (WSL Ubuntu). Only the CBP sidecar (localhost IPC) uses REST. New data sources must use CLI or WS.
+- **No REST for market data** — all Kraken market data flows through the WebSocket streams or the `kraken` CLI (WSL Ubuntu). New data sources must use CLI or WS.
 - **2s REST floor** — Kraken throttles or bans below this
 - **15% drawdown kills engine for session** — both `tick()` and `_maybe_execute` check
 - **RSI/ATR = Wilder exponential smoothing, NOT SMA** (Bollinger = population variance)
-- **Ledger shield floor = 0.20 BTC** — cannot be lowered via API, ever
-- **SKIP ≠ BLOCK** — posture restriction SKIPs, BLOCK reserved for hard rules
+- **SKIP ≠ BLOCK** — a soft restriction skips an action for the tick; BLOCK is reserved for hard rules (the 15% drawdown breaker)
 - **`HYDRA_COMPANION_LIVE_EXECUTION` default OFF** — proposals are paper until opted in
 - **Funding is markPrice-relative, never absolute** — Kraken Futures `PF_*` `fundingRate` is absolute USD-per-contract-per-period. Convert to bps via `(fundingRate / markPrice) * 10000`, never `fundingRate * 10000`. The `_absolute_to_relative_bps` helper in `hydra_derivatives_stream.py` enforces this (±500 bps clamp vs API drift). Pre-v2.15.2 fires used the wrong absolute conversion — not authoritative.
 - **Synthetic pairs declare themselves to R10** — `DerivativesSnapshot.synthetic=True` propagates to `quant_indicators["synthetic_pair"]`; R10 then tracks only funding/cvd/regime (the fields the synthetic path actually populates). Adding a new pair without a direct Kraken Futures perp requires this flag, otherwise R10 will structurally force-hold every tick.
@@ -84,9 +80,9 @@ regression bug, not a style issue.
 
 Subsystem detail (indicators, regime, Kelly sizing, price precision,
 execution stream lifecycle, resume reconciliation, forex modifier,
-shutdown) → `cbp --label hydra.engine_invariants` + `hydra.trading_invariants`.
+shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKILL.md`.
 
-## Modules (thin index — details in deep specs / CBP)
+## Modules (thin index — details in deep specs)
 
 | id | file | role |
 |---|---|---|
@@ -97,59 +93,32 @@ shutdown) → `cbp --label hydra.engine_invariants` + `hydra.trading_invariants`
 | quant_rules | `hydra_quant_rules.py` | R1-R11 deterministic guardrails (funding extreme, OI regime, basis euphoric, CVD divergence, contrarian edge, staleness, QFE profit exit) |
 | rm_features | `hydra_rm_features.py` | pure engine-internal RM signals (realized vol, DD velocity, fill rate, slippage, cross-pair corr, idle minutes) — stdlib only, no I/O, no mutation |
 | tuner | `hydra_tuner.py` | self-tuning params; `apply_external_param_update` + `rollback_to_previous` (depth=1 deque) |
-| companions | `hydra_companions/` | chat/proposals/nudges/ladder/live executor/CBP client/souls |
+| companions | `hydra_companions/` | chat/proposals/nudges/ladder/live executor/souls; per-companion memory is local JSONL (`.hydra-companions/memory/`) |
 | backtest | `hydra_backtest.py` | replay engine; reuses HydraEngine verbatim; `HYDRA_VERSION` lives here |
 | backtest_metrics | `hydra_backtest_metrics.py` | bootstrap CI, walk-forward, Monte Carlo, regime P&L, sensitivity |
 | backtest_server | `hydra_backtest_server.py` | `BacktestWorkerPool` (max=2 daemon, queue=20) + WS via `mount_backtest_routes` |
 | backtest_tool | `hydra_backtest_tool.py` | 8 Anthropic tool schemas + dispatcher + `QuotaTracker` (10/d caller, 3 concurrent, 50/d global) |
 | experiments | `hydra_experiments.py` | `Experiment` + `ExperimentStore` (RLock); 8 presets; sweep/compare |
-| reviewer | `hydra_reviewer.py` | AI Reviewer; 7 code-enforced rigor gates; PR-draft only |
-| shadow_validator | `hydra_shadow_validator.py` | single-slot FIFO live-parallel validation before param writes |
-| thesis | `hydra_thesis.py` | `ThesisTracker`, `Ladder`, `IntentPrompt`, `Evidence` |
-| thesis_processor | `hydra_thesis_processor.py` | daemon: research → `ProposedThesisUpdate` awaiting human approval (Grok 4) |
 | journal_maintenance | `journal_maintenance.py` | order journal compaction/rotation |
 | journal_migrator | `hydra_journal_migrator.py` | one-shot legacy journal migration (auto on first start) |
-| dashboard | `dashboard/src/App.jsx` | single-file React, inline styles; tabs LIVE/BACKTEST/COMPARE/THESIS |
+| dashboard | `dashboard/src/App.jsx` | single-file React, inline styles; tabs LIVE/RESEARCH/SETTINGS |
 | pair_registry | `hydra_pair_registry.py` | single source of truth for pair metadata; `Pair` value object + `PairRegistry` (alias resolution, kraken-pairs bootstrap); `STABLE_QUOTES`, `normalize_asset` |
 | config | `hydra_config.py` | `TradingTriangle` role-binding + `HydraConfig` boot-time facade; `add_config_args()` registers `--quote` (env `HYDRA_QUOTE`); `DEFAULT_QUOTE = "USD"` |
-| state_migrator | `hydra_state_migrator.py` | one-shot quote-currency migration of `hydra_session_snapshot.json` (engines, regime history, derivatives, thesis intents); preserves `order_journal` audit trail |
+| state_migrator | `hydra_state_migrator.py` | one-shot quote-currency migration of `hydra_session_snapshot.json` (engines, regime history, derivatives); preserves `order_journal` audit trail |
 
 ## Deep specs
 
 - `SKILL.md` — full trading specification (agent-readable)
 - `CHANGELOG.md` — version history
-- `HYDRA_MEMORY.md` — memory wiring + CBP sidecar topology
 - `SECURITY.md` — security policy
 - `docs/BACKTEST.md` / `docs/BACKTEST_SPEC.md` — runbook + authoritative design
 - `docs/COMPANION_SPEC.md` — companion spec (authoritative)
-- Thesis layer design → `cbp --label hydra.thesis_layer` (lives in CBP, no committed .md)
 - Latest post-release audit report lives in `AUDIT_YYYY-MM-DD.md` at root (keep only the most recent)
-
-## CBP pointers (load on demand, one node per subsystem)
-
-Relational graph (edges: `causes` / `requires` / `contradicts` /
-`qualifies`) lives in CBP, not duplicated here. Session-start header
-surfaces top weighted nodes.
-
-```
-cbp --label hydra.engine_invariants     # indicators + regime + adaptive volatility
-cbp --label hydra.trading_invariants    # sizing, minimums, precision, exec, resume, forex
-cbp --label hydra.ai_brain              # Quant/RM/Strategist + tool-use loop (v2.14+)
-cbp --label hydra.streams               # BaseStream + 5 instances
-cbp --label hydra.thesis_layer          # posture/ladder/intent/doc-processor
-cbp --label hydra.backtest_platform     # I1–I12, rigor gates, reviewer, dashboard
-cbp --label hydra.companion_subsystem   # orb default ON, live-exec opt-in
-cbp --label hydra.tests_live_harness    # 33+ scenarios, smoke/mock/validate/live modes
-```
-
-Discovery: `python $CBP_RUNNER_DIR/bin/memory-read.py --tag group:hydra_spec`
-for the whole spec set, or `--label hydra.<slug>` for one node.
-Persist new learnings: `python $CBP_RUNNER_DIR/bin/memory-write.py --label <slug> --summary <text> --tag ...`
 
 ## Claude Code tooling
 
 - **Skills:** `/release` (release SOP), `/audit` (zero-skip review), `/review`, `/security-review`
-- **Post-edit hook:** `.claude/hooks/post-edit.sh` — path-scoped verification; advisory; silence with `HYDRA_POSTEDIT_HOOK_DISABLED=1`
+- **Post-edit hook:** `.claude/hooks/post-edit.py` — path-scoped verification; advisory; silence with `HYDRA_POSTEDIT_HOOK_DISABLED=1` (wired in `.claude/settings.json`)
 - **Settings split:** per-user `.claude/settings.local.json` + runtime `.claude/scheduled_tasks.lock` gitignored; everything else under `.claude/` committed
 - **gitattributes pin:** `*.sh text eol=lf` — prevents Windows core.autocrlf CRLF-ing hook shebang
 
@@ -157,37 +126,25 @@ Persist new learnings: `python $CBP_RUNNER_DIR/bin/memory-write.py --label <slug
 
 | id | path | ownership / notes |
 |---|---|---|
-| snapshot | `hydra_session_snapshot.json` | atomic `.tmp → os.replace`; `--resume` target; embeds `thesis_state` + v2.18.0 `derivatives_history` (OI + mark-price deques, rehydrated with 30 min staleness gate) |
+| snapshot | `hydra_session_snapshot.json` | atomic `.tmp → os.replace`; `--resume` target; embeds v2.18.0 `derivatives_history` (OI + mark-price deques, rehydrated with 30 min staleness gate) |
 | order_journal | `hydra_order_journal.json` | snapshots immediately on any tick that appends (crash cannot lose since last successful tick); gitignored |
 | params | `hydra_params_<pair>.json` | per-pair learned tuning params; gitignored |
 | errors_log | `hydra_errors.log` | tick try/except writes here with full traceback; loop continues |
-| thesis_state | `hydra_thesis.json` | atomic `.tmp → os.replace`; `THESIS_SCHEMA_VERSION` bumps independently; lazy subdirs `hydra_thesis_{documents,processed,pending,evidence_archive}/`; gitignored |
-| cbp_sidecar_state | `cbp-runner/state/` | owner `cbp-runner/supervisor.py`; kill via `CBP_SIDECAR_ENABLED=0` or `state/_disabled` flag; Hydra falls through to JSONL — never blocks |
-| experiments_store | `.hydra-experiments/` | owner `experiments`; `presets.json` + `reviewer_config.json` bootstrap from code on first init (delete to regenerate); `shadow_outcomes.jsonl` append-only |
-
-CBP sidecar: **not auto-launched** (removed from launchers 2026-05-07).
-Launch manually via `python %CBP_RUNNER_DIR%\supervisor.py --detach`
-(default `CBP_RUNNER_DIR` points at a sibling `../cbp-runner` checkout;
-override to anywhere). Missing checkout = client degrades to JSONL.
-Client: `hydra_companions.cbp_client.CbpClient` reads `state/ready.json`
-on every call (tokens rotate).
+| companion_memory | `.hydra-companions/memory/{user}_{companion}.jsonl` | per-companion distilled facts; local JSONL, authoritative, 4KB LRU budget; gitignored |
+| experiments_store | `.hydra-experiments/` | owner `experiments`; `presets.json` bootstraps from code on first init (delete to regenerate) |
 
 ## Env flags (kill switches + opt-ins)
 
 | flag | scope | effect |
 |---|---|---|
-| `HYDRA_THESIS_DISABLED` | thesis | full kill; tracker returns inert; `save()` no-op; drift test enforces v2.12.5 bit-identical |
-| `HYDRA_THESIS_PROCESSOR_DISABLED` | thesis | Grok 4 doc processor off; uploads persist but no proposal |
-| `HYDRA_THESIS_LADDERS` | thesis | opt in to Ladder primitive (match_rung is no-op without it) |
 | `HYDRA_BACKTEST_DISABLED` | backtest | kill; worker pool off, WS rejects backtest msgs; v2.9.x exact |
 | `HYDRA_BRAIN_TOOLS_ENABLED` | brain | enables Anthropic tool-use for Analyst+RM (Grok stays text-only) |
 | `HYDRA_QUANT_INDICATORS_DISABLED` | brain/quant | `=1` skips DerivativesStream + R1-R11 quant rules; Quant sees no funding/OI/CVD block and no force_hold from rules |
+| `HYDRA_TAX_FRICTION_FLOOR_USD` | brain | Tax/fee friction floor in USD (default `50.0`; `hydra_brain.TAX_FRICTION_FLOOR_USD`). On a SELL that would realize a gain below the floor, the analyst prompt gets a soft advisory line — **advisory only, never a gate**. `=0` suppresses it; cutting a loss or banking a gain ≥ floor never triggers it. |
 | `HYDRA_COMPANION_DISABLED` | companion | kill (no orb) |
 | `HYDRA_COMPANION_PROPOSALS_ENABLED` | companion | default on; `=0` for no trade cards |
 | `HYDRA_COMPANION_NUDGES` | companion | default on; `=0` for no proactive messages |
 | `HYDRA_COMPANION_LIVE_EXECUTION` | companion | **opt-in** real-order execution; **default OFF for money safety** |
-| `CBP_SIDECAR_ENABLED` | memory | default on; `=0` falls through to JSONL; also `state/_disabled` flag |
-| `CBP_RUNNER_DIR` | memory | override sibling `cbp-runner` checkout location |
 | `HYDRA_POSTEDIT_HOOK_DISABLED` | tooling | silence hook during heavy refactors |
 | `HYDRA_RM_FEATURES_DISABLED` | rm_features | `=1` skips engine-internal feature computation in `_build_quant_indicators`; instant rollback without redeploy. Default off (features enabled). |
 | `HYDRA_BUY_OFFSET_DISABLED` | execution | `=1` reverts BUYs to raw bid (default off). Offset table: `hydra_agent.py:_BUY_LIMIT_OFFSET_BPS` keyed by `(base, quote_class, regime)`; only SOL bases in `VOLATILE`/`TREND_DOWN` carry offsets — BTC bases and RANGING/TREND_UP stay at raw bid (avoid missed fills). Empirical derivation in the code comment. |
@@ -209,7 +166,7 @@ on every call (tokens rotate).
 
 **Launchers:**
 - `start_hydra.bat` — production watchdog (`--mode competition --resume` — **do not remove these flags**)
-- `start_all.bat` — full stack: agent + dashboard (CBP sidecar not auto-launched since 2026-05-07; launch manually)
+- `start_all.bat` — full stack: agent + dashboard
 - `start_dashboard.bat` — dashboard only
 - `start_hydra_companion.bat` — paper-mode companion testing (no real money)
 
@@ -238,7 +195,8 @@ on every call (tokens rotate).
 - **Automation:** `/release` skill codifies the cycle. Never merge with red or pending CI.
 
 Tests: `python -m pytest tests/` or individual `python tests/test_*.py`
-(CI pattern). Live harness detail → `cbp --label hydra.tests_live_harness`.
+(CI pattern). Live harness detail in `tests/live_harness/` (`harness.py`
+modes: smoke/mock/validate/live).
 
 ## Audit
 
@@ -248,7 +206,7 @@ Tests: `python -m pytest tests/` or individual `python tests/test_*.py`
 |---|---|
 | p1_engine_tuner | engine, tuner |
 | p2_agent_streams | agent, streams |
-| p3_ai_layer | brain, reviewer, shadow_validator |
+| p3_ai_layer | brain |
 | p4_backtest | backtest, backtest_metrics, backtest_server, backtest_tool, experiments |
 | p5_companion | companions |
 | p6_dashboard | dashboard |
@@ -282,5 +240,4 @@ declare done only when phase 2 is clean. Drive full cycle via `/audit`.
 - `start_hydra.bat` uses `--mode competition --resume` for production — do not remove
 - **FEATURE GAP:** `CrossPairCoordinator` Rule 2 (BTC recovery BUY boost) + Rule 3 (coordinated swap SELL) can conflict when BTC TREND_UP + SOL TREND_DOWN + SOL/BTC TREND_UP — Rule 3 overwrites Rule 2 (favors safer SELL); future: explicit priority or merge logic
 - Companion live execution opt-in: `HYDRA_COMPANION_LIVE_EXECUTION=1`; confirm unset before live debugging
-- CBP sidecar failures silent by design (falls through to JSONL); if memory writes vanish, check `cbp-runner/state/ready.json` exists and `state/_disabled` does NOT
 - `kraken-cli` is an external WSL Ubuntu dep (`source ~/.cargo/env && kraken`); check dashboard footer pinned version before debugging `--validate` schema errors

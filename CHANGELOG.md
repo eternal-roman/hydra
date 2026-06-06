@@ -6,6 +6,78 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.26.0] — 2026-06-05
+
+Feature-offshoot trim + opsec hardening. Archives three dormant/orphaned
+subsystems (meme-trader, thesis layer, AI-reviewer + shadow-validator) to the
+git-history "closet" and fully removes the optional CBP memory sidecar (companion
+memory is now local JSONL only). Removes a residual advisory capital-preservation
+constraint entirely (the only constraint on rotation is profitability), and stops
+disclosing any holdings figure in tracked source.
+
+### Removed (recoverable from git history)
+- **Thesis layer** (`hydra_thesis.py`, `hydra_thesis_processor.py`): dormant —
+  empty state, frozen since Apr 26, processor needs an unset Grok key. It never
+  *mechanically* gated or resized a trade by default (size_hint stayed 1.0; the
+  posture-cap SKIP was opt-in `binding` only — the deterministic engine/sizing/
+  execution path is bit-identical without it), but in the default advisory mode
+  it DID inject a soft context block into the analyst LLM prompt (a tax-friction
+  nudge against churning tiny gains, plus a capital-preservation nudge). The
+  capital-preservation nudge is intentionally gone — profitable rotation is now
+  the only constraint, so the brain is freer to take small / BTC exits. The
+  tax-friction nudge is **preserved**: re-added as a standalone advisory (see
+  Added) so the brain is still discouraged from churning sub-floor gains, with
+  zero thesis-layer dependency. Removed all integration
+  from agent/brain/engine/backtest/state-migrator and the dashboard THESIS tab.
+  Kept the analyst's own one-sentence "thesis" headline (a different concept).
+  `HYDRA_THESIS_*` env flags retired.
+- **Meme-trader / Apex** (`hydra_meme_agent.py`, `dashboard/src/MemeTab.jsx`,
+  `tools/backtest_meme_*.py`, `tools/test_apex_auth.py`, `start_meme.bat`):
+  standalone, undocumented, half-CI-gated parallel engine with zero coupling to
+  core. The `apex.soul.json` companion persona and `test_apex_tools.py`
+  (companion read-only tools) are NOT the meme trader and stay.
+- **AI Reviewer + Shadow Validator** (`hydra_reviewer.py`,
+  `hydra_shadow_validator.py`): fully built + CI-tested but never wired into
+  production (`reviewer=None`; shadow validator never instantiated). Plus the
+  orphan one-shot `_measure_hid.py`.
+- **CBP sidecar + client** (`hydra_companions/cbp_client.py`,
+  `tests/test_cbp_client.py`): the optional Context-Binding-Protocol sidecar that
+  best-effort-mirrored per-companion distilled memory cross-session. It was never
+  authoritative — JSONL (`.hydra-companions/memory/*.jsonl`) was always the source
+  of truth — so removal is behavior-preserving: `DistilledMemory.remember()` now
+  just persists JSONL. Dropped the `_cbp_mirror` path from `memory.py`, the
+  `CBP_SIDECAR_ENABLED` / `CBP_RUNNER_DIR` env flags, the `cbp_sidecar_state`
+  file row, the CI step, and all CBP scaffolding from CLAUDE.md / README /
+  COMPANION_SPEC. The soul-graph "CBP-hybrid" *schema* (hand-authored JSON read by
+  `compiler.py`) is unrelated to the sidecar and is unchanged — it never had a
+  runtime dependency on any CBP service.
+
+### Added
+- **Standalone tax/fee friction nudge** (`hydra_brain.TAX_FRICTION_FLOOR_USD`,
+  default `$50`): on a SELL that would realize a gain below the floor, the
+  analyst prompt gets a soft advisory line ("rarely clears fees + tax").
+  Advisory only — it never gates or resizes a trade; cutting a loss or banking a
+  gain ≥ floor never triggers it, and it fails silent on malformed state. Tunable
+  via `HYDRA_TAX_FRICTION_FLOOR_USD` (`0` disables). This preserves the anti-churn
+  tax context the archived thesis layer used to inject, with zero thesis
+  dependency. Covered by `tests/test_brain_tax_friction.py` (9 cases).
+
+### Dashboard
+- Removed the thesis UI (component cluster, WS handlers, dead Band-7 strip) and
+  the MEME tab; swapped MEME → RESEARCH in the tab bar so the kept backtest /
+  Research-Lab UI stays reachable. Vite build green.
+
+### Docs
+- CLAUDE.md: dropped the four archived module rows, the `HYDRA_THESIS_*` flags,
+  the `hydra_thesis.json` state row, and the thesis CBP node; corrected the
+  dashboard tab list to LIVE/RESEARCH/SETTINGS; removed the prior BTC
+  capital-preservation invariant (the constraint is dropped).
+
+### Version
+- All 7 alignment sites bumped 2.25.4 → 2.26.0.
+
+---
+
 ## [2.25.4] — 2026-05-28
 
 Documentation patch — no code logic change. Tightens `CLAUDE.md`, corrects
@@ -39,7 +111,7 @@ defense-in-depth fixes. No behavioral change to the AI decision flow.
 - New coverage: fill-tolerance classification (`test_execution_stream.py`), `apply_tuned_params` clamping + unknown/non-numeric handling (`test_tuner.py`), ladder daily-cap enforcement (`test_companion_live_executor.py`), `HYDRA_COMPANION_LIVE_EXECUTION` default-OFF contract (`test_live_execution_default_off.py`), and REST-floor spacing in the order path (`test_rest_floor_spacing.py`). Replaced the misleading `test_ladder_daily_cap_not_enforced_here` (which asserted the gap this release closes).
 
 ### Notes
-- Audit false positives explicitly dismissed (not bugs): backtest Sortino downside-deviation (valid target-0 convention), `_profit_factor` returning `inf` (intentional, sanitized by consumers), agent "no REST ticker fallback" (refusing to trade without a live WS price is correct — a REST fallback would violate the no-REST-market-data invariant), RM `force_hold` "ignored" (the RM has no such field by design; it vetoes via decision/final_action and the Strategist arbitrates by design), walk-forward `test_start` underflow (precluded by the slice math), quota day-boundary race (`acquire` is atomic), and ledger-shield/Sortino coverage gaps (already tested).
+- Audit false positives explicitly dismissed (not bugs): backtest Sortino downside-deviation (valid target-0 convention), `_profit_factor` returning `inf` (intentional, sanitized by consumers), agent "no REST ticker fallback" (refusing to trade without a live WS price is correct — a REST fallback would violate the no-REST-market-data invariant), RM `force_hold` "ignored" (the RM has no such field by design; it vetoes via decision/final_action and the Strategist arbitrates by design), walk-forward `test_start` underflow (precluded by the slice math), quota day-boundary race (`acquire` is atomic), and capital-preservation/Sortino coverage gaps (already tested).
 
 ---
 
@@ -582,8 +654,8 @@ state migrator).
   USD and USDC entries for BTC and SOL. Kraken Futures has one perp
   per (base, USD-side) regardless of which spot stable is used;
   adding USDT support is two rows.
-- **`hydra_thesis.py`** — ledger-shield warning fires for ANY stable-
-  quoted BTC pair (was hardcoded `"BTC/USDC"`). Bridge SELL
+- **`hydra_thesis.py`** — the BTC capital-preservation warning fires for ANY
+  stable-quoted BTC pair (was hardcoded `"BTC/USDC"`). Bridge SELL
   correctly excluded.
 
 ### Default flipped
@@ -1124,7 +1196,7 @@ agent declines to place the trade (logged + broadcast via a new
 `thesis_posture_restriction` WS message) and the tick continues. The
 journal gets no entry for a skipped placement — the restriction is a
 "not today" signal, not a hard veto. True BLOCKs remain reserved for
-hard rules (ledger shield, tax floor, no-altcoin).
+hard rules (capital preservation, tax floor, no-altcoin).
 
 This closes the A→E arc. Every piece of the Golden Unicorn plan is now
 live: persistence + UI (A), brain augmentation with intent prompts (B),
@@ -1267,7 +1339,7 @@ budget so experimentation never stalls live trading).
   list_pending_proposals / approve_proposal / reject_proposal` —
   the full document ingestion + proposal-approval workflow. Approved
   proposals update posterior, checklist, intents, evidence, and posture
-  atomically. Hard rules (ledger shield, tax floor, no-altcoin) are
+  atomically. Hard rules (capital preservation, tax floor, no-altcoin) are
   NEVER mutated by a proposal — the Grok system prompt forbids it and
   `_apply_proposal` ignores any `hard_rules` field regardless.
 - Four new WS routes: `thesis_upload_document`, `thesis_list_proposals`,
@@ -1406,9 +1478,9 @@ processing, the Ladder primitive, and opt-in posture enforcement land in
 subsequent 2.13.x releases.
 
 Design stance (see agent memory `feedback_hydra_design_philosophy.md`):
-Hydra is the flywheel, not the shield. The thesis layer augments brain
+Hydra is the flywheel. The thesis layer augments brain
 reasoning and surfaces user intent — it does not throttle trading. `BLOCK`
-is reserved for the small set of hard rules (ledger shield at 0.20 BTC,
+is reserved for the small set of hard rules (capital preservation,
 tax friction floor, no-altcoin gate); everything else is advisory context
 that makes the brain smarter, not more restrictive.
 
@@ -1423,8 +1495,8 @@ that makes the brain smarter, not more restrictive.
   no new runtime dependencies. Schema `THESIS_SCHEMA_VERSION = "1.0.0"`.
 - `hydra_thesis.json` (gitignored) — persistent state file with atomic
   `.tmp` → `os.replace()` writes mirroring `_save_snapshot`. Hard-rule
-  floor enforced at load and update time: `ledger_shield_btc` cannot be
-  lowered below 0.20 BTC via the API.
+  floor enforced at load and update time: the BTC preservation floor
+  cannot be lowered via the API.
 - `HydraAgent.__init__`: loads `ThesisTracker`; extends session snapshot
   with a `thesis_state` key; restores on `--resume`; registers four WS
   routes (`thesis_get_state`, `thesis_update_knobs`,
@@ -1434,13 +1506,13 @@ that makes the brain smarter, not more restrictive.
   COMPARE. `ThesisPanel` renders Posture badge + transition buttons,
   Ideological Knobs (conviction floor slider, size-hint range sliders,
   posture-enforcement select, ladder/intent/Grok-budget inputs), Hard
-  Rules (ledger shield / tax friction / no-altcoin), accumulation
+  Rules (capital preservation / tax friction / no-altcoin), accumulation
   Deadline card, plus scaffolded placeholders for Document Library /
   Pending Proposals / Active Intents / Active Ladders / Thesis Timeline /
   FOMC Window with explicit "lands in Phase X" messaging.
 - `tests/test_thesis_tracker.py` (36 tests): defaults, persistence round-
   trip, snapshot/restore, knob clamping, posture updates, hard-rule
-  protection (the 0.20 BTC floor, tax-friction non-negative clamp,
+  protection (the BTC preservation floor, tax-friction non-negative clamp,
   no-altcoin toggle), and the full `HYDRA_THESIS_DISABLED` kill-switch
   contract.
 - `tests/test_thesis_drift.py`: Phase A invariant — `context_for` returns
@@ -1465,9 +1537,9 @@ that makes the brain smarter, not more restrictive.
 - `HydraAgent` init swallows any thesis construction failure and
   substitutes an inert disabled tracker so the live agent boots even
   under a corrupt or incompatible `hydra_thesis.json`.
-- `ThesisTracker.update_hard_rules` enforces the ledger-shield floor
+- `ThesisTracker.update_hard_rules` enforces the BTC preservation floor
   unconditionally — a dashboard typo or malicious WS payload cannot
-  reduce the protected BTC below 0.20.
+  reduce the protected BTC below the configured floor.
 - Partial-state JSON (missing keys from a future schema or truncated
   write) is merged against defaults on load rather than rejected, so a
   forward-compatible read path is baked in from v1.0.0.

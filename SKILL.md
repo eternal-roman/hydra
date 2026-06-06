@@ -1,8 +1,8 @@
 <!-- CLAUDE.md is the current authoritative reference. This file is the
      agent-readable trading spec (frontmatter + English narrative);
      formulas and pair lists are kept current, but architecture detail
-     (AI brain, self-tuning, reconciler, snapshots, companions, thesis
-     layer) lives in CLAUDE.md + CBP nodes, not here. -->
+     (AI brain, self-tuning, reconciler, snapshots, companions) lives in
+     CLAUDE.md, not here. -->
 ---
 name: hydra-regime-trader
 description: >

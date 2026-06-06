@@ -79,7 +79,7 @@ REVIEW_HISTORY = "review_history.jsonl"
 _CONFIG_FIELDS = {
     "name", "description", "hypothesis",
     "pairs", "initial_balance_per_pair", "candle_interval",
-    "mode", "param_overrides_json", "thesis_override_json",
+    "mode", "param_overrides_json",
     "coordinator_enabled",
     "data_source", "data_source_params_json",
     "start_time", "end_time",
@@ -261,7 +261,7 @@ class Experiment:
 
     The `review` field is opaque `Dict[str, Any]` in Phase 3 — it becomes
     `ReviewDecision` in Phase 7; storing it as a plain dict avoids a
-    circular import against hydra_reviewer (which depends on this module).
+    dependency on the (now-archived) reviewer module.
     """
 
     id: str

@@ -4,7 +4,7 @@ When v2.19 flips the default quote from USDC → USD, on-disk state
 written by pre-v2.19 agents references the old pair names. The migrator
 rewrites pair-keyed fields in the session snapshot so a USD-default
 agent can resume from a USDC-era snapshot without losing learned
-state (engine indicators, regime history, thesis intents, derivatives
+state (engine indicators, regime history, derivatives
 deques).
 
 Coverage:
@@ -89,12 +89,6 @@ def _legacy_usdc_snapshot():
             "BTC/USDC": {"oi": [1.0, 2.0]},
             "SOL/USDC": {"oi": [3.0, 4.0]},
         },
-        "thesis_state": {
-            "active_intents": [
-                {"pair_scope": ["SOL/USDC", "BTC/USDC"], "prompt_text": "..."},
-                {"pair_scope": ["SOL/BTC"], "prompt_text": "..."},
-            ],
-        },
         "userref_counter": 42,
         "portfolio_drawdown": {"peak_usd": 100.0, "max_pct": 0.05},
     }
@@ -140,14 +134,6 @@ def test_migrate_snapshot_does_not_rewrite_journal():
     migrate_snapshot(snap, source_quote="USDC", target_quote="USD")
     journal_pairs = [e["pair"] for e in snap["order_journal"]]
     assert journal_pairs == ["SOL/USDC", "SOL/BTC", "BTC/USDC"]
-
-
-def test_migrate_snapshot_rewrites_thesis_pair_scope():
-    snap = _legacy_usdc_snapshot()
-    migrate_snapshot(snap, source_quote="USDC", target_quote="USD")
-    intents = snap["thesis_state"]["active_intents"]
-    assert intents[0]["pair_scope"] == ["SOL/USD", "BTC/USD"]
-    assert intents[1]["pair_scope"] == ["SOL/BTC"]
 
 
 def test_migrate_snapshot_writes_marker():

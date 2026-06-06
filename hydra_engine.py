@@ -1328,8 +1328,7 @@ class HydraEngine:
                  momentum_rsi_upper: float = 70.0,
                  mean_reversion_rsi_buy: float = 35.0,
                  mean_reversion_rsi_sell: float = 65.0,
-                 tradable: bool = True,
-                 thesis_state_override: Optional[Dict[str, Any]] = None):
+                 tradable: bool = True):
         self.asset = asset
         self.initial_balance = initial_balance
         self.balance = initial_balance
@@ -1341,14 +1340,7 @@ class HydraEngine:
         # flips this flag per-tick based on real exchange holdings of the
         # quote currency — pairs whose quote we don't hold cannot transact.
         self.tradable = tradable
-        
-        # Build local thesis tracker if override provided
-        from hydra_thesis import ThesisTracker
-        if thesis_state_override is not None:
-            self.thesis = ThesisTracker(state=thesis_state_override, disabled=False)
-        else:
-            self.thesis = ThesisTracker(disabled=True)
-            
+
         self.position = Position(asset=asset)
         cfg = sizing or SIZING_CONSERVATIVE
         self.sizer = PositionSizer(**cfg)

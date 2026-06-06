@@ -5,6 +5,12 @@
 **Author:** Claude Opus 4.6 (design) + eternal-roman (review)
 **Date:** 2026-04-16
 
+> **v2.26.0 note:** the **AI Reviewer** (Phase 7) and **Shadow Validator**
+> (Phase 11) were archived in v2.26.0 — fully built and CI-tested but never
+> wired into production (`reviewer=None`; shadow validator never
+> instantiated). Sections describing them below are design history, not
+> current behavior. See CHANGELOG v2.26.0.
+
 ---
 
 ## 0. TL;DR

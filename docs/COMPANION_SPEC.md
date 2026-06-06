@@ -87,7 +87,7 @@ CHANGELOG.md         — entry per phase on merge
 
 ### Untouched (hard rule)
 - `hydra_engine.py` — zero changes.
-- Existing LIVE / BACKTEST / COMPARE tab components.
+- Existing LIVE / RESEARCH tab components.
 - Existing WS message envelope; companion messages use `type:"companion.*"` namespace.
 - `hydra_brain.py` — companions are not the brain.
 - Order journal schema (adds optional `userref` prefix only).
@@ -407,7 +407,7 @@ No auth, no DB, no multi-tenancy yet — just doors that open the right directio
 
 Soul JSON schema bumped from 1.0 → 1.1 for all three companions. Additive only — no legacy keys removed. The upgrade introduces a CBP-inspired graph shape inside each soul file so provenance, conditional rule activation, fallibility, and intellectual lineage are first-class.
 
-**CBP integration status.** The Context Binding Protocol is at **v0.8.1** (2026-04-17). Hydra already runs the CBP sidecar (`cbp-runner`) in production for cross-session companion memory via `hydra_companions/cbp_client.py` — see the `v2.12.0` CHANGELOG entry. The sidecar exposes the full v0.8 REST surface (`POST/PUT/PATCH/GET` for nodes, edges, frames, with ACL enforcement and idempotent upserts). For v1.1 soul graphs we still author flat JSON with CBP-shaped additions rather than serializing through the sidecar — a deliberate choice to keep the soul files hand-editable and version-controlled in `hydra_companions/souls/`. Migrating soul graphs to sidecar-backed storage is tracked as future work; when done, the hand-authored semantic-slug ids on every node and edge will be replaced by BLAKE3-derived ids via `PUT /v1/node/:id` (the serializer already exists; see `context-binding-protocol/CHANGELOG.md` v0.8.0).
+**Schema provenance (no runtime dependency).** The soul graph borrows its *shape* — provenance, conditional gates, weighted nodes/edges, intellectual lineage — from a Context-Binding-Protocol-style node/edge model, but it is **pure hand-authored flat JSON with zero runtime dependency on any CBP service.** The compiler (`hydra_companions/compiler.py`) reads these sections straight from the soul files in `hydra_companions/souls/` and renders them into the system prompt. Node/edge ids are hand-authored semantic slugs; soul graphs stay hand-editable and version-controlled by design. (The optional CBP *sidecar* that once mirrored per-companion distilled memory cross-session was removed in v2.26.0 — companion memory is now local JSONL only. See CHANGELOG v2.26.0.)
 
 ### New top-level sections (all optional; compiler gates rendering on presence)
 
@@ -476,7 +476,7 @@ New rendered blocks (per-soul, gated on field presence):
 - `tests/test_companion_router.py` — `chart_analysis` routing, Apex Grok migration, Sonnet retention for Athena (new 7 tests).
 - `tests/test_apex_tools.py` — journal filters + chronological sort, chart snapshot shape, chart summary shape + lookback clamp, allowlist grant/deny, `compose_context_blob` gating + max_bytes (new 19 tests).
 
-### Migration note
+### Storage note
 
-The CBP reference implementation shipped in v0.4 (serializer) and is now at v0.8.1 (live REST API with ACL-enforced idempotent upserts). Node and edge ids on these soul files can be rederived to BLAKE3 at any time via the sidecar's `PUT /v1/node/:id` and `PUT /v1/edge/:id` endpoints per `spec/wire-format.md` §1. Migrating soul graphs from flat JSON to sidecar-backed storage is future work; the hand-authored slugs are a transitional convenience until that decision is made. The schema itself does not need to change — `id` is already a string field in both the soul JSON and the CBP node schema (`^[0-9a-f]{8,64}$` pattern for BLAKE3 ids, human-readable accepted via the `CbpNodeInput` relaxed schema added in v0.8.1).
+Soul graphs are flat, hand-authored JSON in `hydra_companions/souls/`, read directly by `hydra_companions/compiler.py` — there is no serialization backend and no sidecar. Node/edge ids are hand-authored semantic slugs; `id` is a plain string field, so the format stays human-editable and version-controlled. (The optional CBP memory sidecar that once mirrored companion *runtime* memory was removed in v2.26.0 and never touched these soul files.)
 

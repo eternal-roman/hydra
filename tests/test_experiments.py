@@ -468,21 +468,5 @@ class TestUtilities(unittest.TestCase):
         self.assertIsNone(_parse_iso_utc("notadate"))
 
 
-class TestConfigFieldsCoverage(unittest.TestCase, _TempStoreMixin):
-    setUp = _TempStoreMixin.setUp
-    tearDown = _TempStoreMixin.tearDown
-
-    def test_thesis_override_json_round_trips(self):
-        """thesis_override_json must survive save → load cycle."""
-        override = {"posture": "defensive", "ledger_shield_btc": 0.25}
-        cfg = make_quick_config(pairs=("SOL/USD",))
-        cfg = replace(cfg, thesis_override_json=json.dumps(override))
-        exp = new_experiment(name="thesis-rt", config=cfg, hypothesis="round-trip test")
-        self.store.save(exp)
-        loaded = self.store.load(exp.id)
-        self.assertEqual(loaded.config.thesis_override_json, cfg.thesis_override_json)
-        self.assertEqual(loaded.config.thesis_override, override)
-
-
 if __name__ == "__main__":
     unittest.main()
