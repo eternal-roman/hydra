@@ -16,10 +16,17 @@ hardcoded BTC holdings figure in tracked source.
 
 ### Removed (recoverable from git history)
 - **Thesis layer** (`hydra_thesis.py`, `hydra_thesis_processor.py`): dormant —
-  advisory-only by default (no trade effect), empty state, frozen since Apr 26,
-  processor needs an unset Grok key. Removed all integration from
-  agent/brain/engine/backtest/state-migrator and the dashboard THESIS tab. Kept
-  the analyst's own one-sentence "thesis" headline (a different concept).
+  empty state, frozen since Apr 26, processor needs an unset Grok key. It never
+  *mechanically* gated or resized a trade by default (size_hint stayed 1.0; the
+  posture-cap SKIP was opt-in `binding` only — the deterministic engine/sizing/
+  execution path is bit-identical without it), but in the default advisory mode
+  it DID inject a soft context block into the analyst LLM prompt (tax-friction
+  "don't realize sub-$50 gains" + "hold 0.20 BTC" nudges). Removing it makes the
+  brain marginally freer to take small / BTC exits — the intended "profitable
+  rotation is the only constraint" behavior; the only profit caveat is the loss
+  of the tax-friction nudge against churning tiny gains. Removed all integration
+  from agent/brain/engine/backtest/state-migrator and the dashboard THESIS tab.
+  Kept the analyst's own one-sentence "thesis" headline (a different concept).
   `HYDRA_THESIS_*` env flags retired.
 - **Meme-trader / Apex** (`hydra_meme_agent.py`, `dashboard/src/MemeTab.jsx`,
   `tools/backtest_meme_*.py`, `tools/test_apex_auth.py`, `start_meme.bat`):
