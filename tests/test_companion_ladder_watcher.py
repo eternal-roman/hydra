@@ -18,9 +18,25 @@ class StubBroadcaster:
         self.msgs.append((t, p))
 
 
+class StubCLI:
+    """Mirrors the real KrakenCLI.cancel_order signature (positional *txids
+    only) so the kwargs-call regression fixed in v2.26.2 fails here the way
+    it did in production."""
+    def __init__(self, *, fail=False):
+        self.fail = fail
+        self.cancels = []
+
+    def cancel_order(self, *txids):
+        self.cancels.append(txids)
+        if self.fail:
+            return {"error": "EOrder:Unknown order"}
+        return {"count": len(txids)}
+
+
 class StubAgent:
-    def __init__(self, bc):
+    def __init__(self, bc, cli=None):
         self.broadcaster = bc
+        self.kraken_cli = cli if cli is not None else StubCLI()
 
 
 def _ladder(side="buy"):
@@ -94,6 +110,33 @@ def test_mark_fill_excludes_from_cancel():
     # only userref for unfilled rung (222) is listed
     assert 222 in msgs[0]["cancelled_userrefs"]
     assert 111 not in msgs[0]["cancelled_userrefs"]
+
+
+def test_invalidation_cancels_by_positional_txid():
+    """v2.26.2 regression: cancel_order was called with userref=/txid= kwargs,
+    raising TypeError on every rung (swallowed), so no order was ever
+    cancelled. Cancels must reach the CLI as positional txids."""
+    cli = StubCLI()
+    bc = StubBroadcaster({"pairs": {"SOL/USDC": {"price": 137.0}}})
+    w = LadderWatcher(agent=StubAgent(bc, cli=cli), broadcaster=bc)
+    w.register(_ladder(), _placed_rungs(), autostart=False)
+    w._tick()
+    assert cli.cancels == [("TX-1",), ("TX-2",)]
+    msgs = [p for t, p in bc.msgs if t == "companion.ladder.invalidation_triggered"]
+    assert msgs[0]["cancelled_userrefs"] == [111, 222]
+
+
+def test_invalidation_reports_only_acknowledged_cancels():
+    """If the exchange rejects the cancel, the userref must NOT be reported
+    as cancelled — the pre-fix code claimed success unconditionally."""
+    cli = StubCLI(fail=True)
+    bc = StubBroadcaster({"pairs": {"SOL/USDC": {"price": 137.0}}})
+    w = LadderWatcher(agent=StubAgent(bc, cli=cli), broadcaster=bc)
+    w.register(_ladder(), _placed_rungs(), autostart=False)
+    w._tick()
+    assert len(cli.cancels) == 2  # both attempted
+    msgs = [p for t, p in bc.msgs if t == "companion.ladder.invalidation_triggered"]
+    assert msgs[0]["cancelled_userrefs"] == []
 
 
 def test_deregister_removes_ladder():

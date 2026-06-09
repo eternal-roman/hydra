@@ -139,6 +139,9 @@ class CompanionCoordinator:
             self._broadcast("companion.system_note", {
                 "text": f"unknown companion {cid}",
                 "message_id": msg_id,
+                # companion_id lets the dashboard route the note to the right
+                # drawer instead of guessing via the active one (audit M4).
+                "companion_id": cid,
             })
             return
         if self._is_over_budget(uid, cid):
@@ -279,30 +282,46 @@ class CompanionCoordinator:
                 "reason": vr.reason,
             })
             return {"success": False, "error": vr.reason}
-        # Daily cap check — enforcing when live execution is on. Reading
-        # through the lock + rollover so the counter resets at UTC midnight.
-        if live_execution_enabled():
-            cap = self.router.safety_cap(proposal.companion_id, "max_trades_per_day", 0)
-            if cap > 0:
-                with self._cost_lock:
-                    self._maybe_rollover()
-                    count = self._daily_trades.get((proposal.user_id, proposal.companion_id), 0)
-                if count >= cap:
-                    self._broadcast("companion.trade.failed", {
-                        "proposal_id": pid, "companion_id": proposal.companion_id,
-                        "reason": f"daily cap hit ({count}/{cap})",
-                    })
-                    return {"success": False, "error": f"daily cap hit ({count}/{cap})"}
+        # Daily cap check-and-reserve — one lock acquisition covers the read,
+        # the cap comparison, AND the increment, so two confirms can never
+        # both observe count == cap-1 and both proceed. (WS handlers run
+        # sequentially on the single asyncio loop thread today, so the old
+        # check-then-increment was not racy in practice — this keeps it
+        # correct if handler dispatch ever moves off-thread.) The reservation
+        # is rolled back if execution raises.
+        key = (proposal.user_id, proposal.companion_id)
+        with self._cost_lock:
+            self._maybe_rollover()
+            count = self._daily_trades.get(key, 0)
+            if live_execution_enabled():
+                cap = self.router.safety_cap(proposal.companion_id, "max_trades_per_day", 0)
+                if cap > 0 and count >= cap:
+                    reason = f"daily cap hit ({count}/{cap})"
+                    # broadcast outside the lock
+                    over_cap = True
+                else:
+                    over_cap = False
+            else:
+                over_cap = False
+            if not over_cap:
+                self._daily_trades[key] = count + 1
+        if over_cap:
+            self._broadcast("companion.trade.failed", {
+                "proposal_id": pid, "companion_id": proposal.companion_id,
+                "reason": reason,
+            })
+            return {"success": False, "error": reason}
         try:
             if kind == "trade":
                 self.executor.execute_trade(proposal)
             else:
                 self.executor.execute_ladder(proposal)
-            with self._cost_lock:
-                self._maybe_rollover()
-                self._daily_trades[(proposal.user_id, proposal.companion_id)] += 1
             return {"success": True, "proposal_id": pid}
         except Exception as e:
+            with self._cost_lock:
+                # Release the reservation; max() guards the midnight edge
+                # where rollover cleared the counter mid-execution.
+                self._daily_trades[key] = max(0, self._daily_trades.get(key, 1) - 1)
             self._broadcast("companion.trade.failed", {
                 "proposal_id": pid, "companion_id": proposal.companion_id,
                 "reason": f"{type(e).__name__}: {e}",

@@ -1033,9 +1033,12 @@ class HydraBrain:
         """Market Quant (Claude). Returns (parsed_output, in_tokens, out_tokens).
 
         v2.14 prompt shape emits a `scenario` block, `indicators_used`,
-        `positioning_bias`, `size_multiplier`, `force_hold`. We defensively
-        clamp size_multiplier to [0.0, 1.5] and coerce force_hold to bool so
-        downstream stacking math stays sane even on a malformed response."""
+        `positioning_bias`, `size_multiplier`, `force_hold`. When the JSON
+        parses but carries out-of-range values, we clamp size_multiplier to
+        [0.0, 1.5] and coerce force_hold to bool so downstream stacking math
+        stays sane. When the JSON does not parse at all, this returns None
+        and deliberate() raises into the engine-only fallback — there is no
+        partial-dict recovery."""
         user_msg = self._build_analyst_prompt(state)
         if self._tool_use_enabled:
             from hydra_backtest_tool import BACKTEST_TOOLS
@@ -1062,6 +1065,12 @@ class HydraBrain:
                 parsed["size_multiplier"] = clamped
             if "force_hold" in parsed:
                 parsed["force_hold"] = bool(parsed.get("force_hold"))
+            else:
+                # Schema marks force_hold required; a truncated response that
+                # omits it must read as an explicit no-hold, loudly — not as a
+                # silent KeyError-shaped absence downstream.
+                print("  [BRAIN] Quant response omitted force_hold — defaulting to False")
+                parsed["force_hold"] = False
         return parsed, tok_in, tok_out
 
     def _run_risk_manager(self, state: Dict, analyst: Dict) -> tuple:
