@@ -1594,7 +1594,12 @@ export function HydraDashboard({ jwtToken, onLogout }) {
               return;
             }
             case "companion.system_note": {
-              const cid = activeCompanion;
+              // Route by the sender-declared companion when it's a known one;
+              // getMessageSetter falls through to Broski for unknown ids, so
+              // an unrecognized companion_id must fall back to the active
+              // drawer instead (v2.26.2, audit M4).
+              const cid = COMPANION_ORDER.includes(msg.companion_id)
+                ? msg.companion_id : activeCompanion;
               getMessageSetter(cid)((list) => [...list, {
                 id: `sys-${Date.now()}`,
                 role: "system", text: msg.text || "", display_name: null,
@@ -2728,7 +2733,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.26.1 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.26.2 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]

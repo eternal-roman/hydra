@@ -39,13 +39,16 @@ class LiveExecutor:
     # ----- public -----
 
     def execute_trade(self, p: "TradeProposal") -> dict:
-        # Per-companion daily cap check (runs late in the path so this is
-        # the final gate before the exchange).
+        # Per-companion daily cap backstop (final gate before the exchange).
+        # v2.26.2: coordinator.handle_confirm reserves the slot (increments
+        # the counter) BEFORE dispatching here, so the count this gate reads
+        # already includes the in-flight trade — block on >, not >=, or the
+        # cap-th trade would wrongly bounce.
         cap = self.coordinator.router.safety_cap(p.companion_id, "max_trades_per_day", 0)
         if cap > 0:
             k = (p.user_id, p.companion_id)
             count_today = self.coordinator._daily_trades.get(k, 0)
-            if count_today >= cap:
+            if count_today > cap:
                 self._broadcast_failed(p.proposal_id, p.companion_id,
                                        f"daily cap hit ({count_today}/{cap})")
                 return {"ok": False, "error": "daily cap hit"}
@@ -82,16 +85,17 @@ class LiveExecutor:
         return {"ok": True, "userref": userref}
 
     def execute_ladder(self, p: "LadderProposal") -> dict:
-        # Per-companion daily cap — final gate before the exchange, mirroring
-        # execute_trade(). The coordinator already pre-checks the cap for both
-        # trade and ladder confirms; this redundant check closes the
-        # concurrent-confirm TOCTOU window on the money path so a ladder cannot
-        # slip through after the coordinator's check-then-place releases its lock.
+        # Per-companion daily cap backstop, mirroring execute_trade().
+        # v2.26.2: the coordinator's check-and-reserve is now atomic (one lock
+        # over read + compare + increment), so the TOCTOU this gate originally
+        # closed is gone; it stays as defense-in-depth for any future direct
+        # dispatch path. Count includes the coordinator's in-flight
+        # reservation — block on >, not >=.
         cap = self.coordinator.router.safety_cap(p.companion_id, "max_trades_per_day", 0)
         if cap > 0:
             k = (p.user_id, p.companion_id)
             count_today = self.coordinator._daily_trades.get(k, 0)
-            if count_today >= cap:
+            if count_today > cap:
                 self._broadcast_failed(p.proposal_id, p.companion_id,
                                        f"daily cap hit ({count_today}/{cap})")
                 return {"ok": False, "error": "daily cap hit"}
@@ -108,13 +112,21 @@ class LiveExecutor:
                     order_type="limit", post_only=True, userref=userref,
                 )
             except Exception as e:
-                self._broadcast_failed(p.proposal_id, p.companion_id,
-                                       f"rung {i}: {type(e).__name__}: {e}")
-                return {"ok": False, "error": str(e), "placed_rungs": placed}
+                cancelled = self._cancel_placed_rungs(placed)
+                self._broadcast_failed(
+                    p.proposal_id, p.companion_id,
+                    f"rung {i}: {type(e).__name__}: {e} — "
+                    f"rolled back {len(cancelled)}/{len(placed)} placed rungs")
+                return {"ok": False, "error": str(e), "placed_rungs": placed,
+                        "cancelled_userrefs": cancelled}
             if result.get("error"):
-                self._broadcast_failed(p.proposal_id, p.companion_id,
-                                       f"rung {i}: {result['error']}")
-                return {"ok": False, "error": result["error"], "placed_rungs": placed}
+                cancelled = self._cancel_placed_rungs(placed)
+                self._broadcast_failed(
+                    p.proposal_id, p.companion_id,
+                    f"rung {i}: {result['error']} — "
+                    f"rolled back {len(cancelled)}/{len(placed)} placed rungs")
+                return {"ok": False, "error": result["error"], "placed_rungs": placed,
+                        "cancelled_userrefs": cancelled}
             placed.append({
                 "idx": i, "userref": userref, "size": size,
                 "limit_price": rung.limit_price, "status": "placed",
@@ -149,6 +161,32 @@ class LiveExecutor:
         return {"ok": True, "rungs": placed}
 
     # ----- helpers -----
+
+    def _cancel_placed_rungs(self, placed: list) -> list:
+        """Best-effort rollback after a mid-ladder placement failure so the
+        user is not left holding live rungs behind an 'ok: False' reply.
+        Returns userrefs of rungs whose cancel was acknowledged; rungs whose
+        cancel fails keep status 'placed' and remain visible in the payload.
+        cancel_order(*txids) is positional-txid-only — same contract as
+        LadderWatcher._invalidate."""
+        cli = self._kraken_cli()
+        cancelled = []
+        for rung in placed:
+            txid = rung.get("txid")
+            if not txid:
+                continue
+            try:
+                txids = txid if isinstance(txid, (list, tuple)) else [txid]
+                result = cli.cancel_order(*txids)
+                if isinstance(result, dict) and result.get("error"):
+                    import logging; logging.warning(
+                        f"ladder rollback cancel rejected (txid={txid}): {result['error']}")
+                    continue
+                rung["status"] = "cancelled"
+                cancelled.append(rung.get("userref"))
+            except Exception as e:
+                import logging; logging.warning(f"ladder rollback cancel failed (txid={txid}): {e}")
+        return cancelled
 
     def _kraken_cli(self):
         """Prefer an agent-attached instance; fall back to the static class."""

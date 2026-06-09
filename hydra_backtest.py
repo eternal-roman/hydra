@@ -47,7 +47,7 @@ from hydra_engine import (
     SIZING_CONSERVATIVE,  # noqa: F401 — re-exported for callers
 )
 
-HYDRA_VERSION = "2.26.1"
+HYDRA_VERSION = "2.26.2"
 
 # Reasonable defaults; enforced at config construction and runtime.
 DEFAULT_MAX_TICKS = 200_000
@@ -525,6 +525,12 @@ class SimulatedFiller:
         side = order.side
         px = order.limit_price
         c = next_candle
+
+        # Non-finite OHLC (malformed CSV row, degenerate synthetic params)
+        # would sail through the comparisons below — NaN compares False on
+        # every branch — and could fee a phantom fill. Reject explicitly.
+        if not all(math.isfinite(v) for v in (c.open, c.high, c.low, c.close)):
+            return SimulatedFill(False, reason="malformed_candle: non-finite OHLC")
 
         # Quick reject: price range didn't touch limit at all
         if side == "BUY" and c.low > px:

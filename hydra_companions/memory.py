@@ -25,6 +25,9 @@ from hydra_companions.config import MEMORY_DIR
 
 
 MEMORY_BUDGET_BYTES = 4096
+# Cap per fact so a single oversized fact can never exceed the whole
+# budget on its own (which would force eviction to wipe every other entry).
+MAX_FACT_BYTES = 1024
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,9 @@ class DistilledMemory:
         fact = (fact or "").strip()
         if not fact:
             return
+        raw = fact.encode("utf-8")
+        if len(raw) > MAX_FACT_BYTES:
+            fact = raw[:MAX_FACT_BYTES].decode("utf-8", errors="ignore") + " ...[trunc]"
         now = time.time()
         # Dedupe: if same topic + fact already present, just refresh ts.
         for i, e in enumerate(self._entries):
@@ -112,6 +118,14 @@ class DistilledMemory:
 
     def compose_block(self, max_bytes: int = MEMORY_BUDGET_BYTES) -> str:
         """Render as a compact markdown block for system-prompt injection."""
+        blob = self._render()
+        if blob and len(blob.encode("utf-8")) > max_bytes:
+            blob = blob[:max_bytes - 12] + "\n...[trunc]"
+        return blob
+
+    def _render(self) -> str:
+        """Untruncated render — budget enforcement must measure this, not
+        compose_block(), whose truncation would mask any overage."""
         if not self._entries:
             return ""
         buckets: dict[str, list[str]] = {}
@@ -122,16 +136,16 @@ class DistilledMemory:
             lines.append(f"- **{topic}**:")
             for f in buckets[topic]:
                 lines.append(f"  - {f}")
-        blob = "\n".join(lines)
-        if len(blob.encode("utf-8")) > max_bytes:
-            blob = blob[:max_bytes - 12] + "\n...[trunc]"
-        return blob
+        return "\n".join(lines)
 
     # ----- budget enforcement -----
 
     def _enforce_budget(self) -> None:
-        """LRU eviction by timestamp when memory exceeds budget."""
-        while self._entries and len(self.compose_block().encode("utf-8")) > MEMORY_BUDGET_BYTES:
+        """LRU eviction by timestamp when the untruncated render exceeds
+        budget. The >1 guard keeps the newest fact even in the pathological
+        single-oversized-entry case (MAX_FACT_BYTES makes that unreachable
+        in practice)."""
+        while len(self._entries) > 1 and len(self._render().encode("utf-8")) > MEMORY_BUDGET_BYTES:
             # drop oldest
             self._entries.sort(key=lambda e: e.ts)
             self._entries.pop(0)

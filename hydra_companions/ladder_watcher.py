@@ -114,25 +114,41 @@ class LadderWatcher:
             if invalidated:
                 self._invalidate(lad, price)
 
+    def _cli(self):
+        """Prefer an agent-attached KrakenCLI instance (testable); fall back
+        to the static class — same pattern as LiveExecutor._kraken_cli()."""
+        cli = getattr(self.agent, "kraken_cli", None)
+        if cli is not None:
+            return cli
+        from hydra_agent import KrakenCLI
+        return KrakenCLI
+
     def _invalidate(self, lad: ActiveLadder, current_price: float) -> None:
+        # v2.26.2: cancel_order(*txids) is positional-txid-only. The previous
+        # keyword calls (userref=/txid=) raised TypeError on every rung, the
+        # bare except swallowed it, and the broadcast claimed rungs were
+        # cancelled while the orders stayed live on Kraken. Userref-based
+        # cancel is not supported by the CLI wrapper; txid is the only handle.
         cancelled_userrefs = []
         try:
-            from hydra_agent import KrakenCLI
+            cli = self._cli()
             for i, rung in enumerate(lad.rungs):
                 if i in lad.filled_idx:
                     continue
                 userref = rung.get("userref")
                 txid = rung.get("txid")
-                # Prefer userref-based cancel if the CLI supports it.
+                if not txid:
+                    continue
                 try:
-                    if hasattr(KrakenCLI, "cancel_order"):
-                        if userref is not None:
-                            KrakenCLI.cancel_order(userref=int(userref))
-                        elif txid:
-                            KrakenCLI.cancel_order(txid=txid)
+                    txids = txid if isinstance(txid, (list, tuple)) else [txid]
+                    result = cli.cancel_order(*txids)
+                    if isinstance(result, dict) and result.get("error"):
+                        import logging; logging.warning(
+                            f"ladder rung cancel rejected (txid={txid}): {result['error']}")
+                        continue
+                    cancelled_userrefs.append(userref)
                 except Exception as e:
-                    import logging; logging.warning(f"Ignored exception: {e}")
-                cancelled_userrefs.append(userref)
+                    import logging; logging.warning(f"ladder rung cancel failed (txid={txid}): {e}")
         except Exception as e:
             import logging; logging.warning(f"Ignored exception: {e}")
         with self._lock:

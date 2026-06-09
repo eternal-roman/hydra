@@ -6,6 +6,77 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.26.2] — 2026-06-09
+
+Audit remediation — fixes every confirmed finding from the 2026-06-09
+7-partition audit (1 HIGH, 4 MEDIUM, LOW backlog), plus one HIGH found
+during remediation. No strategy/signal behavior changes.
+
+### Fixed — ladder cancel never reached the exchange (HIGH, found during remediation)
+- **`hydra_companions/ladder_watcher.py`**: `_invalidate()` called
+  `KrakenCLI.cancel_order(userref=…)` / `(txid=…)` — but `cancel_order(*txids)`
+  is positional-only, so every cancel raised `TypeError`, the bare except
+  swallowed it, and the invalidation broadcast claimed rungs were cancelled
+  while the orders stayed live on Kraken. Cancels now go by positional txid,
+  only exchange-acknowledged cancels are reported in `cancelled_userrefs`, and
+  the watcher prefers an agent-attached CLI (testable; the old kwargs path was
+  also invisibly shielding tests from the network).
+
+### Fixed — CI collection gap (audit H1)
+- **`.github/workflows/ci.yml`**: 13 test files (167 tests) existed under
+  `tests/` but were never run by CI — including
+  `test_agent_journal_persistence.py` (guards the PLACEMENT_FAILED
+  session-only invariant) and `test_agent_snapshot_migration_integration.py`.
+  All 13 added as an explicit pytest step.
+
+### Fixed — companion memory eviction was dead code (audit M1)
+- **`hydra_companions/memory.py`**: `_enforce_budget()` measured
+  `compose_block()`, which truncates to the 4KB budget *before* the check —
+  so eviction never fired and the JSONL grew unboundedly while the prompt
+  block silently truncated mid-fact. Eviction now measures the untruncated
+  `_render()`; new `MAX_FACT_BYTES = 1024` cap per fact. The old
+  `test_budget_enforced` passed vacuously; it now asserts eviction fires.
+
+### Fixed — mid-ladder placement failure left rungs live (audit M2)
+- **`hydra_companions/live_executor.py`**: a rung-N+1 placement failure
+  returned `ok: False` while rungs 1..N stayed resting on Kraken. New
+  `_cancel_placed_rungs()` rolls back already-placed rungs (best-effort,
+  acknowledged cancels reported as `cancelled_userrefs`).
+
+### Added — Wilder smoothing reference tests (audit M3)
+- **`tests/test_wilder_reference.py`**: engine RSI/ATR compared against an
+  independently written textbook Wilder implementation (1e-9 tolerance),
+  with a self-sensitivity guard proving the fixture distinguishes Wilder
+  from the forbidden SMA variant. Closes the gap where a silent SMA swap
+  (HIGH invariant) would have passed the range-only tests.
+
+### Fixed — companion daily-cap reservation + system-note routing (audit M4 + LOW)
+- **`hydra_companions/coordinator.py`**: `handle_confirm` daily-cap is now an
+  atomic check-and-reserve under one lock (read + compare + increment),
+  rolled back if execution raises. The old check-then-increment was safe
+  only because WS handlers are single-threaded; now it stays correct if
+  dispatch ever moves off-thread. Executor backstop gates updated to
+  reservation-inclusive semantics (`>` instead of `>=`).
+  `companion.system_note` now carries `companion_id`.
+- **`dashboard/src/App.jsx`**: system notes route by `msg.companion_id` when
+  it names a known companion, falling back to the active drawer (unknown ids
+  previously fell through `getMessageSetter` into Broski's drawer).
+
+### Fixed — LOW backlog
+- **`hydra_brain.py`**: Quant response omitting `force_hold` now defaults to
+  `False` explicitly with a loud log line; `_run_quant` docstring no longer
+  claims partial-dict recovery on unparseable JSON (it falls back).
+- **`hydra_backtest.py`**: `SimulatedFiller.try_fill` rejects non-finite OHLC
+  (NaN compares False on every gate and could fee a phantom fill).
+- **`hydra_experiments.py`**: documented why `ExperimentStore.load()` is
+  deliberately lock-free (atomic-replace writes).
+- Won't-fix (documented in `AUDIT_2026-06-09.md`): strategist cooldown log
+  line (fires once per candle tick at most), experiment `failed` status after
+  a metrics-stage exception (error is recorded in `result.errors`; status
+  semantics defensible).
+
+---
+
 ## [2.26.1] — 2026-06-06
 
 Vacuity sweep — removes dead weight, abandoned scaffolding, and false-confidence

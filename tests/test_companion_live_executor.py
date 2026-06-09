@@ -131,11 +131,14 @@ def test_trade_under_cap_is_allowed():
     assert r["ok"]
 
 
-def test_trade_blocked_when_daily_cap_reached():
-    """execute_trade refuses once the per-companion daily cap is hit."""
+def test_trade_blocked_when_daily_cap_exceeded():
+    """execute_trade refuses when the reservation-inclusive count exceeds the
+    cap. v2.26.2: the coordinator reserves the slot (count includes the
+    in-flight trade) before dispatching, so the executor backstop fires at
+    count > cap — the 7th trade against a cap of 6 sees count 7."""
     agent = StubAgent()
     coord = StubCoord()
-    coord._daily_trades = {("local", "apex"): 6}  # cap is 6
+    coord._daily_trades = {("local", "apex"): 7}  # cap is 6; 7th reserved
     ex = LiveExecutor(agent=agent, coordinator=coord)
     r = ex.execute_trade(_p())
     assert not r["ok"]
@@ -143,19 +146,68 @@ def test_trade_blocked_when_daily_cap_reached():
     assert agent.kraken_cli.buys == []  # nothing reached the exchange
 
 
-def test_ladder_blocked_when_daily_cap_reached():
-    """execute_ladder enforces the same per-companion daily cap as the final
-    pre-exchange gate (symmetry with execute_trade). At/over cap it places no
-    rungs and broadcasts a failure. Guards the audit-2026-05-28 finding that
-    the ladder path lacked the executor-level cap gate that trades had."""
+def test_trade_allowed_at_reservation_inclusive_cap():
+    """The cap-th trade (count == cap with its own reservation included)
+    must NOT bounce off the executor backstop."""
     agent = StubAgent()
     coord = StubCoord()
-    coord._daily_trades = {("local", "apex"): 6}  # cap is 6
+    coord._daily_trades = {("local", "apex"): 6}  # 6th trade, cap 6
+    ex = LiveExecutor(agent=agent, coordinator=coord)
+    r = ex.execute_trade(_p())
+    assert r["ok"]
+
+
+def test_ladder_blocked_when_daily_cap_exceeded():
+    """execute_ladder enforces the same per-companion daily cap as the final
+    pre-exchange gate (symmetry with execute_trade). Over the
+    reservation-inclusive cap it places no rungs and broadcasts a failure.
+    Guards the audit-2026-05-28 finding that the ladder path lacked the
+    executor-level cap gate that trades had."""
+    agent = StubAgent()
+    coord = StubCoord()
+    coord._daily_trades = {("local", "apex"): 7}  # cap is 6; 7th reserved
     ex = LiveExecutor(agent=agent, coordinator=coord)
     r = ex.execute_ladder(_ladder())
     assert not r["ok"]
     assert r["error"] == "daily cap hit"
     assert agent.kraken_cli.buys == []  # no rung reached the exchange
+    types = [t for t, _ in agent.broadcaster.msgs]
+    assert "companion.trade.failed" in types
+
+
+class StubCLIFailSecondRung(StubCLI):
+    """Rung 0 places fine; rung 1 is rejected. cancel_order mirrors the real
+    KrakenCLI signature (positional *txids only) so a keyword-arg regression
+    fails here the way it would in production."""
+    def __init__(self):
+        super().__init__()
+        self.cancels = []
+
+    def order_buy(self, **kw):
+        self.buys.append(kw)
+        if len(self.buys) >= 2:
+            return {"error": "EOrder:Post only order"}
+        return {"txid": [f"OQ-RUNG{len(self.buys) - 1}"], "descr": {"order": "buy"}}
+
+    def cancel_order(self, *txids):
+        self.cancels.append(txids)
+        return {"count": len(txids)}
+
+
+def test_ladder_mid_failure_cancels_placed_rungs():
+    """v2.26.2: a rung-1 placement failure must roll back rung 0 instead of
+    leaving it live on Kraken behind an ok:False reply."""
+    agent = StubAgent()
+    agent.kraken_cli = StubCLIFailSecondRung()
+    coord = StubCoord()
+    coord._daily_trades = {}
+    ex = LiveExecutor(agent=agent, coordinator=coord)
+    r = ex.execute_ladder(_ladder())
+    assert not r["ok"]
+    # rung 0's txid was cancelled, positionally
+    assert agent.kraken_cli.cancels == [("OQ-RUNG0",)]
+    assert r["cancelled_userrefs"] == [_proposal_userref("ladr-xyz", 0)]
+    assert r["placed_rungs"][0]["status"] == "cancelled"
     types = [t for t, _ in agent.broadcaster.msgs]
     assert "companion.trade.failed" in types
 

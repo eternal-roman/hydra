@@ -69,6 +69,35 @@ def test_budget_enforced():
         for i in range(200):
             m.remember(f"topic_{i % 10}", f"fact number {i} " + "x" * 80)
         assert len(m.compose_block().encode("utf-8")) <= MEMORY_BUDGET_BYTES
+        # v2.26.2: assert eviction actually fired — the pre-fix code kept all
+        # 200 entries and relied on compose_block() truncation, which made the
+        # assertion above pass vacuously.
+        assert len(m.recall()) < 200
+        assert "...[trunc]" not in m.compose_block()
+        # Oldest facts evicted, newest retained (LRU by timestamp).
+        facts = [e.fact for e in m.recall()]
+        assert any("fact number 199 " in f for f in facts)
+        assert not any("fact number 0 " in f for f in facts)
+
+
+def test_budget_survives_reload():
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        m1 = _fresh(root)
+        for i in range(200):
+            m1.remember("notes", f"fact number {i} " + "x" * 80)
+        m2 = _fresh(root)  # persisted JSONL must already be within budget
+        assert len(m2._render().encode("utf-8")) <= MEMORY_BUDGET_BYTES
+
+
+def test_oversized_fact_capped():
+    with tempfile.TemporaryDirectory() as td:
+        m = _fresh(pathlib.Path(td))
+        m.remember("dump", "y" * 10_000)
+        entries = m.recall("dump")
+        assert len(entries) == 1
+        assert len(entries[0].fact.encode("utf-8")) <= MEMORY_BUDGET_BYTES
+        assert entries[0].fact.endswith("...[trunc]")
 
 
 def test_compose_block_empty():

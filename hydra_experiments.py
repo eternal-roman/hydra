@@ -595,6 +595,11 @@ class ExperimentStore:
             _atomic_write_json(path, exp.to_dict())
 
     def load(self, exp_id: str) -> Experiment:
+        # Deliberately lock-free: save() goes through _atomic_write_json
+        # (tmp + os.replace) so a reader can never observe a partial file.
+        # Residual Windows caveat: os.replace can raise PermissionError in
+        # save() if it lands exactly during this read_text() — save's
+        # failure, not a corruption risk here.
         path = self._exp_dir / f"{exp_id}.json"
         if not path.exists():
             raise KeyError(f"experiment not found: {exp_id}")

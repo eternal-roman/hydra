@@ -163,6 +163,12 @@ jobs:
       - name: Run v2.20 research tab tests (history store + walk-forward + tape + sqlite)
         run: python -m pytest tests/test_history_store.py tests/test_history_store_migrations.py tests/test_walk_forward.py tests/test_walk_forward_folds.py tests/test_wilcoxon.py tests/test_tape_capture.py tests/test_candle_stream_callback.py tests/test_backtest_sqlite_source.py tests/test_research_ws.py tests/test_research_params_current.py tests/test_bootstrap_history.py tests/test_refresh_history.py -v
 
+      - name: Run agent/config/registry/auth tests (v2.26.2 — closes CI collection gap)
+        run: python -m pytest tests/test_agent_balance_history.py tests/test_agent_journal_persistence.py tests/test_agent_rm_features_wiring.py tests/test_agent_snapshot_migration_integration.py tests/test_auth.py tests/test_brain_rm_features_prompt.py tests/test_brain_tax_friction.py tests/test_buy_limit_offset.py tests/test_config.py tests/test_pair_registry.py tests/test_rm_features.py tests/test_state_migrator.py tests/test_ws_token_files.py -v
+
+      - name: Run Wilder smoothing reference tests (v2.26.2)
+        run: python -m pytest tests/test_wilder_reference.py -v
+
       - name: Run live-execution harness (smoke + mock)
         run: |
           python tests/live_harness/harness.py --mode smoke
