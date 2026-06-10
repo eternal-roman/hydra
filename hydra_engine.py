@@ -13,6 +13,7 @@ Usage:
 """
 
 import math
+import os
 import statistics
 import sys
 import time
@@ -1299,6 +1300,10 @@ class HydraEngine:
 
     MAX_CANDLES = 250
     CIRCUIT_BREAKER_PCT = 15.0  # Stop if drawdown exceeds 15%
+    # Friction expectancy gate (entries only; see _maybe_execute).
+    # Round trip = 2 x 16 bps Kraken maker + ~10 bps spread/adverse buffer.
+    ROUND_TRIP_FRICTION_PCT = 0.42
+    FRICTION_HURDLE_MULT = 2.0
 
     def __init__(self, initial_balance: float = 10000.0, asset: str = "BTC/USD",
                  sizing: Optional[Dict[str, float]] = None,
@@ -1314,6 +1319,7 @@ class HydraEngine:
         self.asset = asset
         self.initial_balance = initial_balance
         self.balance = initial_balance
+        self.friction_skips = 0  # BUYs skipped by the friction expectancy gate
         # `tradable` gates the execution path. When False, _maybe_execute and
         # execute_signal short-circuit without producing a Trade, and the
         # drawdown-based circuit breaker is suppressed. Signal generation in
@@ -1506,6 +1512,36 @@ class HydraEngine:
             return raw
         return min(2.0, 4.0 ** (raw - 1.0))
 
+    def _expected_move_pct(self, signal: Signal, current_price: float) -> Optional[float]:
+        """Strategy-implied expected gross move for a BUY, in percent.
+
+        Mean-reversion family (MEAN_REVERSION, GRID) targets the Bollinger
+        middle band; trend family (MOMENTUM, DEFENSIVE) uses 2x ATR%% as the
+        continuation proxy. Returns None when indicators are insufficient —
+        the friction gate fails OPEN on missing data (a data gap must not
+        silently suppress trading; staleness is R10's job, not this gate's).
+        """
+        ind = signal.indicators or {}
+        price = ind.get("price") or current_price
+        if not price or price <= 0:
+            return None
+        if signal.strategy in (Strategy.MEAN_REVERSION, Strategy.GRID):
+            mid = ind.get("bb_middle")
+            if (not mid or mid <= 0) and len(self.prices) >= 20:
+                # execute_signal() builds Signals without indicators (the
+                # brain/coordinator path) — recompute from engine history so
+                # the gate is live on EVERY execution path, not just tick().
+                mid = Indicators.bollinger_bands(list(self.prices))["middle"]
+            if mid and mid > 0:
+                return abs(mid - price) / price * 100.0
+        atr_pct = ind.get("atr_pct")
+        if (not atr_pct or atr_pct <= 0) and len(self.candles) >= 15:
+            atr = Indicators.atr(list(self.candles))
+            atr_pct = (atr / price * 100.0) if atr > 0 else None
+        if atr_pct and atr_pct > 0:
+            return 2.0 * atr_pct
+        return None
+
     def _maybe_execute(self, signal: Signal, size_multiplier: float = 1.0) -> Optional[Trade]:
         """Execute trade if signal is actionable.
 
@@ -1529,6 +1565,20 @@ class HydraEngine:
 
         current_price = self.prices[-1]
         effective_mult = self._apply_size_multiplier(size_multiplier)
+
+        # Friction expectancy gate (v2.27, entries only): a BUY whose
+        # strategy-implied expected move cannot clear a multiple of the
+        # round-trip friction (fees + spread) has negative expectancy even
+        # when the signal is "right". SKIP semantics — exits are never
+        # gated (friction on an open position is sunk; blocking the SELL
+        # would trap it). Kill switch: HYDRA_FRICTION_GATE_DISABLED=1.
+        if (signal.action == SignalAction.BUY
+                and os.environ.get("HYDRA_FRICTION_GATE_DISABLED") != "1"):
+            expected = self._expected_move_pct(signal, current_price)
+            hurdle = self.FRICTION_HURDLE_MULT * self.ROUND_TRIP_FRICTION_PCT
+            if expected is not None and expected < hurdle:
+                self.friction_skips += 1
+                return None
 
         if signal.action == SignalAction.BUY and signal.confidence >= self.sizer.min_confidence:
             size = self.sizer.calculate(signal.confidence, self.balance, current_price, self.asset)

@@ -2580,6 +2580,8 @@ class HydraAgent:
                     side = entry.get("side", "?")
                     print(f"  [HYDRA] {pair} {side} {txid}: {state} "
                           f"(vol={vol_exec:.8f}, reconciled on resume)")
+                    if state in ("FILLED", "PARTIALLY_FILLED"):
+                        self._deduct_fill_fee(self.engines.get(pair), entry)
 
                     # Previous-session fills have no pre_trade_snapshot (not
                     # persisted). We use the arithmetic fallback in
@@ -2691,8 +2693,9 @@ class HydraAgent:
         vol_exec = event.get("vol_exec") or 0.0
 
         if state_name == "FILLED":
-            # Engine was optimistically committed at placement time — no
-            # correction needed.
+            # Engine was optimistically committed at placement time — only
+            # the exchange fee (unknown until fill) remains to be applied.
+            self._deduct_fill_fee(engine, entry)
             return
         if state_name in ("CANCELLED_UNFILLED", "REJECTED"):
             if engine is not None and pre_snap is not None:
@@ -2721,6 +2724,7 @@ class HydraAgent:
                         pre_trade_snapshot=pre_snap,
                         reason=f"PARTIALLY_FILLED: {event.get('terminal_reason') or ''}",
                     )
+                    self._deduct_fill_fee(engine, entry)
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                           f"filled {vol_exec:.8f}/{placed_amount:.8f} ({ratio:.1%}) — "
                           f"engine reconciled to actual fill")
@@ -2732,6 +2736,31 @@ class HydraAgent:
                       f"filled {vol_exec:.8f}/{placed_amount:.8f} ({ratio:.1%}) — "
                       f"no engine_ref; journal carries truth but engine is stale")
             return
+
+    def _deduct_fill_fee(self, engine, entry) -> None:
+        """Fee-true accounting (v2.27): debit the exchange fee from the
+        engine's quote balance when a fill is confirmed. Pre-v2.27 the fee
+        was journaled (lifecycle.fee_quote) but never hit engine equity, so
+        live P&L was overstated by ~16 bps per fill vs the backtest, which
+        has always deducted it (SimulatedFiller). Idempotent via the
+        lifecycle.fee_applied flag — resume reconciliation may revisit an
+        entry. Kill switch: HYDRA_FEE_DEDUCTION_DISABLED=1."""
+        if os.environ.get("HYDRA_FEE_DEDUCTION_DISABLED") == "1":
+            return
+        if engine is None or not hasattr(engine, "balance") \
+                or not isinstance(entry, dict):
+            return
+        lifecycle = entry.get("lifecycle")
+        if not isinstance(lifecycle, dict) or lifecycle.get("fee_applied"):
+            return
+        try:
+            fee = float(lifecycle.get("fee_quote") or 0.0)
+        except (TypeError, ValueError):
+            return
+        if fee <= 0:
+            return
+        engine.balance -= fee
+        lifecycle["fee_applied"] = True
 
     def _run_tuner_update(self):
         """Run Bayesian parameter update across all pair trackers."""
