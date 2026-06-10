@@ -15,13 +15,23 @@ trend   Vol-targeted, long-or-flat, daily-timeframe trend ensemble on
         through the 2025-26 bear that cost B&H 38-50%.
         Evidence: .hydra-flywheel/trend_results.json (tools/trend_backtest.py).
 
-carry   Delta-neutral staked-SOL carry: long staked SOL + short PF_SOLUSD
-        perp, equal notional. Yield = staking APY + funding (received when
-        positive) - costs. Funding climate measured from real Kraken
-        Futures funding history; the bare-funding year Jun'25-Jun'26
-        averaged only 0.9% APR on SOL, so the sleeve sizes UP only when
-        the trailing funding climate is rich and otherwise stays small
-        (staking yield still clears the cash hurdle).
+carry   Delta-neutral SOL carry: long spot + equal-notional short hedge.
+        Hedge venue depends on jurisdiction (verified 2026-06-09):
+        - US accounts: Kraken Derivatives US lists CME-style dated,
+          cash-settled contracts incl. Micro Solana (MSL, 25 SOL/contract,
+          margin roughly 25-35% of notional — a $10k book needs ~2-3
+          contracts and ~$3-4k margin; questionnaire + disclosures, no
+          ECP / account minimum. ECP $10M applies to SPOT MARGIN, not
+          futures). Dated contracts have NO funding — carry = selling a
+          rich basis and rolling monthly/quarterly, so entries key off
+          annualized basis instead of funding APR (they co-move; the
+          funding history is the climate proxy).
+        - Non-US: PF_SOLUSD perp, funding-rate carry as classically built.
+        Yield = (optional bonded staking on long-horizon slices) + basis/
+        funding received - costs. The Jun'25-Jun'26 climate averaged only
+        0.9% APR gross on SOL, so the sleeve sizes UP only when the
+        trailing climate is rich; expected APY below the cash hurdle = 0%.
+        Hedge granularity note: 25 SOL/contract quantizes the US book.
         Evidence: .hydra-flywheel/carry_results.json (tools/carry_backtest.py).
 
 engine  The legacy 15m regime engine (HydraEngine). HARD-GATED at 0%:
@@ -80,7 +90,13 @@ ASSETS = ("BTC/USD", "SOL/USD")
 SPOT_FEE_BPS = 16.0          # Kraken base maker tier, per side
 PERP_FEE_BPS = 5.0           # Kraken Futures taker, per side (conservative)
 CASH_APY_PCT = 4.0           # USD/USDC rewards assumption; CLI-overridable
-SOL_STAKING_APY_PCT = 6.5    # Kraken SOL staking assumption; CLI-overridable
+# Net of Kraken's commission (25% bonded tier under $1M AUM on ~6.5-7%
+# gross). US staking (relaunched 2025, ~39 states) is BONDED ONLY: 2-4 day
+# unbond during which rewards stop and the asset cannot be sold — so the
+# carry sleeve treats staking as an optional enhancement on capital
+# committed across multiple roll cycles, never as the liquid leg. Set
+# --staking-apy 0 to model unstaked basis-carry only.
+SOL_STAKING_APY_PCT = 5.0    # CLI-overridable
 
 VOL_TARGET = 0.30            # 30% annualized per trend asset
 VOL_LOOKBACK_DAYS = 30
