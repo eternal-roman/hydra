@@ -163,6 +163,12 @@ def test_fee_zero_or_malformed_is_noop():
     assert eng.balance == 100.0
 
 
+def test_fee_floors_balance_at_zero():
+    eng = SimpleNamespace(balance=0.05)
+    _deduct(eng, _entry(0.16))
+    assert eng.balance == 0.0  # never negative — exchange reality
+
+
 def test_fee_kill_switch():
     os.environ["HYDRA_FEE_DEDUCTION_DISABLED"] = "1"
     try:

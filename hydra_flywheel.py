@@ -65,6 +65,7 @@ import json
 import math
 import os
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Tuple
@@ -388,7 +389,12 @@ class FlywheelEngine:
         try:
             raw = json.loads(open(self._state_path(), encoding="utf-8").read())
             return Ledger(**raw["ledger"])
-        except (OSError, ValueError, KeyError, TypeError):
+        except OSError:
+            return None  # no state yet — fresh start is the normal case
+        except (ValueError, KeyError, TypeError) as e:
+            # Corrupt state must not silently erase the paper track record.
+            print(f"[FLYWHEEL][WARN] {self._state_path()} unreadable ({e}); "
+                  "starting a fresh ledger", file=sys.stderr)
             return None
 
     def save_state(self, targets: Optional[Targets] = None) -> None:
@@ -504,6 +510,9 @@ def _replay(engine: FlywheelEngine, start_ts: Optional[int]) -> None:
         "from ohlc where grain_sec=3600 and pair in (?,?) group by pair)",
         ASSETS).fetchone()
     db.close()
+    if lo is None or hi is None:
+        raise SystemExit(f"no 60m candles for {ASSETS} in hydra_history.sqlite "
+                         "— run tools/refresh_history.py first")
     lo = max(lo, start_ts or lo)
     day = (lo // SECONDS_PER_DAY + 210) * SECONDS_PER_DAY  # warmup for SMA200
     n = 0

@@ -2759,7 +2759,10 @@ class HydraAgent:
             return
         if fee <= 0:
             return
-        engine.balance -= fee
+        # Floor at zero: the exchange would have rejected an order whose fee
+        # exceeded available funds, so a negative engine balance models an
+        # impossible state (and would poison downstream sizing math).
+        engine.balance = max(0.0, engine.balance - fee)
         lifecycle["fee_applied"] = True
 
     def _run_tuner_update(self):
