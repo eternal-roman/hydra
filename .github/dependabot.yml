@@ -1,19 +1,54 @@
+# Dependabot — weekly bumps with grouped PRs to avoid PR storms.
+# Security updates are also enabled at the repo level (GitHub UI/API).
 version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: "npm"
     directory: "/dashboard"
     schedule:
       interval: "weekly"
+      day: "monday"
     open-pull-requests-limit: 5
+    groups:
+      dashboard-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          # Major bumps for critical tooling stay isolated for review
+          - "eslint"
+          - "vite"
+          - "react"
+          - "react-dom"
+    ignore:
+      # Handled in coordinated upgrades when peer deps break (eslint 10 + hooks)
+      # Leave room for Dependabot to open majors as ungrouped PRs via exclude above.
 
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
     open-pull-requests-limit: 5
+    groups:
+      python-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          # Keep high-risk API-surface packages as solo PRs
+          - "openai"
+          - "anthropic"
+          - "cryptography"
+          - "jwt"
+          - "PyJWT"
+          - "passlib"
+          - "bcrypt"
