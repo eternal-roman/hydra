@@ -123,6 +123,13 @@ class Harness:
         self._set_no_dotenv_prev = os.environ.get("HYDRA_NO_DOTENV")
         os.environ["HYDRA_NO_DOTENV"] = "1"
 
+        # The harness exercises order-placement PLUMBING (journal, rollback,
+        # WS event application), not entry economics. The v2.27 friction
+        # expectancy gate would veto BUYs on the low-volatility mock tape
+        # before they ever reach _place_order, so disable it for the run.
+        self._friction_gate_prev = os.environ.get("HYDRA_FRICTION_GATE_DISABLED")
+        os.environ["HYDRA_FRICTION_GATE_DISABLED"] = "1"
+
         # Stash real on-disk state files so they don't leak into the harness.
         # HydraAgent.__init__ runs the legacy journal migrator AND merges
         # the rolling order journal, either of which would otherwise pull
@@ -170,6 +177,12 @@ class Harness:
             os.environ.pop("HYDRA_NO_DOTENV", None)
         else:
             os.environ["HYDRA_NO_DOTENV"] = prev
+        # Restore the friction-gate kill switch to its pre-isolation value.
+        prev = getattr(self, "_friction_gate_prev", None)
+        if prev is None:
+            os.environ.pop("HYDRA_FRICTION_GATE_DISABLED", None)
+        else:
+            os.environ["HYDRA_FRICTION_GATE_DISABLED"] = prev
         # Restore real time.sleep if we patched it
         if hasattr(self, "_original_time_sleep"):
             time.sleep = self._original_time_sleep

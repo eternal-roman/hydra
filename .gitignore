@@ -65,6 +65,10 @@ HYDRA_MEMORY.md
 .hydra-experiments/
 hydra_backtest_errors.log
 
+# Flywheel runtime artifacts (paper ledger state, validation evidence,
+# downloaded funding history)
+.hydra-flywheel/
+
 # Brain audit log (v2.14.0+; JSONL of every deliberate() and fallback)
 hydra_brain.jsonl
 
