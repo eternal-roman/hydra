@@ -1883,25 +1883,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
   const totalEquity = balanceUsd?.total_usd != null ? balanceUsd.total_usd : Object.values(pairs).reduce((s, p) => s + (p.portfolio?.equity || 0), 0);
   // P&L journalPnlUsd is computed below alongside the hydra-only-toggle
   // sourced fields so the toggle gate them in lockstep.
-  // Max drawdown: v2.16.2+ — agent tracks portfolio-level peak/max via
-  // balance_usd.total_usd and persists across --resume. Falls back to the
-  // legacy max-of-per-pair + in-session history if the agent hasn't sent
-  // the field yet (older snapshots, reconnect before first tick).
-  const portDD = state?.portfolio_drawdown || null;
-  const engineDD = Math.max(...Object.values(pairs).map(p => p.portfolio?.max_drawdown_pct || 0), 0);
-  let histDD = 0;
-  if (history.length > 1) {
-    let peak = history[0];
-    for (let i = 1; i < history.length; i++) {
-      if (history[i] > peak) peak = history[i];
-      const dd = peak > 0 ? ((peak - history[i]) / peak * 100) : 0;
-      if (dd > histDD) histDD = dd;
-    }
-  }
-  const maxDD = portDD?.max_pct != null ? portDD.max_pct : Math.max(engineDD, histDD);
-  const currentDD = portDD?.current_pct != null ? portDD.current_pct : 0;
-  // Engine round-trip trades (position fully closed)
-  const totalTrades = Object.values(pairs).reduce((s, p) => s + (p.performance?.total_trades || 0), 0);
+  // Engine round-trip win rate (position fully closed)
   const totalWins = Object.values(pairs).reduce((s, p) => s + (p.performance?.win_count || 0), 0);
   const totalLosses = Object.values(pairs).reduce((s, p) => s + (p.performance?.loss_count || 0), 0);
   const engineWinRate = (totalWins + totalLosses) > 0 ? (totalWins / (totalWins + totalLosses) * 100) : 0;

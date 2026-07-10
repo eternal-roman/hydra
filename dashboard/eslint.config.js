@@ -24,6 +24,11 @@ export default defineConfig([
     },
     rules: {
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      // eslint 10 + react-hooks 7.1 recommended adds purity / set-state-in-effect.
+      // Research Lab panes use intentional Date.now + schema-init effects.
+      // Track for React 19-style derived state; do not block dep upgrade.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/purity': 'off',
     },
   },
 ])
