@@ -732,7 +732,8 @@ class HydraAgent:
         Offline --demo is a no-op: never overwrite the operator's
         hydra_session_snapshot.json with synthetic state.
         """
-        if self.demo:
+        # getattr: tests may construct via object.__new__ without __init__
+        if getattr(self, "demo", False):
             return
         snapshot = {
             "version": 1,
@@ -1649,7 +1650,7 @@ class HydraAgent:
                 # so a crash mid-write cannot corrupt the file into
                 # half-valid JSON. Mirrors _save_snapshot's pattern.
                 # Offline --demo never touches the operator rolling journal.
-                if not self.demo:
+                if not getattr(self, "demo", False):
                     filtered_journal = self._journal_for_persistence()
                     if filtered_journal:
                         rolling_file = os.path.join(self._snapshot_dir, "hydra_order_journal.json")
@@ -1772,7 +1773,7 @@ class HydraAgent:
         candle_ingested = False
 
         # Offline demo: always synthesize a fresh bar (no exchange I/O).
-        if self.demo:
+        if getattr(self, "demo", False):
             engine.ingest_candle(self._make_synthetic_candle(pair, advance=True))
             candle_ingested = True
         else:
@@ -2559,7 +2560,7 @@ class HydraAgent:
         action = action_upper.lower()
         entry = self._build_journal_entry(pair, trade, state)
 
-        if self.demo:
+        if getattr(self, "demo", False):
             print(f"  [DEMO] Placing {action_upper} {amount:.8f} {pair} (synthetic fill)...")
         else:
             time.sleep(KRAKEN_REST_FLOOR_S)
@@ -2578,7 +2579,7 @@ class HydraAgent:
         # Success — paper/demo fills at the requested limit_price. Append the
         # entry as PLACED first (so it has a journal index), then synthesize
         # a FILLED execution event for the stream to emit on drain.
-        tag = "DEMO" if self.demo else "PAPER"
+        tag = "DEMO" if getattr(self, "demo", False) else "PAPER"
         print(f"  [{tag}] PLACED: {action_upper} {amount:.8f} {pair}")
         # Build a deterministic pseudo order_id for paper correlation.
         paper_order_id = f"{tag}-{int(time.time() * 1e6)}"
@@ -3661,7 +3662,8 @@ class HydraAgent:
             print(f"  |      Reason: {t['reason'][:75]}")
 
     def _print_banner(self):
-        if self.demo:
+        is_demo = getattr(self, "demo", False)
+        if is_demo:
             trade_mode = "DEMO (offline synthetic)"
         elif self.paper:
             trade_mode = "PAPER"
@@ -3672,13 +3674,13 @@ class HydraAgent:
         print("")
         print("  HYDRA - Hyper-adaptive Dynamic Regime-switching Universal Agent")
         print("  ================================================================")
-        if self.demo:
+        if is_demo:
             print(f"  Trading: {trade_mode} | Sizing: {sizing_mode} | No Kraken / no API keys")
         else:
             cli_version = KrakenCLI.version()
             print(f"  Trading: {trade_mode} | Sizing: {sizing_mode} | Kraken CLI v{cli_version} (WSL)")
         print(f"  {brain_status}")
-        if self.demo:
+        if is_demo:
             print("  Offline demo — synthetic candles, paper fills, no exchange I/O.")
         elif self.paper:
             print("  Paper trading — no real money at risk.")
@@ -3699,7 +3701,8 @@ class HydraAgent:
         # Get final balance from exchange (skip offline demo — no WSL).
         print("  FINAL EXCHANGE BALANCE:")
         print(f"  {'-'*40}")
-        if self.demo:
+        is_demo = getattr(self, "demo", False)
+        if is_demo:
             print("  (offline --demo: no exchange balance)")
             bal = {"error": "demo"}
         else:
@@ -3732,7 +3735,7 @@ class HydraAgent:
         # Export journal + competition results (ephemeral; gitignored).
         # Offline --demo skips by default so first-run smoke leaves no
         # residual files; set HYDRA_DEMO_EXPORT=1 to keep the dumps.
-        if self.demo and os.environ.get("HYDRA_DEMO_EXPORT") != "1":
+        if getattr(self, "demo", False) and os.environ.get("HYDRA_DEMO_EXPORT") != "1":
             print("\n  (offline --demo: session files not written to disk)")
         else:
             ts = int(time.time())
