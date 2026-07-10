@@ -242,6 +242,29 @@ def test_engine_gate_rejects_malformed_evidence():
         assert "no validation evidence" in why
 
 
+def test_daily_closes_missing_db_returns_empty():
+    """Empty/missing sqlite must not crash report/tick — soft empty series."""
+    with tempfile.TemporaryDirectory() as td:
+        e = FlywheelEngine(root=td)
+        assert e.daily_closes("BTC/USD") == []
+        # tick on empty history: targets compute, mark is a no-op for trend
+        t = e.tick(end_ts=1_700_000_000, persist=False)
+        assert t.cash > 0
+
+
+def test_double_tick_skips_second_mark_same_day():
+    with tempfile.TemporaryDirectory() as td:
+        e = FlywheelEngine(root=td, initial_equity=10_000.0)
+        e.ledger.carry_notional = 1_000.0
+        day_ts = 20_000 * 86_400
+        e.tick(end_ts=day_ts, persist=False)
+        days1 = e.ledger.days
+        fund1 = e.ledger.funding_collected
+        e.tick(end_ts=day_ts + 100, persist=False)  # same UTC day
+        assert e.ledger.days == days1
+        assert e.ledger.funding_collected == fund1
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

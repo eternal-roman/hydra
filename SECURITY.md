@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in HYDRA, please report it **privately**:
 
-1. **Preferred:** Use [GitHub Security Advisories](https://github.com/eternal-roman/Hydra/security/advisories/new) (private report).
+1. **Preferred:** Use [GitHub Security Advisories](https://github.com/eternal-roman/hydra/security/advisories/new) (private report).
 2. **Do NOT** open a public GitHub Issue for exploitable bugs (auth, secret leakage, order injection, RCE via WSL/CLI).
 3. **Do NOT** open pull requests containing exploit details or proof-of-concept attack code.
 

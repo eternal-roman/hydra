@@ -462,9 +462,15 @@ class FlywheelEngine:
             db = sqlite3.connect(self._history_db_path())
             try:
                 days: Dict[int, float] = {}
-                for ts, close in db.execute(
+                try:
+                    rows = db.execute(
                         "select ts, close from ohlc where pair=? and "
-                        "grain_sec=3600 order by ts", (pair,)):
+                        "grain_sec=3600 order by ts", (pair,))
+                except sqlite3.OperationalError:
+                    # Missing DB / table: empty series (report/tick fail soft;
+                    # --replay still hard-exits after an explicit overlap check).
+                    rows = []
+                for ts, close in rows:
                     days[ts // SECONDS_PER_DAY] = close
                 self._daily_cache[pair] = sorted(days.items())
             finally:

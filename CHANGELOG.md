@@ -42,6 +42,13 @@ fees, journal PnL fees, don55 parity, CI wiring, GitHub hygiene).
 - Stateful Donchian-55 in flywheel matches `tools/trend_backtest.py`
   (enter 55d high, exit 20d low) — evidence fidelity.
 - CI now runs `tests/test_flywheel.py` and `tests/test_friction_fee.py`.
+- Flywheel `daily_closes` soft-fails (empty series) when sqlite/table is
+  missing instead of raising `OperationalError` on `--report`/`--tick`.
+
+### Changed
+- **GitHub repository renamed** `eternal-roman/Hydra` → `eternal-roman/hydra`
+  (clone URL, CI badge, SECURITY advisories link). Product display name
+  remains **HYDRA**; Python modules remain `hydra_*.py`.
 
 ### Venue notes (Kraken, verified 2026-07)
 - kraken-cli **v0.3.2** remains current (local + GitHub releases).
