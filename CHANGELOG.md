@@ -6,6 +6,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.27.1] — 2026-07-10
+
+Post-release alignment patch: Dependabot safe batch + grouped update config
+so `main` and the published release tag stay in lockstep.
+
+### Changed
+- **Dependabot batch (#145):** coordinated safe bumps — GitHub Actions
+  (`checkout`/`setup-python`/`setup-node`), pip floor updates
+  (`anthropic`, `openai`, `cryptography`, `PyJWT`, `websockets`),
+  dashboard eslint 10 flat-config compat, and other routine npm pins
+  already validated on CI.
+- **Dependabot groups (#146):** weekly Monday cadence; batch routine
+  updates per ecosystem while leaving high-risk majors
+  (eslint/vite/react, openai/anthropic/crypto/jwt) as solo PRs.
+
+### Notes
+- No strategy/signal/execution behavior changes.
+- Closed superseding solo Dependabot PRs that failed dashboard build on
+  uncoordinated eslint major bumps (root cause: flat-config peer need,
+  fixed in the coordinated batch).
+
+---
+
 ## [2.27.0] — 2026-07-10
 
 Flywheel paper capital allocator + friction expectancy gate + fee-true live
