@@ -29,21 +29,48 @@
 
 ## Quick start
 
-### Requirements
+### Zero-deps offline demo (no API keys, no WSL)
 
-- Python **3.10+**
-- Node.js **18+** (dashboard)
-- WSL Ubuntu with [kraken-cli](https://github.com/krakenfx/kraken-cli) (`kraken --version` → 0.3.2+)
-- Kraken API keys (spot trade; **no withdraw**)
-
-### Install
+Clone and verify the stack without Kraken, keys, or Node:
 
 ```bash
 git clone https://github.com/eternal-roman/hydra.git
 cd hydra
 
 pip install -r requirements.txt
-cp .env.example .env   # fill keys; never commit .env
+
+# Engine synthetic walk (stdlib only)
+python hydra_engine.py
+
+# Backtest on synthetic series
+python hydra_backtest.py
+
+# Full agent loop offline — synthetic candles, paper fills, WS :8765
+python hydra_agent.py --demo --duration 30 --balance 1000
+
+# Paper flywheel report (local ledger; empty history → cash-only targets)
+python hydra_flywheel.py --report
+```
+
+`--demo` never calls kraken-cli or loads API keys. Use it to confirm the
+download works before installing WSL or provisioning keys.
+
+### Requirements (live / paper)
+
+- Python **3.10+**
+- Node.js **18+** (dashboard only)
+- WSL Ubuntu with [kraken-cli](https://github.com/krakenfx/kraken-cli) (`kraken --version` → 0.3.2+)
+- Kraken API keys for **live** trading (spot trade; **no withdraw**)
+- **Paper** still needs WSL + kraken-cli (public OHLC + `kraken paper`); no trade keys required for market data
+
+### Install (dashboard + live)
+
+```bash
+git clone https://github.com/eternal-roman/hydra.git
+cd hydra
+
+pip install -r requirements.txt
+cp .env.example .env   # fill keys for live only; never commit .env
 
 cd dashboard && npm install && cd ..
 ```
@@ -51,13 +78,16 @@ cd dashboard && npm install && cd ..
 ### Run
 
 ```bash
-# Paper (no real money)
+# Offline first-run (recommended after clone)
+python hydra_agent.py --demo --duration 30
+
+# Paper via kraken-cli (no real money; needs WSL)
 python hydra_agent.py --mode competition --paper
 
 # Live (requires keys + kraken-cli)
 python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD --balance 100
 
-# Dashboard (http://localhost:3000 → WS :8765)
+# Dashboard (http://localhost:3000 → agent WS :8765)
 cd dashboard && npm run dev
 
 # Windows launchers
@@ -65,15 +95,13 @@ start_all.bat              # agent + dashboard
 start_hydra.bat            # production: --mode competition --resume
 ```
 
-Engine demo with no keys: `python hydra_engine.py`
-
 ### Config
 
 | Source | Purpose |
 |--------|---------|
 | `.env` / `.env.example` | API keys, kill switches (`HYDRA_*`) |
 | `--pairs` / `--quote` / `HYDRA_QUOTE` | Triangle + stable quote (default USD) |
-| `--paper` / `--resume` / `--mode` | Paper vs live, snapshot resume, Kelly mode |
+| `--demo` / `--paper` / `--resume` / `--mode` | Offline demo, paper, snapshot resume, Kelly mode |
 
 Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`](SKILL.md)
 
@@ -145,11 +173,14 @@ Harness modes: `smoke` · `mock` · `validate` (read-only Kraken) · `live` (rea
 
 | Issue | Fix |
 |-------|-----|
-| `kraken: command not found` | Install kraken-cli in WSL; `source ~/.cargo/env` |
+| Want a no-keys smoke test | `python hydra_agent.py --demo --duration 30` |
+| `kraken: command not found` | Install kraken-cli in WSL; `source ~/.cargo/env` — or use `--demo` |
 | Wrong WSL distro | `wsl -l -v` → set `HYDRA_WSL_DISTRO` |
 | Port 3000 taken | Vite uses `strictPort` — free the port |
-| Dashboard disconnected | Start agent first (hosts WS on 8765) |
+| Port 8765 taken | Pass `--ws-port 8766` (or free the port) |
+| Dashboard disconnected | Start agent first (hosts WS on 8765); `--demo` works offline |
 | No trades | Confidence gate 0.65; ranging markets often HOLD |
+| Paper mode idle / 0 ticks | Needs working kraken-cli OHLC; use `--demo` without WSL |
 
 ## Disclaimer
 

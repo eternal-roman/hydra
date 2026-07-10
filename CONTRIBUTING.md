@@ -5,13 +5,16 @@ Thanks for interest in HYDRA. This project is small and safety-sensitive (live o
 ## Before you change code
 
 1. Read [`CLAUDE.md`](CLAUDE.md) invariants (spot-only, limit post-only, 2s REST, 15% breaker).
-2. Prefer paper mode for experiments: `python hydra_agent.py --paper`.
-3. Never commit `.env`, keys, journals, or snapshots.
+2. Offline smoke (no keys / no WSL): `python hydra_agent.py --demo --duration 20`.
+3. Prefer paper for exchange-shaped experiments: `python hydra_agent.py --paper` (needs kraken-cli).
+4. Never commit `.env`, keys, journals, or snapshots.
 
 ## Development
 
 ```bash
 pip install -r requirements.txt
+python hydra_agent.py --demo --duration 15          # offline agent loop
+python hydra_engine.py && python hydra_backtest.py   # pure synthetic demos
 python -m pytest tests/ -q
 python tests/live_harness/harness.py --mode mock   # if you touch execution
 cd dashboard && npm install && npm run build
