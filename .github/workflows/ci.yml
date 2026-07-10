@@ -6,10 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   engine-tests:
     name: Engine Tests (Python)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -26,7 +34,7 @@ jobs:
         # bcrypt 4.x, triggering AttributeError + fallback-path truncation errors
         # during hydra_auth init_db() on import. Pin until passlib ships a 1.7.5
         # (or we migrate off passlib).
-        run: pip install "anthropic>=0.40,<1.0" "openai>=1.50,<2.0" pytest PyJWT cryptography "passlib[bcrypt]" "bcrypt<4.0"
+        run: pip install -r requirements.txt
 
       - name: Run engine test suite
         run: python tests/test_engine.py
@@ -169,6 +177,9 @@ jobs:
       - name: Run Wilder smoothing reference tests (v2.26.2)
         run: python -m pytest tests/test_wilder_reference.py -v
 
+      - name: Run flywheel + friction/fee-true tests (v2.27)
+        run: python -m pytest tests/test_flywheel.py tests/test_friction_fee.py -v
+
       - name: Run live-execution harness (smoke + mock)
         run: |
           python tests/live_harness/harness.py --mode smoke
@@ -185,10 +196,12 @@ jobs:
           python -c "import hydra_derivatives_stream; print('hydra_derivatives_stream OK')"
           python -c "import hydra_quant_rules; print('hydra_quant_rules OK')"
           python -c "import hydra_agent; print('hydra_agent OK')"
+          python -c "import hydra_flywheel; print('hydra_flywheel OK')"
 
   dashboard-build:
     name: Dashboard Build (Node)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

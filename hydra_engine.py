@@ -1534,6 +1534,9 @@ class HydraEngine:
                 mid = Indicators.bollinger_bands(list(self.prices))["middle"]
             if mid and mid > 0:
                 return abs(mid - price) / price * 100.0
+            # MR/GRID targets the BB middle — do not fall through to ATR
+            # (wrong proxy). Fail open when mid is unavailable.
+            return None
         atr_pct = ind.get("atr_pct")
         if (not atr_pct or atr_pct <= 0) and len(self.candles) >= 15:
             atr = Indicators.atr(list(self.candles))

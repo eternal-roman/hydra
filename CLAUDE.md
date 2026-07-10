@@ -44,7 +44,7 @@ regression bug, not a style issue.
   `STABLE_QUOTES = {USD, USDC, USDT}` are first-class. v2.19 flipped
   the default from USDC → USD; opt back into USDC by passing
   `--pairs SOL/USDC,SOL/BTC,BTC/USDC`.
-- **Version pin:** v2.26.2
+- **Version pin:** v2.27.0
 
 ## Defaults (inherited)
 
@@ -105,7 +105,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | pair_registry | `hydra_pair_registry.py` | single source of truth for pair metadata; `Pair` value object + `PairRegistry` (alias resolution, kraken-pairs bootstrap); `STABLE_QUOTES`, `normalize_asset` |
 | config | `hydra_config.py` | `TradingTriangle` role-binding + `HydraConfig` boot-time facade; `add_config_args()` registers `--quote` (env `HYDRA_QUOTE`); `DEFAULT_QUOTE = "USD"` |
 | state_migrator | `hydra_state_migrator.py` | one-shot quote-currency migration of `hydra_session_snapshot.json` (engines, regime history, derivatives); preserves `order_journal` audit trail |
-| flywheel | `hydra_flywheel.py` | evidence-gated capital allocator (paper-first, NO live order path): vol-targeted daily trend ensemble + staked-SOL carry monitor + cash; legacy engine sleeve hard-gated at 0% until its real-data validation evidence clears the gate. Evidence tools: `tools/flywheel_validation.py`, `tools/carry_backtest.py`, `tools/trend_backtest.py` |
+| flywheel | `hydra_flywheel.py` | paper capital allocator (CLI-only, NO live order path, not wired into agent capital): signal-driven daily trend ensemble + carry monitor + cash; **only** the legacy engine sleeve is evidence-gated (0% until `validation_results.json` clears). Research tools: `tools/flywheel_validation.py`, `tools/carry_backtest.py`, `tools/trend_backtest.py` (trend/carry JSONs are research-only) |
 
 ## Deep specs
 

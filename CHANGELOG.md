@@ -6,6 +6,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.27.0] — 2026-07-10
+
+Flywheel paper capital allocator + friction expectancy gate + fee-true live
+accounting. Full branch audit remediated (fee resume double-count, paper
+fees, journal PnL fees, don55 parity, CI wiring, GitHub hygiene).
+
+### Added
+- **`hydra_flywheel.py`** — paper-only multi-sleeve allocator (CLI): vol-targeted
+  daily trend ensemble (BTC/USD, SOL/USD) + SOL carry climate monitor + cash.
+  **Only** the legacy engine sleeve is evidence-gated (`validation_results.json`);
+  trend/carry are signal-driven; research tools write optional JSONs.
+  No live order path (SPOT-ONLY preserved). Double-tick guard; honors
+  `HYDRA_HISTORY_DB`; `apply_targets()` is a no-op seam for future live work.
+- **Evidence / research tools:** `tools/flywheel_validation.py`,
+  `tools/trend_backtest.py`, `tools/carry_backtest.py`.
+- **Friction expectancy gate (engine):** BUY entries whose strategy-implied
+  expected move cannot clear `2 × 0.42%` round-trip friction are SKIPPED
+  (exits never gated; fail-open on missing indicators; kill switch
+  `HYDRA_FRICTION_GATE_DISABLED=1`). Active on both `tick()` and
+  `execute_signal()` paths. MR/GRID uses BB middle only (no ATR fallthrough).
+- **Fee-true accounting (agent):** confirmed fills debit `lifecycle.fee_quote`
+  once (`fee_applied`); kill switch `HYDRA_FEE_DEDUCTION_DISABLED=1`.
+  Paper fills inject 16 bps maker fee. Journal realized PnL is fee-true.
+  Resume after exchange rebalance stamps `fee_applied` without re-debiting
+  (cash already net of fees).
+- **GitHub hygiene:** `requirements.txt`, `.env.example`, Dependabot,
+  private SECURITY.md reporting path, CI flywheel/friction steps,
+  compose requires `HYDRA_JWT_SECRET` env (no hardcoded secret).
+
+### Fixed
+- Resume stale-PLACED reconcile no longer double-counts fees against
+  exchange-rebased engine balances.
+- PARTIALLY_FILLED fee debit runs even if reconcile raises.
+- Stateful Donchian-55 in flywheel matches `tools/trend_backtest.py`
+  (enter 55d high, exit 20d low) — evidence fidelity.
+- CI now runs `tests/test_flywheel.py` and `tests/test_friction_fee.py`.
+
+### Venue notes (Kraken, verified 2026-07)
+- kraken-cli **v0.3.2** remains current (local + GitHub releases).
+- MSL Micro Solana: 25 SOL/contract (CME via Kraken Derivatives US).
+- Bonded staking commission tier 1: 25% on <$1M AUM; SOL flexible + bonded
+  both exist where geographically available (state eligibility varies).
+
+---
+
 ## [2.26.2] — 2026-06-09
 
 Audit remediation — fixes every confirmed finding from the 2026-06-09

@@ -1,68 +1,56 @@
-"""HYDRA Flywheel — evidence-gated capital allocator (paper-first).
+"""HYDRA Flywheel — paper capital allocator (evidence-gated engine sleeve).
 
-The flywheel replaces "one strategy trades everything" with a portfolio of
-sleeves, each of which must EARN its capital by showing positive after-fee,
-out-of-sample evidence on real market data before a single dollar routes to
-it. Realized profits compound into the allocation base daily.
+Replaces "one strategy trades everything" with sleeves. Realized paper
+profits compound into the allocation base daily. This module is CLI-only
+and is NOT wired into HydraAgent capital routing.
 
 Sleeves
 -------
-trend   Vol-targeted, long-or-flat, daily-timeframe trend ensemble on
-        BTC/USD and SOL/USD (SMA200 + EMA20x100 majority, Donchian-55
-        minority). Validated on 11y BTC / 4.9y SOL real candles:
-        Sharpe 1.36-1.50 (BTC, full period, vol-targeted) with ~30% max
-        drawdown vs 84% for buy-and-hold; preserved capital (+/-0-13%)
-        through the 2025-26 bear that cost B&H 38-50%.
-        Evidence: .hydra-flywheel/trend_results.json (tools/trend_backtest.py).
+trend   Vol-targeted, long-or-flat, daily trend ensemble on BTC/USD and
+        SOL/USD (SMA200 + EMA20x100 majority, Donchian-55 minority —
+        stateful turtle channel, same logic as tools/trend_backtest.py).
+        Signal-driven: allocation follows live votes × vol target.
+        Offline research evidence: tools/trend_backtest.py →
+        .hydra-flywheel/trend_results.json (not read by allocate()).
 
-carry   Delta-neutral SOL carry: long spot + equal-notional short hedge.
-        Hedge venue depends on jurisdiction (verified 2026-06-09):
-        - US accounts: Kraken Derivatives US lists CME-style dated,
-          cash-settled contracts incl. Micro Solana (MSL, 25 SOL/contract,
-          margin roughly 25-35% of notional — a $10k book needs ~2-3
-          contracts and ~$3-4k margin; questionnaire + disclosures, no
-          ECP / account minimum. ECP $10M applies to SPOT MARGIN, not
-          futures). Dated contracts have NO funding — carry = selling a
-          rich basis and rolling monthly/quarterly, so entries key off
-          annualized basis instead of funding APR (they co-move; the
-          funding history is the climate proxy).
-        - Non-US: PF_SOLUSD perp, funding-rate carry as classically built.
-        Yield = (optional bonded staking on long-horizon slices) + basis/
-        funding received - costs. The Jun'25-Jun'26 climate averaged only
-        0.9% APR gross on SOL, so the sleeve sizes UP only when the
-        trailing climate is rich; expected APY below the cash hurdle = 0%.
-        Hedge granularity note: 25 SOL/contract quantizes the US book.
-        Evidence: .hydra-flywheel/carry_results.json (tools/carry_backtest.py).
+carry   Delta-neutral SOL carry model: long spot + equal-notional short.
+        Hedge venue depends on jurisdiction (verified 2026-06-09 / docs):
+        - US: Kraken Derivatives US offers CME-style dated cash-settled
+          Micro Solana (MSL, 25 SOL/contract). Dated contracts have NO
+          funding — true carry is basis roll; paper ledger still accrues
+          funding as a climate proxy (co-moves with basis richness).
+        - Non-US: PF_SOLUSD perp funding-rate carry.
+        Staking: Kraken offers bonded and flexible SOL staking where
+        available; US/state eligibility varies. Prefer bonded for multi-
+        roll committed capital (2–4d unbond; rewards stop while unbonding).
+        Net bonded default ~5% after 25% commission on <$1M AUM tier
+        (gross ~6.5–7%). Paper yield = staking + funding proxy − costs.
+        Offline research: tools/carry_backtest.py → carry_results.json
+        (not read by allocate()).
 
-engine  The legacy 15m regime engine (HydraEngine). HARD-GATED at 0%:
-        real-data validation (tools/flywheel_validation.py) showed it
-        underperforms buy-and-hold with negative Sharpe on 1y windows and
-        a 94% max drawdown on the full SOL history. It stays at 0% until
-        .hydra-flywheel/validation_results.json shows a run with
-        sharpe >= 0.8 AND max_drawdown_pct <= 35 AND total return beating
-        its own buy-and-hold benchmark. The gate reads the evidence file —
-        no human override flag exists on purpose.
+engine  Legacy 15m regime engine (HydraEngine). ONLY sleeve that is
+        evidence-gated: hard 0% until validation_results.json shows a
+        run with sharpe >= 0.8 AND max_drawdown_pct <= 35 AND return >
+        its B&H benchmark. Even then allocate() never auto-funds engine
+        — gate unlocks eligibility only; operator assigns capital later.
+        Note: tools/flywheel_validation.py currently replays at 60m
+        grain as a proxy; clearing the gate is not proof for live 15m.
 
-cash    Residual. Modeled at CASH_APY_PCT (Kraken USD/USDC rewards tier);
-        set --cash-apy 0 if balances are not enrolled.
+cash    Residual at CASH_APY_PCT (Kraken USD/USDC rewards assumption).
 
 Execution
 ---------
-Paper only, by design, in this version. `FlywheelEngine.tick()` consumes
-daily closes (and optionally a funding snapshot), marks the ledger
-fee-true (16 bps per spot side, 5 bps per perp side), and persists
-.hydra-flywheel/state.json atomically. There is deliberately NO live
-order path in this module: graduating the flywheel to live capital
-requires (a) the carry hedge leg's authenticated futures client, which
-does not exist in this codebase yet, and (b) the operator's explicit
-sign-off — see CLAUDE.md SPOT-ONLY invariant, which this module does not
-amend. The clean seam for that future work is `apply_targets()`.
+Paper only. `tick()` marks the ledger fee-true and persists
+.hydra-flywheel/state.json atomically. NO live order path. Graduating
+to live requires (a) authenticated futures client for the hedge leg
+and (b) explicit operator sign-off — SPOT-ONLY is not amended.
+`apply_targets()` is the future live seam; today it only records targets.
 
 CLI
 ---
-    python hydra_flywheel.py --report            # current targets + ledger
-    python hydra_flywheel.py --tick              # one daily paper tick
-    python hydra_flywheel.py --replay            # paper-replay full history
+    python hydra_flywheel.py --report
+    python hydra_flywheel.py --tick
+    python hydra_flywheel.py --replay
     python hydra_flywheel.py --replay --start-ts 1700000000
 
 Stdlib only (engine-side purity rule applies here too).
@@ -106,7 +94,6 @@ TREND_VARIANT_WEIGHTS = {"sma200": 0.4, "ema20x100": 0.4, "don55": 0.2}
 TREND_BUDGET = 0.50          # split across ASSETS, scaled by trend exposure
 CARRY_BUDGET_RICH = 0.35     # funding climate rich
 CARRY_BUDGET_POOR = 0.15     # staking yield alone still clears cash hurdle
-CARRY_RICH_APR_PCT = 5.0     # trailing 7d funding APR threshold
 MIN_CASH = 0.10              # never fully deployed
 REBALANCE_BAND = 0.05        # skip rebalance if |target-current| under this
 
@@ -145,6 +132,24 @@ def realized_vol_annualized(closes: List[float],
     return math.sqrt(var) * math.sqrt(365.0)
 
 
+def _don55_stateful(closes: List[float]) -> bool:
+    """Stateful turtle Donchian: enter on 55d high breakout, exit on 20d low.
+
+    Matches tools/trend_backtest.signal_stream('don55') final flag so paper
+    allocation and offline evidence share the same regime occupancy.
+    """
+    in_pos = False
+    for i in range(len(closes)):
+        if i >= 55:
+            hi55 = max(closes[i - 55:i])
+            lo20 = min(closes[i - 20:i])
+            if not in_pos and closes[i] > hi55:
+                in_pos = True
+            elif in_pos and closes[i] < lo20:
+                in_pos = False
+    return in_pos
+
+
 def trend_votes(closes: List[float]) -> Dict[str, bool]:
     """Long/flat vote per ensemble variant on a daily close series."""
     votes: Dict[str, bool] = {}
@@ -154,15 +159,7 @@ def trend_votes(closes: List[float]) -> Dict[str, bool]:
         votes["ema20x100"] = _ema_last(closes, 20) > _ema_last(closes, 100)
     else:
         votes["ema20x100"] = False
-    if len(closes) >= 56:
-        hi55 = max(closes[-56:-1])
-        lo20 = min(closes[-21:-1])
-        # stateless approximation of the breakout channel: long while price
-        # is closer to the 55d high regime than the 20d-low exit
-        votes["don55"] = closes[-1] > hi55 or (closes[-1] > lo20 and
-                                               closes[-1] > _sma(closes, 55))
-    else:
-        votes["don55"] = False
+    votes["don55"] = _don55_stateful(closes) if len(closes) >= 56 else False
     return votes
 
 
@@ -202,7 +199,8 @@ def carry_expected_apy_pct(funding_apr: Optional[float],
     (no data) is treated as 0, not as an error — the sleeve degrades to
     staking-only economics rather than flying blind into a rich estimate.
     """
-    rt_cost_pct = 2 * (SPOT_FEE_BPS + PERP_FEE_BPS) / 100.0 / 100.0 * 100.0
+    # Percent points per cycle: entry+exit of both legs (spot+perp bps).
+    rt_cost_pct = 2 * (SPOT_FEE_BPS + PERP_FEE_BPS) / 100.0
     f = funding_apr if funding_apr is not None else 0.0
     return staking_apy + f - rt_cost_pct * cycles_per_year
 
@@ -235,11 +233,20 @@ def engine_sleeve_allowed(flywheel_dir: str = FLYWHEEL_DIR) -> Tuple[bool, str]:
         runs = json.loads(open(path, encoding="utf-8").read())
     except (OSError, ValueError):
         return False, "no validation evidence on disk"
+    if not isinstance(runs, list) or not runs:
+        return False, "no validation evidence on disk"
     for run in runs:
-        s = run.get("strategy", {})
-        bh = run.get("buy_and_hold", {})
-        bench_best = max((v.get("total_pct", 0.0) for v in bh.values()),
-                         default=0.0)
+        if not isinstance(run, dict):
+            continue
+        s = run.get("strategy") or {}
+        if not isinstance(s, dict):
+            continue
+        bh = run.get("buy_and_hold") or {}
+        if not isinstance(bh, dict):
+            bh = {}
+        bench_best = max(
+            (v.get("total_pct", 0.0) for v in bh.values() if isinstance(v, dict)),
+            default=0.0)
         if (s.get("sharpe", 0.0) >= ENGINE_GATE["min_sharpe"]
                 and s.get("max_drawdown_pct", 100.0) <= ENGINE_GATE["max_drawdown_pct"]
                 and s.get("total_return_pct", -1e9) > bench_best):
@@ -310,6 +317,7 @@ class Ledger:
     peak_equity: float = 30_000.0
     max_drawdown_pct: float = 0.0
     days: int = 0
+    last_tick_day: Optional[int] = None  # UTC day index; guards double-tick
 
 
 def mark_and_rebalance(ledger: Ledger,
@@ -393,8 +401,16 @@ class FlywheelEngine:
         self.cash_apy_pct = cash_apy_pct
         self.staking_apy_pct = staking_apy_pct
         self._daily_cache: Dict[str, List[Tuple[int, float]]] = {}
+        self._last_targets: Optional[Targets] = None
         self.ledger = self._load_state() or Ledger(
             equity=initial_equity, peak_equity=initial_equity)
+
+    def _history_db_path(self) -> str:
+        """Canonical OHLC store — honors HYDRA_HISTORY_DB like agent/tools."""
+        override = os.environ.get("HYDRA_HISTORY_DB")
+        if override:
+            return override
+        return os.path.join(self.root, "hydra_history.sqlite")
 
     # -- persistence (atomic, same pattern as the agent snapshot) --
 
@@ -404,7 +420,11 @@ class FlywheelEngine:
     def _load_state(self) -> Optional[Ledger]:
         try:
             raw = json.loads(open(self._state_path(), encoding="utf-8").read())
-            return Ledger(**raw["ledger"])
+            led = raw["ledger"]
+            # Tolerate older state files missing last_tick_day.
+            known = set(Ledger.__dataclass_fields__)
+            filtered = {k: v for k, v in led.items() if k in known}
+            return Ledger(**filtered)
         except OSError:
             return None  # no state yet — fresh start is the normal case
         except (ValueError, KeyError, TypeError) as e:
@@ -422,6 +442,16 @@ class FlywheelEngine:
             json.dump(payload, f, indent=2)
         os.replace(tmp, self._state_path())
 
+    def apply_targets(self, targets: Targets) -> Targets:
+        """Future live seam: today paper-only — record targets, place nothing.
+
+        Deliberately has no Kraken/order path. Live graduation must add an
+        authenticated futures client + explicit opt-in outside this method's
+        current body.
+        """
+        self._last_targets = targets
+        return targets
+
     # -- data access --
 
     def daily_closes(self, pair: str, end_ts: Optional[int] = None) -> List[float]:
@@ -429,7 +459,7 @@ class FlywheelEngine:
         Series are cached per pair; end_ts slices the cache (used by replay
         so no tick ever sees a future candle)."""
         if pair not in self._daily_cache:
-            db = sqlite3.connect(os.path.join(self.root, "hydra_history.sqlite"))
+            db = sqlite3.connect(self._history_db_path())
             try:
                 days: Dict[int, float] = {}
                 for ts, close in db.execute(
@@ -479,6 +509,13 @@ class FlywheelEngine:
 
     def tick(self, end_ts: Optional[int] = None, persist: bool = True) -> Targets:
         targets = self.compute_targets(end_ts)
+        self.apply_targets(targets)
+        # Double-tick guard: same UTC day must not re-mark / re-accrue.
+        day_idx = (end_ts if end_ts is not None else int(time.time())) // SECONDS_PER_DAY
+        if self.ledger.last_tick_day is not None and self.ledger.last_tick_day == day_idx:
+            if persist:
+                self.save_state(targets)
+            return targets
         closes, prevs = {}, {}
         for a in ASSETS:
             series = self.daily_closes(a, end_ts)
@@ -488,6 +525,7 @@ class FlywheelEngine:
         funding_day = sum(rates) if rates else 0.0
         mark_and_rebalance(self.ledger, targets, closes, prevs, funding_day,
                            self.cash_apy_pct, self.staking_apy_pct)
+        self.ledger.last_tick_day = day_idx
         if persist:
             self.save_state(targets)
         return targets
@@ -520,14 +558,15 @@ def _replay(engine: FlywheelEngine, start_ts: Optional[int]) -> None:
     Always starts from a fresh ledger — never continues saved live state."""
     initial = engine.ledger.equity or 30_000.0
     engine.ledger = Ledger(equity=initial, peak_equity=initial)
-    db = sqlite3.connect(os.path.join(engine.root, "hydra_history.sqlite"))
+    db_path = engine._history_db_path()
+    db = sqlite3.connect(db_path)
     lo, hi = db.execute(
         "select max(lo), min(hi) from (select min(ts) lo, max(ts) hi "
         "from ohlc where grain_sec=3600 and pair in (?,?) group by pair)",
         ASSETS).fetchone()
     db.close()
     if lo is None or hi is None:
-        raise SystemExit(f"no 60m candles for {ASSETS} in hydra_history.sqlite "
+        raise SystemExit(f"no 60m candles for {ASSETS} in {db_path} "
                          "— run tools/refresh_history.py first")
     lo = max(lo, start_ts or lo)
     day = (lo // SECONDS_PER_DAY + 210) * SECONDS_PER_DAY  # warmup for SMA200

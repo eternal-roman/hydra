@@ -13,7 +13,8 @@ services:
       - ./hydra_order_journal.json:/app/hydra_order_journal.json
     environment:
       - HYDRA_PRODUCTION=1
-      - HYDRA_JWT_SECRET=super_secret_production_key_change_me
+      # Required: export a strong secret before `docker compose up`.
+      - HYDRA_JWT_SECRET=${HYDRA_JWT_SECRET:?set HYDRA_JWT_SECRET}
     restart: unless-stopped
 
   hydra-dashboard:

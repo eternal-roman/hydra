@@ -1020,8 +1020,9 @@ def scenario_W7_journal_pnl_uses_vol_exec(h: Harness):
         },
     ]
     pnl = agent._compute_pair_realized_pnl("SOL/USDC")
-    # Expected: sell_revenue (0.1 * 85) - buy_cost (0.1 * 80) = 0.5
-    assert abs(pnl - 0.5) < 1e-9, f"expected 0.5, got {pnl}"
+    # Fee-true (v2.27): sell_revenue (0.1*85) - buy_cost (0.1*80 + 0.016)
+    # - sell_fee (0.017) = 0.467. CANCELLED entry ignored.
+    assert abs(pnl - 0.467) < 1e-9, f"expected 0.467, got {pnl}"
 
 
 # ═════════════════════════════════════════════════════════════════

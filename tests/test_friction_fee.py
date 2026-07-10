@@ -179,6 +179,40 @@ def test_fee_kill_switch():
         del os.environ["HYDRA_FEE_DEDUCTION_DISABLED"]
 
 
+def test_fee_apply_debit_false_stamps_without_debit():
+    eng = SimpleNamespace(balance=100.0)
+    entry = _entry(0.16)
+    HydraAgent._deduct_fill_fee(SimpleNamespace(), eng, entry, apply_debit=False)
+    assert eng.balance == 100.0
+    assert entry["lifecycle"]["fee_applied"] is True
+    # Second call still no-op (idempotent)
+    HydraAgent._deduct_fill_fee(SimpleNamespace(), eng, entry, apply_debit=True)
+    assert eng.balance == 100.0
+
+
+def test_mr_grid_missing_bb_fails_open_not_atr():
+    """MR/GRID without bb_middle must fail open (None), not use ATR proxy."""
+    e = _engine()
+    # atr_pct alone would clear hurdle if fallthrough existed (2*1.0=2.0 > 0.84)
+    sig = _buy(Strategy.MEAN_REVERSION, {"price": 100.0, "atr_pct": 1.0})
+    assert e._expected_move_pct(sig, 100.0) is None
+    assert e._maybe_execute(sig) is not None  # fail open
+
+
+def test_realized_pnl_is_fee_true():
+    agent = SimpleNamespace(order_journal=[
+        {"pair": "SOL/USD", "side": "BUY", "placed_at": "1",
+         "lifecycle": {"state": "FILLED", "vol_exec": 10.0,
+                       "avg_fill_price": 100.0, "fee_quote": 1.6}},
+        {"pair": "SOL/USD", "side": "SELL", "placed_at": "2",
+         "lifecycle": {"state": "FILLED", "vol_exec": 10.0,
+                       "avg_fill_price": 110.0, "fee_quote": 1.76}},
+    ])
+    # Gross 100; fees 1.6+1.76 → 96.64
+    pnl = HydraAgent._compute_pair_realized_pnl(agent, "SOL/USD")
+    assert abs(pnl - 96.64) < 1e-9
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

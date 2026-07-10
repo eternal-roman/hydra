@@ -1070,6 +1070,9 @@ class HydraAgent:
                     per_pair_usd = tradable / len(self.pairs)
                     self._set_engine_balances(per_pair_usd)
                     balances_converted = True
+                    # Exchange cash is already net of fill fees. Resume
+                    # reconcile must mark fee_applied without re-debiting.
+                    self._balances_from_exchange = True
                     self.initial_balance = tradable
                     # Lock in competition starting balance on first start only —
                     # on --resume, preserve the original so cumulative P&L is correct.
@@ -2457,6 +2460,10 @@ class HydraAgent:
             pre_trade_snapshot=state.get("_pre_trade_snapshot") if isinstance(state, dict) else None,
         )
         limit_price = entry["intent"]["limit_price"] or float(trade.get("price") or 0)
+        # Paper fee-true (v2.27): inject Kraken base maker tier (16 bps) so
+        # paper PnL matches live/backtest accounting instead of fee-free fills.
+        notional = float(amount) * float(limit_price or 0.0)
+        paper_fee = notional * 0.0016 if notional > 0 else 0.0
         synthetic_fill = {
             "exec_type": "trade",
             "exec_id": f"{paper_order_id}-fill",
@@ -2465,7 +2472,7 @@ class HydraAgent:
             "last_qty": amount,
             "last_price": limit_price,
             "cost": amount * limit_price,
-            "fees": [],
+            "fees": [{"qty": paper_fee}] if paper_fee > 0 else [],
             "order_userref": paper_userref,
             "side": action,
             "symbol": pair,
@@ -2581,7 +2588,15 @@ class HydraAgent:
                     print(f"  [HYDRA] {pair} {side} {txid}: {state} "
                           f"(vol={vol_exec:.8f}, reconciled on resume)")
                     if state in ("FILLED", "PARTIALLY_FILLED"):
-                        self._deduct_fill_fee(self.engines.get(pair), entry)
+                        # When engines were rebased from exchange balances,
+                        # fees are already reflected in cash — only stamp
+                        # fee_applied. Debit only when balances are still
+                        # the optimistic snapshot / --balance fallback.
+                        apply_debit = not getattr(
+                            self, "_balances_from_exchange", False)
+                        self._deduct_fill_fee(
+                            self.engines.get(pair), entry,
+                            apply_debit=apply_debit)
 
                     # Previous-session fills have no pre_trade_snapshot (not
                     # persisted). We use the arithmetic fallback in
@@ -2724,31 +2739,36 @@ class HydraAgent:
                         pre_trade_snapshot=pre_snap,
                         reason=f"PARTIALLY_FILLED: {event.get('terminal_reason') or ''}",
                     )
-                    self._deduct_fill_fee(engine, entry)
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                           f"filled {vol_exec:.8f}/{placed_amount:.8f} ({ratio:.1%}) — "
                           f"engine reconciled to actual fill")
                 except Exception as e:
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                           f"reconcile failed ({e}); engine may be over-committed")
+                # Fee is independent of reconcile success — terminal fill
+                # still paid the exchange fee.
+                self._deduct_fill_fee(engine, entry)
             else:
                 print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                       f"filled {vol_exec:.8f}/{placed_amount:.8f} ({ratio:.1%}) — "
                       f"no engine_ref; journal carries truth but engine is stale")
             return
 
-    def _deduct_fill_fee(self, engine, entry) -> None:
+    def _deduct_fill_fee(self, engine, entry, *, apply_debit: bool = True) -> None:
         """Fee-true accounting (v2.27): debit the exchange fee from the
         engine's quote balance when a fill is confirmed. Pre-v2.27 the fee
         was journaled (lifecycle.fee_quote) but never hit engine equity, so
         live P&L was overstated by ~16 bps per fill vs the backtest, which
         has always deducted it (SimulatedFiller). Idempotent via the
         lifecycle.fee_applied flag — resume reconciliation may revisit an
-        entry. Kill switch: HYDRA_FEE_DEDUCTION_DISABLED=1."""
+        entry. Kill switch: HYDRA_FEE_DEDUCTION_DISABLED=1.
+
+        apply_debit=False: stamp fee_applied without changing balance. Used
+        when engines were rebased from exchange cash (fees already netted).
+        """
         if os.environ.get("HYDRA_FEE_DEDUCTION_DISABLED") == "1":
             return
-        if engine is None or not hasattr(engine, "balance") \
-                or not isinstance(entry, dict):
+        if not isinstance(entry, dict):
             return
         lifecycle = entry.get("lifecycle")
         if not isinstance(lifecycle, dict) or lifecycle.get("fee_applied"):
@@ -2759,10 +2779,13 @@ class HydraAgent:
             return
         if fee <= 0:
             return
-        # Floor at zero: the exchange would have rejected an order whose fee
-        # exceeded available funds, so a negative engine balance models an
-        # impossible state (and would poison downstream sizing math).
-        engine.balance = max(0.0, engine.balance - fee)
+        if apply_debit:
+            if engine is None or not hasattr(engine, "balance"):
+                return
+            # Floor at zero: the exchange would have rejected an order whose fee
+            # exceeded available funds, so a negative engine balance models an
+            # impossible state (and would poison downstream sizing math).
+            engine.balance = max(0.0, engine.balance - fee)
         lifecycle["fee_applied"] = True
 
     def _run_tuner_update(self):
@@ -3651,13 +3674,19 @@ class HydraAgent:
             if vol <= 0 or price <= 0:
                 continue
             side = entry.get("side")
+            try:
+                fee = float(lifecycle.get("fee_quote") or 0.0)
+            except (TypeError, ValueError):
+                fee = 0.0
             if side == "BUY":
-                total_buy_cost += vol * price
+                # Fee-true cost basis: exchange fee increases acquisition cost.
+                total_buy_cost += vol * price + max(0.0, fee)
                 total_buy_vol += vol
             elif side == "SELL":
                 avg_buy = (total_buy_cost / total_buy_vol) if total_buy_vol > 0 else 0
                 cost_of_sold = vol * avg_buy
-                realized += vol * price - cost_of_sold
+                # Fee-true proceeds: sell fee reduces realized P&L.
+                realized += vol * price - cost_of_sold - max(0.0, fee)
                 # Reduce the running buy pool by the sold quantity
                 total_buy_cost = max(0.0, total_buy_cost - cost_of_sold)
                 total_buy_vol = max(0.0, total_buy_vol - vol)
@@ -3718,7 +3747,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.26.2",
+            "version": "2.27.0",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
