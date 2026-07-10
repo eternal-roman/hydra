@@ -9,6 +9,7 @@ active triangle's stable quote (USD / USDC / USDT) is selected by
 Broadcasts state over WebSocket for the React dashboard.
 
 Usage:
+    python hydra_agent.py --demo --duration 30          # offline, no keys / no WSL
     python hydra_agent.py --pairs SOL/USD,SOL/BTC --balance 100 --duration 600
     python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD --interval 60
     python hydra_agent.py --pairs SOL/USDC,SOL/BTC,BTC/USDC --interval 60   # opt back into USDC
@@ -18,6 +19,7 @@ import json
 import time
 import sys
 import os
+import random
 import argparse
 import signal as sig
 import textwrap
@@ -73,6 +75,21 @@ from hydra_streams import CandleStream, TickerStream, BalanceStream, BookStream,
 # order path; every REST hit (validate, place, cancel, query) must be spaced
 # by at least this. See CLAUDE.md "2s REST floor" invariant.
 KRAKEN_REST_FLOOR_S = 2.0
+
+# Seed prices for offline --demo synthetic candles (approx market levels).
+# Used only when demo=True; never for live/paper exchange paths.
+_DEMO_SEED_PRICES: Dict[str, float] = {
+    "BTC/USD": 95_000.0,
+    "BTC/USDC": 95_000.0,
+    "BTC/USDT": 95_000.0,
+    "SOL/USD": 150.0,
+    "SOL/USDC": 150.0,
+    "SOL/USDT": 150.0,
+    "SOL/BTC": 0.00158,
+    "ETH/USD": 3_500.0,
+    "ETH/USDC": 3_500.0,
+    "ETH/BTC": 0.037,
+}
 
 # ═══════════════════════════════════════════════════════════════
 # Regime-gated BUY limit offset
@@ -175,6 +192,7 @@ class HydraAgent:
         candle_interval: int = 15,
         reset_params: bool = False,
         resume: bool = False,
+        demo: bool = False,
     ):
         self.pairs = pairs
         # Derive the active TradingTriangle from the pair list. None when
@@ -194,7 +212,9 @@ class HydraAgent:
         self.interval = interval_seconds
         self.duration = duration_seconds
         self.mode = mode
-        self.paper = paper
+        # Offline demo forces paper: synthetic market data, no WSL/Kraken/API keys.
+        self.demo = bool(demo)
+        self.paper = True if self.demo else paper
         self.candle_interval = candle_interval
         self.running = True
         self.start_time = None
@@ -202,6 +222,14 @@ class HydraAgent:
         self._snapshot_dir = os.path.dirname(os.path.abspath(__file__))
         self._completed_trades_since_update = 0  # Counter for tuner update cadence
         self._last_brain_candle_ts: Dict[str, float] = {}  # Per-pair: last candle timestamp brain evaluated
+        # Demo RNG + last synthetic mid per pair (seeded once; deterministic enough for smoke).
+        self._demo_rng = random.Random(42)
+        self._demo_prices: Dict[str, float] = {}
+        if self.demo:
+            for p in pairs:
+                self._demo_prices[p] = float(
+                    _DEMO_SEED_PRICES.get(p) or _DEMO_SEED_PRICES.get(p.upper(), 100.0)
+                )
         self._last_ai_decision: Dict[str, Dict] = {}         # Per-pair: last brain decision for dashboard persistence
         # Portfolio-level awareness
         self._current_portfolio_summary: Dict[str, Any] = {}  # Aggregate stats computed each tick
@@ -313,9 +341,12 @@ class HydraAgent:
         # regime, basis. SPOT-ONLY invariant — no orders placed on futures.
         # Kill switch: HYDRA_QUANT_INDICATORS_DISABLED=1. Failure is
         # silent — falls through to null indicators, Quant's R10 rule
-        # handles stale-data force_hold.
+        # handles stale-data force_hold. Offline --demo never starts it
+        # (no WSL/kraken-cli required for first-run smoke).
         self.derivatives_stream = None
-        if os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") != "1":
+        if self.demo:
+            print("  [QUANT] DerivativesStream skipped (offline --demo)")
+        elif os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") != "1":
             try:
                 from hydra_derivatives_stream import DerivativesStream
                 self.derivatives_stream = DerivativesStream(pairs=list(self.pairs))
@@ -366,7 +397,11 @@ class HydraAgent:
         # __init__ and silently kill the companion subsystem alongside.
         self._tape_store = None
         self._tape_capture = None
-        if os.environ.get("HYDRA_TAPE_CAPTURE", "1") == "1":
+        # Offline --demo must not write synthetic bars into the operator's
+        # hydra_history.sqlite (would pollute real tape / research data).
+        if self.demo:
+            print("  [TAPE] skipped (offline --demo; no history writes)")
+        elif os.environ.get("HYDRA_TAPE_CAPTURE", "1") == "1":
             try:
                 from hydra_history_store import HistoryStore
                 from hydra_tape_capture import TapeCapture
@@ -419,8 +454,8 @@ class HydraAgent:
         except Exception as e:
             print(f"  [MIGRATE] legacy journal migration skipped: {e}")
 
-        # Restore from snapshot if requested
-        if resume:
+        # Restore from snapshot if requested (never in offline --demo).
+        if resume and not self.demo:
             self._load_snapshot()
 
         # Merge the on-disk rolling journal into self.order_journal regardless
@@ -429,12 +464,18 @@ class HydraAgent:
         # overwrite the rolling file on the first tick after restart,
         # truncating history — this merges it in first so restarts preserve
         # full depth (bounded by ORDER_JOURNAL_CAP).
-        self._merge_order_journal()
+        # Offline --demo stays session-only so a first-run smoke never mixes
+        # with the operator's live/paper journal or pollutes it on disk.
+        if self.demo:
+            print("  [DEMO] session-only journal (no merge/persist of operator state)")
+        else:
+            self._merge_order_journal()
 
         # Reseed _userref_counter above anything we've used historically.
         # Must run AFTER both _load_snapshot (may carry a persisted counter)
         # AND _merge_order_journal (gives us the historical high-water mark).
-        self._reseed_userref_from_history()
+        if not self.demo:
+            self._reseed_userref_from_history()
 
         # Graceful shutdown
         sig.signal(sig.SIGINT, self._handle_shutdown)
@@ -686,7 +727,13 @@ class HydraAgent:
                 if e.get("lifecycle", {}).get("state") != "PLACEMENT_FAILED"][-200:]
 
     def _save_snapshot(self):
-        """Atomically save session state to disk (.tmp -> os.replace)."""
+        """Atomically save session state to disk (.tmp -> os.replace).
+
+        Offline --demo is a no-op: never overwrite the operator's
+        hydra_session_snapshot.json with synthetic state.
+        """
+        if self.demo:
+            return
         snapshot = {
             "version": 1,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1031,58 +1078,63 @@ class HydraAgent:
                 print("  [WARN] Pair constants unavailable — using hardcoded fallbacks")
             time.sleep(2)  # Rate limit
 
-        # Warmup: fetch historical candles for each pair (needed before balance conversion)
-        print("\n  [HYDRA] Warming up with historical candles...")
-        for pair in self.pairs:
-            candles = KrakenCLI.ohlc(pair, interval=self.candle_interval)
-            if candles:
-                for c in candles[-200:]:
-                    self.engines[pair].ingest_candle(c)
-                price = candles[-1]["close"]
-                print(f"  [HYDRA] {pair}: {min(len(candles), 200)} candles loaded, last price: ${price:,.4f}")
-            else:
-                print(f"  [WARN] {pair}: no historical data")
-            time.sleep(2)  # Respect rate limits
-
-        # Fetch live account balance and initialize engines from real funds
-        print("\n  [HYDRA] Checking account balance...")
-        bal = KrakenCLI.balance()
+        # Warmup: historical candles (needed before balance conversion / first tick)
         balances_converted = False
-        if "error" not in bal:
-            for asset, amount in bal.items():
-                print(f"  [HYDRA]   {asset}: {amount}")
-
-            # Cache BEFORE _set_engine_balances so v2.11.0's live-path
-            # `tradable` flag initialization can read real BTC/quote holdings.
-            # Prior ordering marked every non-USD pair info-only at startup
-            # until the first tick's _refresh_tradable_flags() self-corrected.
-            self._cached_balance = bal
-
-            if not self.paper:
-                # Compute tradable USD balance (excludes staked/bonded assets)
-                breakdown = self._compute_balance_usd(bal)
-                tradable = breakdown["tradable_usd"]
-                staked = breakdown["staked_usd"]
-                total = breakdown["total_usd"]
-                print(f"  [HYDRA] Portfolio: ${total:,.2f} total | ${tradable:,.2f} tradable | ${staked:,.2f} staked")
-
-                if tradable > 0:
-                    per_pair_usd = tradable / len(self.pairs)
-                    self._set_engine_balances(per_pair_usd)
-                    balances_converted = True
-                    # Exchange cash is already net of fill fees. Resume
-                    # reconcile must mark fee_applied without re-debiting.
-                    self._balances_from_exchange = True
-                    self.initial_balance = tradable
-                    # Lock in competition starting balance on first start only —
-                    # on --resume, preserve the original so cumulative P&L is correct.
-                    if self._competition_start_balance is None:
-                        self._competition_start_balance = tradable
-                    print(f"  [HYDRA] Engine balance set from exchange: ${per_pair_usd:,.2f} per pair")
-                else:
-                    print(f"  [WARN] No tradable balance — using --balance fallback: ${self.initial_balance:,.2f}")
+        if self.demo:
+            print("\n  [HYDRA] Warming up with synthetic candles (offline --demo)...")
+            self._warmup_demo_candles(n=80)
+            print(f"  [HYDRA] Demo balance: ${self.initial_balance:,.2f} (no exchange)")
         else:
-            print(f"  [WARN] Balance check failed: {bal} — using --balance fallback: ${self.initial_balance:,.2f}")
+            print("\n  [HYDRA] Warming up with historical candles...")
+            for pair in self.pairs:
+                candles = KrakenCLI.ohlc(pair, interval=self.candle_interval)
+                if candles:
+                    for c in candles[-200:]:
+                        self.engines[pair].ingest_candle(c)
+                    price = candles[-1]["close"]
+                    print(f"  [HYDRA] {pair}: {min(len(candles), 200)} candles loaded, last price: ${price:,.4f}")
+                else:
+                    print(f"  [WARN] {pair}: no historical data")
+                time.sleep(2)  # Respect rate limits
+
+            # Fetch live account balance and initialize engines from real funds
+            print("\n  [HYDRA] Checking account balance...")
+            bal = KrakenCLI.balance()
+            if "error" not in bal:
+                for asset, amount in bal.items():
+                    print(f"  [HYDRA]   {asset}: {amount}")
+
+                # Cache BEFORE _set_engine_balances so v2.11.0's live-path
+                # `tradable` flag initialization can read real BTC/quote holdings.
+                # Prior ordering marked every non-USD pair info-only at startup
+                # until the first tick's _refresh_tradable_flags() self-corrected.
+                self._cached_balance = bal
+
+                if not self.paper:
+                    # Compute tradable USD balance (excludes staked/bonded assets)
+                    breakdown = self._compute_balance_usd(bal)
+                    tradable = breakdown["tradable_usd"]
+                    staked = breakdown["staked_usd"]
+                    total = breakdown["total_usd"]
+                    print(f"  [HYDRA] Portfolio: ${total:,.2f} total | ${tradable:,.2f} tradable | ${staked:,.2f} staked")
+
+                    if tradable > 0:
+                        per_pair_usd = tradable / len(self.pairs)
+                        self._set_engine_balances(per_pair_usd)
+                        balances_converted = True
+                        # Exchange cash is already net of fill fees. Resume
+                        # reconcile must mark fee_applied without re-debiting.
+                        self._balances_from_exchange = True
+                        self.initial_balance = tradable
+                        # Lock in competition starting balance on first start only —
+                        # on --resume, preserve the original so cumulative P&L is correct.
+                        if self._competition_start_balance is None:
+                            self._competition_start_balance = tradable
+                        print(f"  [HYDRA] Engine balance set from exchange: ${per_pair_usd:,.2f} per pair")
+                    else:
+                        print(f"  [WARN] No tradable balance — using --balance fallback: ${self.initial_balance:,.2f}")
+            else:
+                print(f"  [WARN] Balance check failed: {bal} — using --balance fallback: ${self.initial_balance:,.2f}")
 
         # Convert engine balances from USD to quote currency for non-USD pairs
         # (e.g. SOL/BTC engine needs balance in BTC, not USD).
@@ -1125,7 +1177,8 @@ class HydraAgent:
         if not self.paper:
             self._reconcile_stale_placed()
 
-        print(f"\n  [HYDRA] Starting LIVE trading loop")
+        loop_label = "DEMO (synthetic)" if self.demo else ("PAPER" if self.paper else "LIVE")
+        print(f"\n  [HYDRA] Starting {loop_label} trading loop")
         print(f"  [HYDRA] Pairs: {', '.join(self.pairs)}")
         print(f"  [HYDRA] Interval: {self.interval}s | Duration: {self.duration}s")
         print(f"  {'='*80}")
@@ -1595,21 +1648,23 @@ class HydraAgent:
                 # no data is lost on crash. Atomic write (.tmp + os.replace)
                 # so a crash mid-write cannot corrupt the file into
                 # half-valid JSON. Mirrors _save_snapshot's pattern.
-                filtered_journal = self._journal_for_persistence()
-                if filtered_journal:
-                    rolling_file = os.path.join(self._snapshot_dir, "hydra_order_journal.json")
-                    rolling_tmp = rolling_file + ".tmp"
-                    try:
-                        with open(rolling_tmp, "w") as f:
-                            json.dump(filtered_journal, f, indent=2)
-                        os.replace(rolling_tmp, rolling_file)
-                    except Exception as e:
-                        # HF-003 fix: previously "except Exception: pass" silently
-                        # swallowed write failures (permission, disk, lock, etc.),
-                        # making logging outages invisible. Log the failure so it's
-                        # visible in stdout and in hydra_errors.log via the outer
-                        # tick-body exception handler.
-                        print(f"  [WARN] rolling journal write failed: {type(e).__name__}: {e}")
+                # Offline --demo never touches the operator rolling journal.
+                if not self.demo:
+                    filtered_journal = self._journal_for_persistence()
+                    if filtered_journal:
+                        rolling_file = os.path.join(self._snapshot_dir, "hydra_order_journal.json")
+                        rolling_tmp = rolling_file + ".tmp"
+                        try:
+                            with open(rolling_tmp, "w") as f:
+                                json.dump(filtered_journal, f, indent=2)
+                            os.replace(rolling_tmp, rolling_file)
+                        except Exception as e:
+                            # HF-003 fix: previously "except Exception: pass" silently
+                            # swallowed write failures (permission, disk, lock, etc.),
+                            # making logging outages invisible. Log the failure so it's
+                            # visible in stdout and in hydra_errors.log via the outer
+                            # tick-body exception handler.
+                            print(f"  [WARN] rolling journal write failed: {type(e).__name__}: {e}")
 
                 # Cap order journal to prevent unbounded memory growth
                 if len(self.order_journal) > self.ORDER_JOURNAL_CAP:
@@ -1645,11 +1700,69 @@ class HydraAgent:
         # Final report
         self._print_final_report()
 
-    def _fetch_and_tick(self, pair: str) -> Optional[dict]:
-        """Phase 1: Fetch latest data from Kraken and run engine tick.
+    def _demo_seed_price(self, pair: str) -> float:
+        """Return a reasonable starting mid for offline synthetic series."""
+        if pair in self._demo_prices:
+            return self._demo_prices[pair]
+        key = pair.upper() if isinstance(pair, str) else pair
+        if key in _DEMO_SEED_PRICES:
+            return float(_DEMO_SEED_PRICES[key])
+        # Heuristic from base/quote roles when pair not in the seed table.
+        base = key.split("/")[0] if "/" in key else key
+        quote = key.split("/")[1] if "/" in key else "USD"
+        if base == "BTC" and quote in STABLE_QUOTES:
+            return 95_000.0
+        if base == "SOL" and quote in STABLE_QUOTES:
+            return 150.0
+        if base == "SOL" and quote == "BTC":
+            return 0.00158
+        return 100.0
 
-        Prefers WS candle stream when healthy (zero API calls, zero sleep).
-        Falls back to REST ohlc() → REST ticker() when stream is unavailable.
+    def _make_synthetic_candle(self, pair: str, *, advance: bool = True) -> dict:
+        """One OHLC bar for offline --demo. Advances mid when advance=True."""
+        mid = self._demo_prices.get(pair) or self._demo_seed_price(pair)
+        if advance:
+            # Mild random walk; keep prices strictly positive.
+            shock = self._demo_rng.gauss(0.00015, 0.004)
+            mid = max(mid * (1.0 + shock), mid * 1e-6 if mid > 0 else 1e-6)
+            self._demo_prices[pair] = mid
+        # Unique timestamps so engine.ingest_candle does not dedupe-in-place forever.
+        ts = time.time() + self._demo_rng.random() * 0.001
+        wiggle = abs(self._demo_rng.gauss(0, 0.002))
+        high = mid * (1.0 + wiggle + 0.001)
+        low = mid * (1.0 - wiggle - 0.001)
+        open_ = mid * (1.0 + self._demo_rng.gauss(0, 0.0005))
+        return {
+            "open": open_,
+            "high": max(high, open_, mid, low),
+            "low": min(low, open_, mid, high),
+            "close": mid,
+            "volume": 50.0 + self._demo_rng.random() * 200.0,
+            "timestamp": ts,
+        }
+
+    def _warmup_demo_candles(self, n: int = 80) -> None:
+        """Seed engines with synthetic history so indicators leave warmup."""
+        for pair in self.pairs:
+            if pair not in self._demo_prices:
+                self._demo_prices[pair] = self._demo_seed_price(pair)
+            # Space synthetic history backwards so timestamps are ordered.
+            base_ts = time.time() - n * float(self.candle_interval) * 60.0
+            for i in range(n):
+                c = self._make_synthetic_candle(pair, advance=True)
+                c["timestamp"] = base_ts + (i + 1) * float(self.candle_interval) * 60.0
+                self.engines[pair].ingest_candle(c)
+            last = self._demo_prices[pair]
+            print(f"  [HYDRA] {pair}: {n} synthetic candles, last price: {last:,.6g}")
+
+    def _fetch_and_tick(self, pair: str) -> Optional[dict]:
+        """Phase 1: Fetch latest data and run engine tick.
+
+        Prefers WS candle stream when a real push is available.
+        Offline --demo synthesizes the next bar (no WSL / keys).
+        Paper mode falls back to REST ohlc when the paper stream has no
+        push payload (paper streams report healthy but never deliver).
+        Live mode without a candle returns None (stream recovery path).
 
         When a brain is active, uses generate_only=True so the engine produces
         signals without executing trades internally. This prevents engine state
@@ -1658,37 +1771,52 @@ class HydraAgent:
         engine = self.engines[pair]
         candle_ingested = False
 
-        # Try WS candle stream first (no API call, no rate-limit sleep)
-        ws_candle = (
-            self.candle_stream.latest_candle(pair)
-            if self.candle_stream.healthy
-            else None
-        )
-        if ws_candle:
-            # Convert WS ohlc shape to engine candle format.
-            # WS uses interval_begin (ISO) or timestamp; parse to epoch.
-            ts_raw = ws_candle.get("interval_begin") or ws_candle.get("timestamp")
-            if isinstance(ts_raw, str):
-                try:
-                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
-                except Exception:
-                    ts = time.time()
-            elif isinstance(ts_raw, (int, float)):
-                ts = float(ts_raw)
-            else:
-                ts = time.time()
-            engine.ingest_candle({
-                "open": ws_candle.get("open", 0),
-                "high": ws_candle.get("high", 0),
-                "low": ws_candle.get("low", 0),
-                "close": ws_candle.get("close", 0),
-                "volume": ws_candle.get("volume", 0),
-                "timestamp": ts,
-            })
+        # Offline demo: always synthesize a fresh bar (no exchange I/O).
+        if self.demo:
+            engine.ingest_candle(self._make_synthetic_candle(pair, advance=True))
             candle_ingested = True
+        else:
+            # Try WS candle stream first (no API call, no rate-limit sleep)
+            ws_candle = (
+                self.candle_stream.latest_candle(pair)
+                if self.candle_stream.healthy
+                else None
+            )
+            if ws_candle:
+                # Convert WS ohlc shape to engine candle format.
+                # WS uses interval_begin (ISO) or timestamp; parse to epoch.
+                ts_raw = ws_candle.get("interval_begin") or ws_candle.get("timestamp")
+                if isinstance(ts_raw, str):
+                    try:
+                        ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        ts = time.time()
+                elif isinstance(ts_raw, (int, float)):
+                    ts = float(ts_raw)
+                else:
+                    ts = time.time()
+                engine.ingest_candle({
+                    "open": ws_candle.get("open", 0),
+                    "high": ws_candle.get("high", 0),
+                    "low": ws_candle.get("low", 0),
+                    "close": ws_candle.get("close", 0),
+                    "volume": ws_candle.get("volume", 0),
+                    "timestamp": ts,
+                })
+                candle_ingested = True
+
+            # Paper streams short-circuit healthy=True but never push candles.
+            # Fall back to REST so --paper actually advances the engines.
+            if not candle_ingested and self.paper:
+                candles = KrakenCLI.ohlc(pair, interval=self.candle_interval)
+                if candles:
+                    # Prefer the newest bar; re-ingest updates in place by ts.
+                    engine.ingest_candle(candles[-1])
+                    candle_ingested = True
+                time.sleep(KRAKEN_REST_FLOOR_S)
 
         if not candle_ingested:
-            # CandleStream unavailable — skip tick for this pair.
+            # Live: CandleStream unavailable — skip tick for this pair.
             # Engine retains previous candle data from warmup / prior ticks.
             return None
 
@@ -2419,36 +2547,41 @@ class HydraAgent:
         return True
 
     def _place_paper_order(self, pair: str, trade: dict, state: dict) -> bool:
-        """Place a paper-mode order via `kraken paper`. Writes a journal
-        entry that skips the WS-stream lifecycle entirely — paper trades
-        synthesize their own terminal fill event which the next tick's
-        drain_events() applies exactly like a real fill. This keeps the
-        single code path between live and paper.
+        """Place a paper-mode order.
+
+        Offline --demo synthesizes a fill immediately (no kraken-cli).
+        Paper mode with WSL uses `kraken paper` then synthesizes the same
+        fill event. Journal + ExecutionStream path stays identical so live
+        and paper share one lifecycle.
         """
         amount = trade["amount"]
         action_upper = trade["action"].upper()
         action = action_upper.lower()
         entry = self._build_journal_entry(pair, trade, state)
 
-        time.sleep(2)
-        print(f"  [PAPER] Placing {action_upper} {amount:.8f} {pair} (paper limit)...")
-        if action == "buy":
-            result = KrakenCLI.paper_buy(pair, amount, order_type="limit")
+        if self.demo:
+            print(f"  [DEMO] Placing {action_upper} {amount:.8f} {pair} (synthetic fill)...")
         else:
-            result = KrakenCLI.paper_sell(pair, amount, order_type="limit")
-        if "error" in result:
-            print(f"  [PAPER] FAILED: {result['error']}")
-            self._finalize_failed_entry(
-                entry, terminal_reason=f"paper_failed:{result['error']}",
-            )
-            return False
+            time.sleep(KRAKEN_REST_FLOOR_S)
+            print(f"  [PAPER] Placing {action_upper} {amount:.8f} {pair} (paper limit)...")
+            if action == "buy":
+                result = KrakenCLI.paper_buy(pair, amount, order_type="limit")
+            else:
+                result = KrakenCLI.paper_sell(pair, amount, order_type="limit")
+            if "error" in result:
+                print(f"  [PAPER] FAILED: {result['error']}")
+                self._finalize_failed_entry(
+                    entry, terminal_reason=f"paper_failed:{result['error']}",
+                )
+                return False
 
-        # Success — paper fills at the requested limit_price. Append the
+        # Success — paper/demo fills at the requested limit_price. Append the
         # entry as PLACED first (so it has a journal index), then synthesize
         # a FILLED execution event for the stream to emit on drain.
-        print(f"  [PAPER] PLACED: {action_upper} {amount:.8f} {pair}")
+        tag = "DEMO" if self.demo else "PAPER"
+        print(f"  [{tag}] PLACED: {action_upper} {amount:.8f} {pair}")
         # Build a deterministic pseudo order_id for paper correlation.
-        paper_order_id = f"PAPER-{int(time.time() * 1e6)}"
+        paper_order_id = f"{tag}-{int(time.time() * 1e6)}"
         paper_userref = self._next_userref()
         entry["order_ref"] = {"order_userref": paper_userref, "order_id": paper_order_id}
         self.order_journal.append(entry)
@@ -3528,16 +3661,26 @@ class HydraAgent:
             print(f"  |      Reason: {t['reason'][:75]}")
 
     def _print_banner(self):
-        trade_mode = "PAPER" if self.paper else "LIVE"
+        if self.demo:
+            trade_mode = "DEMO (offline synthetic)"
+        elif self.paper:
+            trade_mode = "PAPER"
+        else:
+            trade_mode = "LIVE"
         sizing_mode = self.mode.upper()
         brain_status = f"AI Brain: {self.brain.provider}/{self.brain.model}" if self.brain else "AI Brain: DISABLED (no API key)"
         print("")
         print("  HYDRA - Hyper-adaptive Dynamic Regime-switching Universal Agent")
         print("  ================================================================")
-        cli_version = KrakenCLI.version()
-        print(f"  Trading: {trade_mode} | Sizing: {sizing_mode} | Kraken CLI v{cli_version} (WSL)")
+        if self.demo:
+            print(f"  Trading: {trade_mode} | Sizing: {sizing_mode} | No Kraken / no API keys")
+        else:
+            cli_version = KrakenCLI.version()
+            print(f"  Trading: {trade_mode} | Sizing: {sizing_mode} | Kraken CLI v{cli_version} (WSL)")
         print(f"  {brain_status}")
-        if self.paper:
+        if self.demo:
+            print("  Offline demo — synthetic candles, paper fills, no exchange I/O.")
+        elif self.paper:
             print("  Paper trading — no real money at risk.")
         else:
             print("  WARNING: Real trades with real money. Dead man's switch active.")
@@ -3553,10 +3696,14 @@ class HydraAgent:
             print(engine.get_performance_report())
             print()
 
-        # Get final balance from exchange
+        # Get final balance from exchange (skip offline demo — no WSL).
         print("  FINAL EXCHANGE BALANCE:")
         print(f"  {'-'*40}")
-        bal = KrakenCLI.balance()
+        if self.demo:
+            print("  (offline --demo: no exchange balance)")
+            bal = {"error": "demo"}
+        else:
+            bal = KrakenCLI.balance()
         if "error" not in bal:
             for asset, amount in bal.items():
                 print(f"    {asset}: {amount}")
@@ -3582,19 +3729,22 @@ class HydraAgent:
         else:
             print(f"\n  No orders placed during session.")
 
-        # Export journal
-        ts = int(time.time())
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        log_file = os.path.join(base_dir, f"hydra_orders_{ts}.json")
-        try:
-            with open(log_file, "w") as f:
-                json.dump(self.order_journal, f, indent=2)
-            print(f"\n  Order journal exported to: {log_file}")
-        except Exception as e:
-            print(f"\n  [WARN] Could not export order journal: {e}")
-
-        # Export competition results summary
-        self._export_competition_results(base_dir, ts)
+        # Export journal + competition results (ephemeral; gitignored).
+        # Offline --demo skips by default so first-run smoke leaves no
+        # residual files; set HYDRA_DEMO_EXPORT=1 to keep the dumps.
+        if self.demo and os.environ.get("HYDRA_DEMO_EXPORT") != "1":
+            print("\n  (offline --demo: session files not written to disk)")
+        else:
+            ts = int(time.time())
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            log_file = os.path.join(base_dir, f"hydra_orders_{ts}.json")
+            try:
+                with open(log_file, "w") as f:
+                    json.dump(self.order_journal, f, indent=2)
+                print(f"\n  Order journal exported to: {log_file}")
+            except Exception as e:
+                print(f"\n  [WARN] Could not export order journal: {e}")
+            self._export_competition_results(base_dir, ts)
 
         print(f"\n  Past performance does not guarantee future results. Not financial advice.")
         print(f"  {'='*80}")
@@ -3747,7 +3897,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.27.1",
+            "version": "2.27.2",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
@@ -3797,7 +3947,9 @@ def main():
                         choices=["conservative", "competition"],
                         help="Sizing mode: conservative (quarter-Kelly) or competition (half-Kelly)")
     parser.add_argument("--paper", action="store_true",
-                        help="Use paper trading (no API keys needed, no real money)")
+                        help="Paper trading via kraken-cli paper (no real money; still needs WSL + kraken-cli)")
+    parser.add_argument("--demo", action="store_true",
+                        help="Offline demo: synthetic candles + paper fills; no API keys, no WSL, no exchange I/O")
     parser.add_argument("--reset-params", action="store_true",
                         help="Reset learned tuning parameters to defaults")
     parser.add_argument("--resume", action="store_true",
@@ -3812,9 +3964,12 @@ def main():
     if args.interval is not None:
         tick_interval = args.interval
     else:
-        tick_interval = 300
+        # Demo defaults to a fast loop so first-run smoke feels alive.
+        tick_interval = 2 if args.demo else 300
 
-    if args.paper:
+    if args.demo:
+        print(f"\n  HYDRA — Offline DEMO mode. Synthetic market data; no keys / no WSL.")
+    elif args.paper:
         print(f"\n  HYDRA — Paper trading mode. No real money at risk.")
     else:
         print(f"\n  WARNING: HYDRA will execute REAL trades on Kraken.")
@@ -3822,9 +3977,9 @@ def main():
     print(f"  Mode: {args.mode} | Balance ref: ${args.balance}")
     print(f"  Candles: {candle_interval}m | Tick: {tick_interval}s")
     print(f"  Duration: {args.duration}s")
-    if not args.paper:
+    if not args.paper and not args.demo:
         print(f"  Dead man's switch will be active.")
-    if args.user:
+    if args.user and not args.demo:
         import hydra_auth
         keys = hydra_auth.get_api_keys_by_username(args.user, "kraken")
         if keys:
@@ -3842,10 +3997,11 @@ def main():
         duration_seconds=args.duration,
         ws_port=args.ws_port,
         mode=args.mode,
-        paper=args.paper,
+        paper=args.paper or args.demo,
         candle_interval=candle_interval,
         reset_params=args.reset_params,
-        resume=args.resume,
+        resume=args.resume and not args.demo,
+        demo=args.demo,
     )
     agent.run()
 

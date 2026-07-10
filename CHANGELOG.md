@@ -6,6 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.27.2] — 2026-07-10
+
+Offline `--demo` first-run path for public clones: full agent loop without
+API keys, WSL, or kraken-cli. Session-isolated so demos never pollute the
+operator journal/snapshot/history tape.
+
+### Added
+- **`python hydra_agent.py --demo`** — synthetic candles + synthetic paper
+  fills; no exchange I/O. Default tick interval 2s when `--interval` omitted.
+- **`tests/test_demo_mode.py`** — offline isolation + synthetic tick/fill
+  coverage; wired into CI with flywheel/friction tests.
+- README / CONTRIBUTING zero-deps quick start (engine, backtest, agent demo).
+
+### Fixed
+- **Paper mode 0-tick bug:** paper streams report healthy but never push
+  candles; `_fetch_and_tick` now falls back to REST OHLC so engines advance.
+- Demo does not merge/write `hydra_order_journal.json`, does not overwrite
+  `hydra_session_snapshot.json`, skips tape capture and derivatives stream.
+- Session file exports skipped in demo unless `HYDRA_DEMO_EXPORT=1`.
+
+### Notes
+- No live order-path behavior change; SPOT-ONLY / limit post-only / 15% breaker
+  unchanged. Paper still needs WSL + kraken-cli for real market data.
+
+---
+
 ## [2.27.1] — 2026-07-10
 
 Post-release alignment patch: Dependabot safe batch + grouped update config

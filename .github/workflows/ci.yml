@@ -178,7 +178,7 @@ jobs:
         run: python -m pytest tests/test_wilder_reference.py -v
 
       - name: Run flywheel + friction/fee-true tests (v2.27)
-        run: python -m pytest tests/test_flywheel.py tests/test_friction_fee.py -v
+        run: python -m pytest tests/test_flywheel.py tests/test_friction_fee.py tests/test_demo_mode.py -v
 
       - name: Run live-execution harness (smoke + mock)
         run: |

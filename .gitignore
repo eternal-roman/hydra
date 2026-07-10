@@ -47,6 +47,7 @@ hydra_trades_live.json
 hydra_trades_live.json.harness_stash
 hydra_trades_live.json.migrated
 competition_results_*.json
+hydra_orders_*.json
 hydra_params_*.json
 hydra_session_snapshot.json
 hydra_session_snapshot.json.tmp
@@ -105,3 +106,6 @@ docs/superpowers/
 
 # Fix-bug scope manifest (ephemeral, per-session)
 .fix-bug-scope.json
+
+# Test runtime scratch (offline demo unit tests)
+tests/_demo_tmp/
