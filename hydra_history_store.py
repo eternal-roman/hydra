@@ -1,8 +1,7 @@
-"""HYDRA Canonical Historical Store — SQLite-backed OHLC + regression snapshots.
+"""HYDRA Canonical Historical Store — SQLite-backed OHLC only.
 
-Stdlib-only. Single source of truth for backtest history (Mode B) and
-release regression snapshots (Mode C). See
-docs/superpowers/specs/2026-04-26-research-tab-redesign-design.md.
+Stdlib-only. Single source of truth for backtest / research candle history
+(`meta` + `ohlc`). Not a store for trading decisions or release snapshots.
 """
 from __future__ import annotations
 
@@ -114,8 +113,7 @@ class HistoryStore:
                 existing = None  # fresh DB, meta table not created yet
             if existing is not None and existing != SCHEMA_VERSION:
                 if existing == 1 and SCHEMA_VERSION == 2:
-                    # 1 -> 2: additive bump (originally the regression_* tables,
-                    # since removed in the release-regression cleanup).
+                    # 1 -> 2 was additive; no row backfill required.
                     pass
                 else:
                     raise RuntimeError(
@@ -124,10 +122,9 @@ class HistoryStore:
                         f"the DB to rebuild from archive."
                     )
             conn.executescript(_SCHEMA)
-            # Mode C release-regression was removed (self-comparison gate;
-            # Wilcoxon always p=1). Orphan tables are not trustworthy decision
-            # records and are not backtest inputs — drop if present. Canonical
-            # store retains only meta + ohlc (raw candles).
+            # Drop legacy release-gate tables if an old DB still has them.
+            # That feature was removed (self-comparison / never-actionable);
+            # this DB is raw OHLC only.
             for _orphan in (
                 "regression_trade",
                 "regression_equity_curve",

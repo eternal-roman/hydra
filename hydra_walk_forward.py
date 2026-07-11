@@ -1,11 +1,9 @@
 """HYDRA Walk-Forward Methodology — anchored quarterly folds + paired
 Wilcoxon signed-rank test. Stdlib only.
 
-This is the kernel for both:
-- Mode B (hypothesis lab):     baseline params vs candidate params
-- Mode C (release regression): prior version snapshot vs current branch
-
-See docs/superpowers/specs/2026-04-26-research-tab-redesign-design.md §4.6.
+Kernel for the Research Lab hypothesis path: baseline params vs candidate
+params across OOS folds. (The old release-gate / snapshot path was removed
+as inert self-comparison.)
 """
 from __future__ import annotations
 
