@@ -22,7 +22,8 @@ What this module does:
 
 The 9 rules (v2.14+; options-related R6/R9 deferred):
   R1: funding_bps_8h > 80 AND engine=BUY  → force_hold (crowded long top)
-  R2: funding_bps_8h < -80 AND engine=SELL → force_hold (capitulation low)
+  R2: funding_bps_8h < -80 AND engine=BUY  → force_hold (bounce-chase into
+      capitulation). Spot SELL is a long close — never force_held by R2.
   R3: oi_price_regime = short_squeeze AND engine=BUY → size *= 0.5
   R4: oi_price_regime = liquidation_cascade AND engine=SELL → size *= 0.5
   R5: basis_apr_pct > 40 AND engine=BUY → size *= 0.7 (euphoric contango)
@@ -80,7 +81,13 @@ MULTIPLIER_CLAMP_MIN = 0.0
 # When force_hold blocks a SELL on a profitable position, QFE lets the
 # exit through if no squeeze catalyst contradicts it.  This is NOT a
 # stop-loss — it only fires when the position is in profit.
-QFE_MIN_PROFIT_PCT = 0.5  # minimum unrealized P&L % to trigger QFE
+# Minimum unrealized mark P&L % to trigger QFE. Raised to 1.0% (PR-A / A5)
+# so profit exits clear ~0.42% round-trip maker friction with margin.
+# Pre-v2.28 floor was 0.5% (could fire fee-flat after costs).
+QFE_MIN_PROFIT_PCT = 1.0
+# Documented fee drag for logs / fee-true reporting (not double-counted
+# into the floor — the 1.0% floor already embeds ~0.42% RT + cushion).
+QFE_FEE_DRAG_PCT = 0.42
 
 
 @dataclass
@@ -178,11 +185,16 @@ def apply_rules(
             result.force_hold = True
             result.force_hold_reason = reason
 
-    # R2: funding < -80 bps + SELL → force_hold (shorting capitulation)
-    if funding is not None and funding < -FUNDING_EXTREME_BPS and engine_action == "SELL":
-        reason = f"R2: funding {funding:.1f} bps/8h < -{FUNDING_EXTREME_BPS:.0f}; shorting capitulation"
+    # R2 (PR-A / A4): funding < -80 bps + BUY → force_hold (bounce-chase
+    # into capitulation). Spot SELL closes a long — it is NOT opening a
+    # short — so extreme negative funding must never trap long inventory.
+    if funding is not None and funding < -FUNDING_EXTREME_BPS and engine_action == "BUY":
+        reason = (
+            f"R2: funding {funding:.1f} bps/8h < -{FUNDING_EXTREME_BPS:.0f}; "
+            f"buying into capitulation bounce"
+        )
         result.triggered.append(RuleFiring(
-            rule_id="R2", name="funding_extreme_short",
+            rule_id="R2", name="funding_extreme_capitulation_buy",
             effect="force_hold", size_mult=FORCE_HOLD_MULT, reason=reason,
         ))
         if not result.force_hold:
@@ -280,28 +292,26 @@ def evaluate_qfe(
     if position_size <= 0:
         return QfeResult()
 
+    # Fee-aware floor (PR-A / A5): 1.0% raw mark floor embeds RT friction
+    # cushion (~0.42% maker RT). Below this, "profit" may be fee-flat.
     if unrealized_pnl_pct < QFE_MIN_PROFIT_PCT:
         return QfeResult()
+    fee_true_pnl = unrealized_pnl_pct - QFE_FEE_DRAG_PCT
 
-    # Squeeze catalyst filter — if any of these are present, the hold
-    # may be protecting a gain that's about to get bigger.  Don't exit.
+    # Squeeze catalyst filter — deterministic only. LLM positioning_bias
+    # alone must not hard-block QFE (audit: sticky "crowded_short" trapped
+    # winners). Bias may still appear in the snapshot for post-mortems.
     oi_regime = qi.get("oi_price_regime", "")
     funding = qi.get("funding_bps_8h")
     cvd = qi.get("cvd_divergence_sigma")
 
-    # 1. Shorts are crowded — squeeze likely, long benefits from holding
-    if bias == "crowded_short":
-        return QfeResult(
-            trigger_values=_qfe_snapshot(qi, unrealized_pnl_pct, bias),
-        )
-
-    # 2. Squeeze already in progress (OI falling + price rising)
+    # 1. Squeeze already in progress (OI falling + price rising)
     if oi_regime == "short_squeeze":
         return QfeResult(
             trigger_values=_qfe_snapshot(qi, unrealized_pnl_pct, bias),
         )
 
-    # 3. Extreme short funding + accumulation flow = squeeze setup
+    # 2. Extreme short funding + accumulation flow = squeeze setup
     if (funding is not None and funding < -FUNDING_EXTREME_BPS
             and cvd is not None and cvd > CVD_DIVERGENCE_SIGMA_THRESHOLD):
         return QfeResult(
@@ -310,8 +320,9 @@ def evaluate_qfe(
 
     triggers = _qfe_snapshot(qi, unrealized_pnl_pct, bias)
     reason = (
-        f"R11/QFE: profit {unrealized_pnl_pct:+.2f}% > "
-        f"{QFE_MIN_PROFIT_PCT:.1f}% floor, no squeeze catalyst; "
+        f"R11/QFE: profit {unrealized_pnl_pct:+.2f}% "
+        f"(fee-true ~{fee_true_pnl:+.2f}% after {QFE_FEE_DRAG_PCT:.2f}% drag) ≥ "
+        f"{QFE_MIN_PROFIT_PCT:.1f}% floor, no deterministic squeeze; "
         f"releasing SELL through force_hold"
     )
     return QfeResult(

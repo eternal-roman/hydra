@@ -1108,15 +1108,17 @@ class TestHaltedEngineExecuteSignal:
         result = eng.execute_signal("BUY", 0.75, "test")
         assert result is None, f"expected None from halted execute_signal, got {result!r}"
 
-    def test_execute_signal_sell_returns_none_when_halted(self):
+    def test_execute_signal_sell_allowed_when_halted_with_position(self):
+        """PR-A: circuit breaker must not trap inventory — SELL still runs."""
         eng = self._halted_engine()
-        # Even with a position, halted engine must refuse
         eng.position.size = 0.1
         eng.position.avg_entry = 95.0
         result = eng.execute_signal("SELL", 0.80, "test")
-        assert result is None, f"expected None from halted execute_signal, got {result!r}"
+        assert result is not None, "halted engine must allow risk-reducing SELL"
+        assert result.action == "SELL"
+        assert eng.position.size == 0.0
 
-    def test_halted_engine_no_position_change(self):
+    def test_halted_engine_buy_no_position_change(self):
         eng = self._halted_engine()
         pre_balance = eng.balance
         pre_position = eng.position.size

@@ -683,10 +683,13 @@ class SignalGenerator:
         # In TREND_DOWN, RSI oscillates 20-45; old threshold of 50 never fired.
         # Threshold 40 captures bounce exits before dead-cat-bounce failure.
         if rsi > 40:
-            # Severity: 0 at RSI 40, 1 at RSI 100. Range = 60 (100 - threshold).
+            # PR-A / A3: floor conf at 0.65 so dashboard + any residual conf
+            # gates agree with "SELL when RSI>40". Execution no longer needs
+            # min_confidence on SELL (A2), but operators reading conf still
+            # saw soft 0.50–0.64 SELLs that looked non-actionable.
+            # Severity: 0 at RSI 40 → conf 0.65; 1 at RSI 100 → conf 0.90.
             rsi_severity = (rsi - 40.0) / 60.0
-            # Range: BASE(0.50) + severity(0.40) = 0.90
-            conf = min(0.90, BASE + rsi_severity * 0.40)
+            conf = min(0.90, 0.65 + rsi_severity * 0.25)
             return Signal(
                 action=SignalAction.SELL,
                 confidence=conf,
@@ -1456,6 +1459,31 @@ class HydraEngine:
         self.tick_count += 1
 
         if self.halted:
+            # PR-A: breaker stops new risk but must not freeze inventory.
+            # With an open position, emit SELL (and execute unless generate_only)
+            # so the agent brain path can also complete the flatten.
+            flatten_trade = None
+            if self.position.size > 0 and self.prices:
+                flatten_sig = Signal(
+                    action=SignalAction.SELL,
+                    confidence=1.0,
+                    reason=f"HALT FLATTEN: {self.halt_reason}",
+                    strategy=Strategy.DEFENSIVE,
+                )
+                if not generate_only:
+                    flatten_trade = self._maybe_execute(flatten_sig)
+                # After execute, position may be flat → report HOLD; else SELL.
+                if self.position.size > 0:
+                    out_sig = flatten_sig
+                else:
+                    out_sig = Signal(
+                        action=SignalAction.HOLD, confidence=0.0,
+                        reason=f"HALTED (flat): {self.halt_reason}",
+                        strategy=Strategy.DEFENSIVE,
+                    )
+                return self._build_state(
+                    Regime.VOLATILE, Strategy.DEFENSIVE, out_sig, flatten_trade,
+                )
             return self._build_state(
                 Regime.VOLATILE,
                 Strategy.DEFENSIVE,
@@ -1548,11 +1576,13 @@ class HydraEngine:
     def _maybe_execute(self, signal: Signal, size_multiplier: float = 1.0) -> Optional[Trade]:
         """Execute trade if signal is actionable.
 
-        HF-002 fix: refuse to execute on a halted engine. Previously, only
-        tick() checked the halted flag (early return at line 866-868); callers
-        that invoked execute_signal() directly (e.g., the swap handler at
-        hydra_agent.py:1337) would bypass the halt check. This adds defense-
-        in-depth so every execution path respects halt state.
+        Halt policy (PR-A / exit guarantees):
+          * BUY is refused while ``halted`` — circuit breaker stops new risk.
+          * SELL is **allowed** while halted when ``position.size > 0`` so the
+            breaker cannot trap inventory through further mark-to-market loss.
+          * Entries still require ``min_confidence``; exits do **not** (A2) —
+            Kelly sizes entries, full-close on any SELL once a position exists
+            and is above ordermin.
 
         Informational-only engines (tradable=False) never produce a Trade
         — the agent-level guard (real quote-currency balance) flipped the
@@ -1561,9 +1591,13 @@ class HydraEngine:
         """
         if not self.tradable:
             return None
-        if self.halted:
-            return None
         if not self.prices:
+            return None
+
+        # Halt blocks new risk only. Risk-reducing SELLs must still run.
+        if self.halted and signal.action != SignalAction.SELL:
+            return None
+        if self.halted and signal.action == SignalAction.SELL and self.position.size <= 0:
             return None
 
         current_price = self.prices[-1]
@@ -1621,18 +1655,13 @@ class HydraEngine:
                 self.trades.append(trade)
                 return trade
 
-        elif (signal.action == SignalAction.SELL and self.position.size > 0
-              and signal.confidence >= self.sizer.min_confidence):
-            # Fix 6: full-close on any SELL signal that passes min_confidence.
-            # Previously a binary 50/50 split at conf=0.7 left partial positions
-            # that were awkward to re-close — the 50% branch even fell through
-            # to "force full close" when the half-sell would land below
-            # ordermin or leave dust, proving the surrounding code found the
-            # binary split inconvenient.
-            # Symmetry principle: Kelly governs ENTRY size (continuous). If we
-            # decided to exit, we exit fully. Spot-only: "half-exit" doesn't
-            # reduce risk proportionally, it just delays the exit until the
-            # next signal at potentially worse prices.
+        elif signal.action == SignalAction.SELL and self.position.size > 0:
+            # PR-A / A2: exits ignore min_confidence. Kelly sizes entries only.
+            # Soft DEFENSIVE/GRID SELL signals (conf 0.50–0.64) must still
+            # flatten inventory — reusing the entry floor trapped longs in
+            # TREND_DOWN (audit: 200+ dead SELLs / SOL-year).
+            # Full-close only (Fix 6): spot-only half-exit does not reduce risk
+            # proportionally; it delays the exit to a worse price.
             base_asset = self.asset.split("/")[0] if "/" in self.asset else self.asset
             min_size = self.sizer.MIN_ORDER_SIZE.get(base_asset, 0.02)
             if self.position.size < min_size:
