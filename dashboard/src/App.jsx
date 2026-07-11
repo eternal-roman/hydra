@@ -451,7 +451,7 @@ function CompanionMessage({ m, theme }) {
       }}>
         {m.text}
         {m.error && (
-          <div style={{ marginTop: 6, fontSize: 10, color: COLORS.red, fontFamily: mono }}>
+          <div style={{ marginTop: 6, fontSize: 10, color: COLORS.danger, fontFamily: mono }}>
             {m.error}
           </div>
         )}
@@ -1606,7 +1606,17 @@ export function HydraDashboard({ jwtToken, onLogout }) {
               }].slice(-200));
               return;
             }
+            case "save_keys_ack":
+              // SettingsSurface listens via window event so it can clear
+              // secrets only on real success (not optimistic timers).
+              try {
+                window.dispatchEvent(new CustomEvent("hydra_save_keys_ack", { detail: msg }));
+              } catch (_) { /* ignore */ }
+              return;
             case "start_agent_ack":
+              try {
+                window.dispatchEvent(new CustomEvent("hydra_start_agent_ack", { detail: msg }));
+              } catch (_) { /* ignore */ }
               if (msg.success && Number.isInteger(msg.port) && msg.port > 0 && msg.port < 65536) {
                 const newUrl = sanitizeWsUrl(`ws://localhost:${msg.port}`);
                 localStorage.setItem("hydra_ws_url", newUrl);
@@ -2715,7 +2725,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.27.5 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.27.6 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]
@@ -2857,22 +2867,84 @@ function SettingsSurface({ wsSend }) {
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState(null);
 
+  // v2.27.6: pass objects to wsSend (sendMessage JSON.stringifies + auth).
+  // Double-stringify previously produced character-index payloads with no
+  // `type`, so save_keys/start_agent never reached the server.
+  useEffect(() => {
+    const onSave = (ev) => {
+      const msg = ev.detail || {};
+      setSaving(false);
+      if (msg.success) {
+        setStatus({ type: "success", msg: "API Keys Saved Securely" });
+        setApiKey("");
+        setApiSecret("");
+      } else {
+        setStatus({
+          type: "error",
+          msg: msg.error || "Save failed",
+        });
+      }
+    };
+    const onStart = (ev) => {
+      const msg = ev.detail || {};
+      if (msg.success) {
+        setStatus({
+          type: "success",
+          msg: msg.port
+            ? `Agent started on port ${msg.port}`
+            : "Agent started",
+        });
+      } else {
+        setStatus({
+          type: "error",
+          msg: msg.error || "Start failed",
+        });
+      }
+    };
+    window.addEventListener("hydra_save_keys_ack", onSave);
+    window.addEventListener("hydra_start_agent_ack", onStart);
+    return () => {
+      window.removeEventListener("hydra_save_keys_ack", onSave);
+      window.removeEventListener("hydra_start_agent_ack", onStart);
+    };
+  }, []);
+
   const handleSave = () => {
     setSaving(true);
     setStatus(null);
     const jwt = localStorage.getItem("hydra_jwt");
-    wsSend(JSON.stringify({ type: "save_keys", jwt, api_key: apiKey, api_secret: apiSecret }));
-    setTimeout(() => {
+    const ok = wsSend({
+      type: "save_keys",
+      jwt,
+      api_key: apiKey,
+      api_secret: apiSecret,
+    });
+    if (!ok) {
       setSaving(false);
-      setStatus({ type: "success", msg: "API Keys Saved Securely" });
-      setApiKey(""); setApiSecret("");
-    }, 1000);
+      setStatus({ type: "error", msg: "WebSocket not connected" });
+      return;
+    }
+    // Timeout only as error path — success comes from save_keys_ack.
+    setTimeout(() => {
+      setSaving((prev) => {
+        if (prev) {
+          setStatus({
+            type: "error",
+            msg: "No save_keys_ack within 8s — check WS auth/server",
+          });
+        }
+        return false;
+      });
+    }, 8000);
   };
 
   const handleStart = () => {
     setStatus({ type: "info", msg: "Starting isolated engine instance..." });
     const jwt = localStorage.getItem("hydra_jwt");
-    wsSend(JSON.stringify({ type: "start_agent", jwt }));
+    const ok = wsSend({ type: "start_agent", jwt });
+    if (!ok) {
+      setStatus({ type: "error", msg: "WebSocket not connected" });
+    }
   };
 
   return (

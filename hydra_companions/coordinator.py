@@ -162,6 +162,12 @@ class CompanionCoordinator:
     def _maybe_install_live_executor(self):
         if not live_execution_enabled():
             return
+        # v2.27.6: never install live place path under agent --paper
+        # (LiveExecutor also re-checks; this prevents mis-wiring at boot).
+        if getattr(self.agent, "paper", False):
+            print("  [COMPANION] live execution requested but agent is "
+                  "--paper; staying on MockExecutor")
+            return
         try:
             from hydra_companions.live_executor import LiveExecutor
             self._live_executor = LiveExecutor(agent=self.agent, coordinator=self)

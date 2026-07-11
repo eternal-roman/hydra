@@ -297,7 +297,8 @@ class HydraAgent:
         # unaffected — we swallow + log, never raise.
         self.backtest_pool = None
         self.backtest_dispatcher = None
-        if not os.environ.get("HYDRA_BACKTEST_DISABLED"):
+        # v2.27.6: exact "1" like other kill switches (was truthy-any).
+        if os.environ.get("HYDRA_BACKTEST_DISABLED") != "1":
             try:
                 from hydra_backtest_server import (
                     BacktestWorkerPool, mount_backtest_routes,
@@ -305,11 +306,13 @@ class HydraAgent:
                 from hydra_backtest_tool import BacktestToolDispatcher
                 from hydra_experiments import ExperimentStore
                 bt_store = ExperimentStore()
-                self.backtest_dispatcher = BacktestToolDispatcher(store=bt_store)
                 self.backtest_pool = BacktestWorkerPool(
                     max_workers=2,
                     store=bt_store,
                     broadcaster=self.broadcaster,
+                )
+                self.backtest_dispatcher = BacktestToolDispatcher(
+                    store=bt_store, pool=self.backtest_pool,
                 )
                 mount_backtest_routes(
                     self.broadcaster, self.backtest_pool,
@@ -4038,7 +4041,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.27.5",
+            "version": "2.27.6",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

@@ -3,14 +3,25 @@
 Exercises the LiveExecutor in isolation using a stub KrakenCLI. Does
 NOT hit the real Kraken API.
 """
+import os
 import sys
 import pathlib
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from hydra_companions.executor import TradeProposal, LadderProposal, LadderRung
 from hydra_companions.live_executor import LiveExecutor, _proposal_userref
+
+
+@pytest.fixture(autouse=True)
+def _live_execution_on(monkeypatch):
+    """v2.27.6: LiveExecutor re-checks live_execution_enabled() before place."""
+    monkeypatch.setenv("HYDRA_COMPANION_LIVE_EXECUTION", "1")
+    monkeypatch.delenv("HYDRA_COMPANION_DISABLED", raising=False)
+    monkeypatch.delenv("HYDRA_COMPANION_PROPOSALS_ENABLED", raising=False)
 
 
 class StubCLI:

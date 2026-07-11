@@ -1196,6 +1196,13 @@ class HydraBrain:
             return ""
         def fmt(v, sfx=""):
             return "null" if v is None else f"{v}{sfx}"
+        synthetic = qi.get("synthetic_pair")
+        synthetic_note = ""
+        if synthetic:
+            synthetic_note = (
+                "\n  synthetic_pair: true "
+                "(OI/basis structurally unavailable — R10 tracks funding/CVD/regime only)"
+            )
         return (
             "\nQUANT INDICATORS (signal input only — SPOT-ONLY execution):"
             f"\n  funding_bps_8h: {fmt(qi.get('funding_bps_8h'))}"
@@ -1205,6 +1212,41 @@ class HydraBrain:
             f"\n  cvd_divergence_sigma: {fmt(qi.get('cvd_divergence_sigma'))}"
             f"\n  staleness_s: {fmt(qi.get('staleness_s'))} "
             f"(>300s on 2+ fields → Python R10 rule may force_hold)"
+            f"{synthetic_note}"
+        )
+
+    @staticmethod
+    def _format_rm_features(state: Dict) -> str:
+        """v2.27.6: surface engine-internal RM features to Risk Manager.
+
+        Features are attached on state['quant_indicators'] by the agent
+        (_add_rm_features). Absent/None → null (RM treats as insufficient).
+        """
+        qi = state.get("quant_indicators") or {}
+        keys = (
+            "realized_vol_1h",
+            "realized_vol_24h",
+            "drawdown_velocity_pct_per_hr",
+            "fill_rate_24h",
+            "avg_slippage_bps_24h",
+            "cross_pair_corr_24h",
+            "minutes_since_last_trade",
+        )
+        if not any(k in qi for k in keys):
+            return ""
+
+        def fmt(v, sfx=""):
+            return "null" if v is None else f"{v}{sfx}"
+
+        return (
+            "\nRM ENGINE FEATURES (stdlib pure — null = insufficient window):"
+            f"\n  realized_vol_1h: {fmt(qi.get('realized_vol_1h'))}"
+            f"\n  realized_vol_24h: {fmt(qi.get('realized_vol_24h'))}"
+            f"\n  drawdown_velocity_pct_per_hr: {fmt(qi.get('drawdown_velocity_pct_per_hr'))}"
+            f"\n  fill_rate_24h: {fmt(qi.get('fill_rate_24h'))}"
+            f"\n  avg_slippage_bps_24h: {fmt(qi.get('avg_slippage_bps_24h'))}"
+            f"\n  cross_pair_corr_24h: {fmt(qi.get('cross_pair_corr_24h'))}"
+            f"\n  minutes_since_last_trade: {fmt(qi.get('minutes_since_last_trade'))}"
         )
 
     def _format_triangle_context(self, state: Dict) -> str:
@@ -1355,7 +1397,7 @@ VOLUME: current={vol.get('current', '?')} | avg_20={vol.get('avg_20', '?')}
 
 POSITION: {pos.get('size', 0):.6f} @ avg {pos.get('avg_entry', 0)} | Unrealized P&L: {pos.get('unrealized_pnl', 0)}
 PORTFOLIO: Balance=${port.get('balance', 0):.2f} | Equity=${port.get('equity', 0):.2f} | Peak=${port.get('peak_equity', 0):.2f} | P&L={port.get('pnl_pct', 0):.2f}% | Max DD={port.get('max_drawdown_pct', 0):.2f}%
-PERFORMANCE: {perf.get('total_trades', 0)} trades | Win Rate: {perf.get('win_rate_pct', 0):.0f}% | Sharpe: {perf.get('sharpe_estimate', 0):.2f}{self._format_spread(state)}{self._format_triangle_context(state)}{self._format_portfolio_summary(state)}{self._format_portfolio_guidance(state)}"""
+PERFORMANCE: {perf.get('total_trades', 0)} trades | Win Rate: {perf.get('win_rate_pct', 0):.0f}% | Sharpe: {perf.get('sharpe_estimate', 0):.2f}{self._format_spread(state)}{self._format_rm_features(state)}{self._format_triangle_context(state)}{self._format_portfolio_summary(state)}{self._format_portfolio_guidance(state)}"""
 
     def _build_strategist_prompt(self, state: Dict, analyst: Dict, risk: Dict) -> str:
         sig = state.get("signal", {})

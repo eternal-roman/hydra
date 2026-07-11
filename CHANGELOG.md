@@ -6,6 +6,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.27.6] — 2026-07-11
+
+Audit 2026-07-11 remediation: money-path defense-in-depth + confirmed
+dashboard Settings fix + backtest fill fidelity. No strategy alpha claim.
+
+### Fixed
+- **Settings `save_keys` / `start_agent` dead path** — dashboard double-
+  `JSON.stringify` produced payloads with no `type`; server dropped them
+  while UI showed optimistic success. Now object sends + real `*_ack` UI.
+- **Companion paper+live footgun** — refuse LiveExecutor install/place when
+  `agent.paper`; re-check `live_execution_enabled()` before every place.
+- **CLI market / non-post-only** — `order_buy`/`order_sell` hard-reject
+  non-limit and `post_only=False` (defense in depth; agent path was already safe).
+- **Global 2s REST floor** in `KrakenCLI._run` (lock + monotonic) so ladder /
+  concurrent callers cannot stack under the throttle.
+- **Tape `stop()`** non-blocking sentinel (no hang before snapshot flush).
+- **Engine CB** inclusive `>= 15%` (aligned with portfolio sticky halt).
+- **Hold-through** fail-closed BUY when history empty on `execute_signal`;
+  reason prefix `skip_buy` (SKIP≠BLOCK vocabulary).
+- **RM features** now appear in Risk Manager user prompt; Quant prompt
+  surfaces `synthetic_pair`.
+- **Backtest fills** use `true_up_fill` at fill price; `trade_log` on
+  confirmed fill only; stable `adler32` pair seeds (I12).
+- **Brain tool backtests** enqueue on `BacktestWorkerPool` when mounted
+  (I1: no long sync block on tick thread).
+- **`HYDRA_BACKTEST_DISABLED`** exact `"1"` (was truthy-any).
+
+### Tests
+- `tests/test_audit_2026_07_11_remediation.py`; companion live fixture;
+  I7 HT-ON execute/fill suite; hold-through rename.
+
+### Deferred (documented, not blocking)
+- Research Lab unbounded threads / dashboard QuotaTracker (M-I11).
+- OOS warmup scoring bleed (research-only).
+- Companion inventory-blind live path (PR-E debt; live still opt-in OFF).
+- Product decision on underwater SELL under R10 force_hold.
+
+---
+
 ## [2.27.5] — 2026-07-11
 
 Evidence-weighted rails cleanup: harden defense + trend capture, remove

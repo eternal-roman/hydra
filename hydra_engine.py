@@ -1353,6 +1353,7 @@ class HydraEngine:
         self.initial_balance = initial_balance
         self.balance = initial_balance
         self.friction_skips = 0  # BUYs skipped by the friction expectancy gate
+        self._last_friction_skip: Optional[Dict[str, Any]] = None
         # `tradable` gates the execution path. When False, _maybe_execute and
         # execute_signal short-circuit without producing a Trade, and the
         # drawdown-based circuit breaker is suppressed. Signal generation in
@@ -1568,9 +1569,14 @@ class HydraEngine:
         # movement on a phantom balance, not by real P&L, so halting it on
         # drawdown would be meaningless and would block it from re-activating
         # if the operator later deposits the quote currency.
-        if self.tradable and self.max_drawdown > self.CIRCUIT_BREAKER_PCT:
+        # v2.27.6: inclusive threshold (>=) aligns engine with portfolio CB
+        # and CLAUDE "15% drawdown kills" wording (was exclusive `>`).
+        if self.tradable and self.max_drawdown >= self.CIRCUIT_BREAKER_PCT:
             self.halted = True
-            self.halt_reason = f"CIRCUIT BREAKER: drawdown {self.max_drawdown:.1f}% > {self.CIRCUIT_BREAKER_PCT}% limit"
+            self.halt_reason = (
+                f"CIRCUIT BREAKER: drawdown {self.max_drawdown:.1f}% "
+                f">= {self.CIRCUIT_BREAKER_PCT}% limit"
+            )
 
         return self._build_state(regime, strategy, signal, trade)
 
@@ -1603,7 +1609,7 @@ class HydraEngine:
                     action=SignalAction.HOLD,
                     confidence=signal.confidence,
                     reason=(
-                        f"HOLD_THROUGH:block_buy_{regime.value}|{signal.reason}"
+                        f"HOLD_THROUGH:skip_buy_{regime.value}|{signal.reason}"
                     ),
                     strategy=signal.strategy,
                 )
@@ -1711,6 +1717,12 @@ class HydraEngine:
                 hurdle = max(hurdle, 1.2)
             if expected is not None and expected < hurdle:
                 self.friction_skips += 1
+                # Observability: stamp last skip for state/dashboard (SKIP ≠ BLOCK).
+                self._last_friction_skip = {
+                    "expected_move_pct": expected,
+                    "hurdle_pct": hurdle,
+                    "reason": signal.reason,
+                }
                 return None
 
         if signal.action == SignalAction.BUY and signal.confidence >= self.sizer.min_confidence:
@@ -1861,13 +1873,18 @@ class HydraEngine:
             strategy=sig_strategy,
         )
         # Re-apply rails on external execute (brain/coordinator cannot bypass).
-        if self.hold_through and self.candles and self.prices:
-            regime = RegimeDetector.detect(
-                self.candles, self.prices,
-                self.volatile_atr_mult, self.volatile_bb_mult, self.trend_ema_ratio,
-            )
-            signal = self._apply_hold_through(regime, signal)
-            if signal.action == SignalAction.HOLD:
+        if self.hold_through:
+            if self.candles and self.prices:
+                regime = RegimeDetector.detect(
+                    self.candles, self.prices,
+                    self.volatile_atr_mult, self.volatile_bb_mult, self.trend_ema_ratio,
+                )
+                signal = self._apply_hold_through(regime, signal)
+                if signal.action == SignalAction.HOLD:
+                    return None
+            elif signal.action == SignalAction.BUY:
+                # v2.27.6: fail-closed on BUY when history insufficient for rails.
+                # SELL with open inventory still proceeds via _maybe_execute.
                 return None
         return self._maybe_execute(signal, size_multiplier=size_multiplier)
 
@@ -2403,6 +2420,8 @@ class HydraEngine:
                 "confidence": round(signal.confidence, 4),
                 "reason": signal.reason,
             },
+            "friction_skips": self.friction_skips,
+            "friction_skip": self._last_friction_skip,
             "position": {
                 "size": round(self.position.size, 8),
                 "avg_entry": round(self.position.avg_entry, 8),

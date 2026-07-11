@@ -452,10 +452,14 @@ class BacktestToolDispatcher:
         store: Optional[ExperimentStore] = None,
         quota: Optional[QuotaTracker] = None,
         store_root: Optional[Path] = None,
+        pool: Optional[Any] = None,
     ) -> None:
         root = store_root or DEFAULT_STORE_ROOT
         self.store = store if store is not None else ExperimentStore(root=root)
         self.quota = quota if quota is not None else QuotaTracker()
+        # v2.27.6: when a BacktestWorkerPool is attached (agent mount),
+        # run_backtest enqueues instead of blocking the brain/tick thread.
+        self.pool = pool
 
     # ---- public ----
 
@@ -567,6 +571,21 @@ class BacktestToolDispatcher:
             overrides=effective_ov,
             tags=[f"preset:{preset}", f"caller:{caller}"],
         )
+        # Prefer worker pool so live tick / brain never block on long runs.
+        if self.pool is not None:
+            try:
+                exp_id = self.pool.submit_experiment(exp)
+            except Exception as e:
+                return _error(f"pool submit failed: {e}")
+            return _ok({
+                "status": "queued",
+                "experiment_id": exp_id,
+                "message": (
+                    "Backtest queued on BacktestWorkerPool; poll get_experiment "
+                    "for results (I1: never block the live tick)."
+                ),
+            })
+        # Offline / unit-test path without a pool: still synchronous.
         run_experiment(
             exp,
             store=self.store,
