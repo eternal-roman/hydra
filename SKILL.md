@@ -21,9 +21,14 @@ description: >
 
 ## Overview
 
-HYDRA detects what the market is doing *right now* and selects the optimal strategy for
-that condition. Most bots fail because they apply one strategy to all market states.
-HYDRA solves this with a four-regime, four-strategy matrix:
+HYDRA detects what the market is doing *right now* and selects a strategy for that
+condition via a four-regime, four-strategy matrix. This is a **design** for regime
+adaptation — not a claim that the default path is profitable. Historical engine
+replays on SOL/USD (local sqlite) have shown **absolute losses** on multi-month
+windows; opt-in `HYDRA_REGIME_SELECTIVE` improved *relative* defense in a causal
+study but still did not prove absolute alpha.
+
+Matrix:
 
 | Detected Regime | Selected Strategy | Logic |
 |-----------------|-------------------|-------|
@@ -190,13 +195,13 @@ LOOP every {interval}:
   PRINT status summary
 
   IF max_drawdown > 15%:
-    HALT "Circuit breaker triggered — stopping agent"
+    BLOCK new BUYs only; still allow SELL to flatten
 END LOOP
 ```
 
 ## Risk Management Rules
 
-1. **Circuit Breaker (per engine)**: Halt **new BUYs** if max drawdown exceeds 15%; **SELL still allowed** (flatten inventory). Portfolio-level 15% max DD also sticky-blocks BUYs.
+1. **Circuit Breaker (per engine)**: Halt **new BUYs** if max drawdown exceeds 15%; **SELL still allowed** (flatten inventory). Portfolio-level 15% max DD also sticky-blocks BUYs. (Not a full session freeze of exits.)
 2. **Dead Man's Switch**: Always run `kraken order cancel-after 60` before live orders
 3. **Position Limits**: No single position notional > max_position_pct of equity (30%/40%), applied after brain size_multiplier
 4. **Trade Threshold**: Entries only when confidence ≥ 0.65; exits do not use this floor
@@ -205,6 +210,9 @@ END LOOP
 7. **Rate Limiting**: Respect Kraken API limits — minimum 2s between requests
 8. **Fill true-up**: Engine books exchange `avg_fill_price` on FILLED/PARTIAL (not candle close)
 9. **Quant R2**: Extreme negative funding force_holds **BUY** (bounce-chase), never spot **SELL** (long close)
+10. **Friction gate (entries)**: BUY skipped when strategy-implied move cannot clear ~2× round-trip friction (SKIP, not BLOCK). Kill: `HYDRA_FRICTION_GATE_DISABLED=1`
+11. **Regime selective (opt-in, default off)**: `HYDRA_REGIME_SELECTIVE=1` → BUY only in TREND_UP (conf ≥ 0.55), force-flatten long on TREND_DOWN. Applied in `tick` and re-applied in `execute_signal`. Does **not** disable friction or drop competition min_conf to 0.50.
+12. **QFE (R11)**: Exit-only, profit-only SELL through force_hold when engine already wants SELL, unrealized P&L ≥ `QFE_MIN_PROFIT_PCT` (1.0%), and no deterministic squeeze catalyst; never opens a position; LLM `crowded_short` alone does not veto
 
 ## Indicator Reference
 
@@ -243,17 +251,16 @@ END LOOP
 
 ```
 hydra/
-├── SKILL.md              # This file — agent instructions
-├── README.md             # Project overview and setup guide
-├── AUDIT_YYYY-MM-DD.md   # Latest post-release audit report
-├── hydra_engine.py       # Strategy engine (indicators, regime detection, signals)
-├── hydra_agent.py        # Agent loop (Kraken CLI, WebSocket, trade execution)
-├── hydra_brain.py        # AI reasoning (Claude Analyst + Risk Manager + Grok Strategist)
-├── hydra_tuner.py        # Self-tuning parameters via exponential smoothing
-├── hydra_journal_migrator.py  # Legacy trade log → order journal migration
-├── tests/                # 15 test suites + live-execution harness
-└── dashboard/            # React + Vite live dashboard
-    └── src/App.jsx       # Dashboard UI (single-file)
+├── SKILL.md              # This file — trading spec (agent-readable)
+├── README.md / CLAUDE.md # Overview + authoritative invariants index
+├── hydra_engine.py       # Indicators, regime, signals, sizing, selective rails
+├── hydra_agent.py        # Live loop (Kraken CLI, WS, execution, journal)
+├── hydra_brain.py        # Optional AI (Analyst + RM + Grok)
+├── hydra_quant_rules.py  # R1–R11 deterministic rules + QFE
+├── hydra_flywheel.py     # Paper allocator only (no live orders)
+├── tools/                # Research: history, flywheel validation, causal retest
+├── tests/                # pytest + live-execution harness
+└── dashboard/            # React + Vite UI
 ```
 
 ## License

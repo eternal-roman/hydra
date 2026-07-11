@@ -171,7 +171,17 @@ class TestBacktestRunner(unittest.TestCase):
     def test_different_seed_different_outcome(self):
         ra = BacktestRunner(make_quick_config(name="d1", n_candles=300, seed=1)).run()
         rb = BacktestRunner(make_quick_config(name="d2", n_candles=300, seed=2)).run()
-        self.assertNotEqual(ra.metrics.total_return_pct, rb.metrics.total_return_pct)
+        # Returns can both be 0.0 if neither seed produces a closed trade path;
+        # equity curves still diverge because GBM series differ by seed.
+        if ra.metrics.total_return_pct == rb.metrics.total_return_pct:
+            ea = ra.equity_curve.get("SOL/USD") or []
+            eb = rb.equity_curve.get("SOL/USD") or []
+            self.assertNotEqual(
+                ea, eb,
+                "different seeds must diverge equity even when both returns are 0",
+            )
+        else:
+            self.assertNotEqual(ra.metrics.total_return_pct, rb.metrics.total_return_pct)
 
     def test_cancel_token_stops_early(self):
         cfg = make_quick_config(name="c", n_candles=10_000, seed=1)

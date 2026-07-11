@@ -6,15 +6,16 @@
 
 **Regime-adaptive Kraken spot trading agent** — detects trending / ranging / volatile markets, switches among Momentum, Mean Reversion, Grid, and Defensive strategies, and places **limit post-only** orders only. Live React dashboard included.
 
-> **Not financial advice.** Experimental software. Crypto trading can lose money.
+> **Not financial advice.** Experimental research software. **Strategy expectancy is not proven** on the shipped engine path; safety rails reduce some failure modes but do not guarantee profit. Crypto trading can lose money.
 
 ## Highlights
 
 - **Regime switching** on pure-Python indicators (Wilder RSI/ATR, Bollinger, MACD, EMAs)
 - **Spot-only** execution on the SOL/BTC/USD triangle (default: `SOL/USD`, `SOL/BTC`, `BTC/USD`)
-- **Limit post-only** — never market; 2s REST floor; 15% session circuit breaker
+- **Limit post-only** — never market; 2s REST floor; 15% drawdown **blocks new BUYs** (SELL flatten still allowed)
 - **AI quant pipeline** (optional): Market Quant + Risk Manager + Grok + R1–R11 rules
-- **Research stack**: backtests, walk-forward metrics, paper **flywheel** allocator (v2.27)
+- **Opt-in regime-selective rails** (`HYDRA_REGIME_SELECTIVE=1`, **default off**): TREND_UP-only entries + force-flatten on TREND_DOWN — re-regulation from a causal study; relative loss control on historical SOL windows, **not** absolute alpha
+- **Research stack**: backtests, walk-forward, paper **flywheel** (no live flywheel orders), causal counterfactuals under `tools/`
 - **Companions** (optional chat/proposals; live execution **opt-in**, default off)
 
 ## Safety (non-negotiable)
@@ -24,8 +25,9 @@
 | Spot only | No futures/margin/options orders placed |
 | Limit post-only | `--type limit --oflags post` |
 | Rate limit | ≥ 2s between Kraken REST calls |
-| Drawdown | 15% max → engine halted for the session |
+| Drawdown | 15% max → **no new BUYs**; inventory SELL still allowed |
 | Companion live | `HYDRA_COMPANION_LIVE_EXECUTION` default **off** |
+| Regime selective | `HYDRA_REGIME_SELECTIVE` default **off** |
 
 ## Quick start
 
@@ -109,13 +111,16 @@ Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`]
 
 ```
 Candle/Ticker WS → indicators → regime → strategy signal
+        → (optional) regime-selective rails (env opt-in)
         → (optional) AI brain + R1–R11 rules
         → Kelly size → limit post-only via kraken-cli (WSL)
         → ExecutionStream / journal / snapshot
         → dashboard WS :8765
 ```
 
-**v2.27 additions:** friction expectancy gate on BUY entries; fee-true live accounting; paper flywheel (`python hydra_flywheel.py --report`) — **no live order path** in the flywheel.
+**Backtests** replay `HydraEngine` (+ coordinator when enabled). The full AI brain is **not** on the default backtest path (Phase-1 engine + coordinator only).
+
+**v2.27 line (short):** friction gate on BUY entries; fee-true live accounting; paper flywheel (no live order path); opt-in `HYDRA_REGIME_SELECTIVE` (v2.27.4).
 
 ## Testing
 
@@ -125,8 +130,11 @@ CI runs on every PR to `main` (Python 3.10–3.12 + dashboard build + mock harne
 # Full suite (preferred)
 python -m pytest tests/ -q
 
-# Flywheel + fee/friction (v2.27)
-python -m pytest tests/test_flywheel.py tests/test_friction_fee.py -v
+# Safety / money-path packs
+python -m pytest tests/test_flywheel.py tests/test_friction_fee.py tests/test_regime_selective.py -v
+
+# Causal historical fidelity (needs hydra_history.sqlite; no lookahead fills)
+python tools/retest_regime_selective_ranges.py
 
 # Execution path (mandatory for placement changes)
 python tests/live_harness/harness.py --mode smoke
@@ -136,16 +144,17 @@ python tests/live_harness/harness.py --mode mock
 cd dashboard && npm run build
 ```
 
-Harness modes: `smoke` · `mock` · `validate` (read-only Kraken) · `live` (real orders, explicit flag). See [`tests/live_harness/README.md`](tests/live_harness/README.md).
+Harness: `smoke` · `mock` (**35** scenarios in CI) · `validate` · `live` (explicit flag). See [`tests/live_harness/README.md`](tests/live_harness/README.md).
 
 ## Project layout
 
 | Path | Role |
 |------|------|
-| `hydra_engine.py` | Indicators, regime, signals, sizing |
+| `hydra_engine.py` | Indicators, regime, signals, sizing, opt-in selective rails |
 | `hydra_agent.py` | Live loop, orders, journal, resume |
 | `hydra_brain.py` / `hydra_quant_rules.py` | AI + deterministic rules |
-| `hydra_flywheel.py` | Paper multi-sleeve allocator |
+| `hydra_flywheel.py` | Paper multi-sleeve allocator (CLI only) |
+| `tools/` | History refresh, flywheel research, causal counterfactuals |
 | `hydra_companions/` | Chat / proposals / optional live executor |
 | `dashboard/` | React + Vite UI |
 | `tests/` | Unit + harness |
@@ -179,12 +188,13 @@ Harness modes: `smoke` · `mock` · `validate` (read-only Kraken) · `live` (rea
 | Port 3000 taken | Vite uses `strictPort` — free the port |
 | Port 8765 taken | Pass `--ws-port 8766` (or free the port) |
 | Dashboard disconnected | Start agent first (hosts WS on 8765); `--demo` works offline |
-| No trades | Confidence gate 0.65; ranging markets often HOLD |
+| No trades | Entry min_confidence 0.65; friction gate may skip thin BUYs; ranging often HOLD |
 | Paper mode idle / 0 ticks | Needs working kraken-cli OHLC; use `--demo` without WSL |
+| Want fewer chop entries | Opt-in `HYDRA_REGIME_SELECTIVE=1` (default off; not a profit guarantee) |
 
 ## Disclaimer
 
-This is experimental research software, **not** financial advice. Past performance does not predict future results. Use least-privilege API keys. Safety nets (dead-man switch, circuit breaker) are not guarantees.
+This is experimental research software, **not** financial advice. Historical backtests and research tools are **not** promises of future profit. Use least-privilege API keys. Safety nets (dead-man switch, circuit breaker, selective rails) are not guarantees.
 
 ## License
 

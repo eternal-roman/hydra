@@ -44,7 +44,7 @@ regression bug, not a style issue.
   `STABLE_QUOTES = {USD, USDC, USDT}` are first-class. v2.19 flipped
   the default from USDC → USD; opt back into USDC by passing
   `--pairs SOL/USDC,SOL/BTC,BTC/USDC`.
-- **Version pin:** v2.27.3
+- **Version pin:** v2.27.4
 
 ## Defaults (inherited)
 
@@ -161,6 +161,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | `HYDRA_HISTORY_DB` | history | Path override for the canonical OHLC store. Defaults to `hydra_history.sqlite` in the working directory. Used by the agent (tape capture), `tools/refresh_history.py`, and the SqliteSource backtest path. |
 | `HYDRA_WSL_DISTRO` | cli | WSL distribution name for all `kraken` CLI invocations. Defaults to `Ubuntu`. Override if your distro is named differently (e.g. `Ubuntu-24.04`). Single source of truth: `hydra_kraken_cli.WSL_DISTRO`; isolated modules read the env var directly. |
 | `HYDRA_FRICTION_GATE_DISABLED` | engine | `=1` disables the friction expectancy gate (v2.27): BUY entries whose strategy-implied expected move (BB-mid reversion distance or 2×ATR%) is under `FRICTION_HURDLE_MULT × ROUND_TRIP_FRICTION_PCT` (0.84%) are skipped (SKIP semantics). Entries only — exits never gated; fails open on insufficient history. Active on BOTH `tick()` and `execute_signal()` paths. |
+| `HYDRA_REGIME_SELECTIVE` | engine | `=1` enables re-regulation rails from the 2026-07 AI-control study: BUY only in `TREND_UP` with conf ≥ 0.55; force-flatten SELL when long and `TREND_DOWN`. **Default OFF.** Does **not** disable friction or drop competition min_conf to 0.50. Absolute alpha unproven — relative loss control on historical windows only; not a profit claim. |
 | `HYDRA_FEE_DEDUCTION_DISABLED` | agent | `=1` reverts fee-true accounting (v2.27): confirmed fills debit `lifecycle.fee_quote` from the engine's quote balance exactly once (idempotent via `lifecycle.fee_applied`). Default off (fees deducted) — pre-v2.27 live P&L was overstated ~16 bps/fill vs the backtest, which always deducted fees. |
 
 ## Build / run
