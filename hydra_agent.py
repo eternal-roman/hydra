@@ -209,6 +209,10 @@ class HydraAgent:
         self._portfolio_peak_usd: float = 0.0
         self._portfolio_max_drawdown_pct: float = 0.0
         self._portfolio_current_drawdown_pct: float = 0.0
+        # PR-B / B4: portfolio-level BUY halt when max DD ≥ 15%. SELL always
+        # allowed (exit guarantee). Sticky for the session once tripped.
+        self._portfolio_buy_halted: bool = False
+        self.PORTFOLIO_CIRCUIT_BREAKER_PCT: float = 15.0
         self.interval = interval_seconds
         self.duration = duration_seconds
         self.mode = mode
@@ -711,6 +715,13 @@ class HydraAgent:
 
     # ─── Session snapshot (atomic JSON; resumable across runs) ─────────────
 
+    @staticmethod
+    def _should_block_buy_for_portfolio_dd(
+        portfolio_buy_halted: bool, action: str,
+    ) -> bool:
+        """PR-B / B4: portfolio circuit breaker blocks BUY only."""
+        return bool(portfolio_buy_halted) and str(action).upper() == "BUY"
+
     def _snapshot_path(self) -> str:
         return os.path.join(self._snapshot_dir, "hydra_session_snapshot.json")
 
@@ -931,9 +942,15 @@ class HydraAgent:
             try:
                 self._portfolio_peak_usd = float(pdd.get("peak_usd", 0.0))
                 self._portfolio_max_drawdown_pct = float(pdd.get("max_pct", 0.0))
+                # Re-arm sticky portfolio BUY halt if session already breached 15%.
+                # getattr: tests may construct via __new__ without __init__.
+                cb = float(getattr(self, "PORTFOLIO_CIRCUIT_BREAKER_PCT", 15.0))
+                if self._portfolio_max_drawdown_pct >= cb:
+                    self._portfolio_buy_halted = True
             except (TypeError, ValueError):
                 self._portfolio_peak_usd = 0.0
                 self._portfolio_max_drawdown_pct = 0.0
+                self._portfolio_buy_halted = False
             # Carry the persisted userref floor into _userref_counter. The
             # _reseed_userref_from_history() call in __init__ will raise it
             # further if the journal reveals higher values.
@@ -1495,13 +1512,24 @@ class HydraAgent:
                         _sm = ai.get("size_multiplier")
                         _brain_mult = float(1.0 if _sm is None else _sm)
                         _final_mult = max(0.0, min(1.5, _brain_mult))
-                        trade = engine.execute_signal(
-                            action=sig.get("action", "HOLD"),
-                            confidence=sig.get("confidence", 0),
-                            reason=sig.get("reason", ""),
-                            strategy=state.get("strategy", "MOMENTUM"),
-                            size_multiplier=_final_mult,
-                        )
+                        _action = sig.get("action", "HOLD")
+                        if self._should_block_buy_for_portfolio_dd(
+                            self._portfolio_buy_halted, _action
+                        ):
+                            trade = None
+                            print(
+                                f"  [PORTFOLIO CB] {pair}: BUY blocked "
+                                f"(portfolio max DD "
+                                f"{self._portfolio_max_drawdown_pct:.1f}%)"
+                            )
+                        else:
+                            trade = engine.execute_signal(
+                                action=_action,
+                                confidence=sig.get("confidence", 0),
+                                reason=sig.get("reason", ""),
+                                strategy=state.get("strategy", "MOMENTUM"),
+                                size_multiplier=_final_mult,
+                            )
                         if trade is None and sig.get("action") in ("BUY", "SELL") and ai:
                             print(f"  [BRAIN] {pair}: {sig['action']} signal did not execute "
                                   f"(conf={sig.get('confidence', 0):.2f}, "
@@ -3067,6 +3095,9 @@ class HydraAgent:
 
         # Engine sizes the buy via Kelly criterion — execute_signal handles
         # position sizing, balance check, and minimum order enforcement internally.
+        if self._should_block_buy_for_portfolio_dd(self._portfolio_buy_halted, "BUY"):
+            _cancel_orphan_sell("portfolio circuit breaker blocks BUY leg")
+            return
         buy_snap = buy_engine.snapshot_position()
         buy_trade_obj = buy_engine.execute_signal(
             action="BUY", confidence=0.85,
@@ -3165,7 +3196,8 @@ class HydraAgent:
                 equity = per_pair_usd + engine.position.size * current_price
                 engine.balance = per_pair_usd
                 engine.initial_balance = equity
-                engine.peak_equity = equity
+                # PR-B / B3: never rebase peak downward on re-seed / resume.
+                engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
                 engine.tradable = True
                 continue
 
@@ -3178,12 +3210,12 @@ class HydraAgent:
                     equity = balance_quote + engine.position.size * current_price
                     engine.balance = balance_quote
                     engine.initial_balance = equity
-                    engine.peak_equity = equity
+                    engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
                 else:
                     equity = per_pair_usd + engine.position.size * current_price
                     engine.balance = per_pair_usd
                     engine.initial_balance = equity
-                    engine.peak_equity = equity
+                    engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
                 engine.tradable = True
                 continue
 
@@ -3194,7 +3226,7 @@ class HydraAgent:
                 equity = real_quote + engine.position.size * current_price
                 engine.balance = real_quote
                 engine.initial_balance = equity
-                engine.peak_equity = equity
+                engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
                 engine.tradable = True
                 print(f"  [HYDRA] {pair}: tradable — real balance {real_quote:.8f} {quote} "
                       f"(equity {equity:.8f})")
@@ -3205,7 +3237,10 @@ class HydraAgent:
                 equity = engine.position.size * current_price
                 engine.balance = 0.0
                 engine.initial_balance = equity if equity > 0 else 0.0
-                engine.peak_equity = engine.initial_balance
+                engine.peak_equity = max(
+                    float(engine.peak_equity or 0.0),
+                    engine.initial_balance,
+                )
                 engine.tradable = False
                 print(f"  [HYDRA] {pair}: informational-only — no {quote} held "
                       f"(balance {real_quote:.8f}, costmin {costmin})")
@@ -3241,8 +3276,9 @@ class HydraAgent:
                 equity = real_quote + engine.position.size * current_price
                 engine.balance = real_quote
                 engine.initial_balance = equity
-                engine.peak_equity = equity
-                engine.max_drawdown = 0.0
+                # PR-B / B3: preserve historical peak across re-activation.
+                engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
+                # Do NOT zero max_drawdown — economic peak memory must remain.
                 engine.equity_history = []
                 engine.tradable = True
                 print(f"  [HYDRA] {pair}: ACTIVATED — real {quote} balance "
@@ -3462,6 +3498,17 @@ class HydraAgent:
                 self._portfolio_current_drawdown_pct = round(cur_dd, 4)
                 if cur_dd > self._portfolio_max_drawdown_pct:
                     self._portfolio_max_drawdown_pct = cur_dd
+                # PR-B / B4: sticky portfolio BUY halt at 15% max DD.
+                _pcb = float(getattr(self, "PORTFOLIO_CIRCUIT_BREAKER_PCT", 15.0))
+                if self._portfolio_max_drawdown_pct >= _pcb:
+                    if not getattr(self, "_portfolio_buy_halted", False):
+                        print(
+                            f"  [PORTFOLIO CB] max DD "
+                            f"{self._portfolio_max_drawdown_pct:.1f}% ≥ "
+                            f"{_pcb:.0f}% — "
+                            f"blocking new BUYs (SELL still allowed)"
+                        )
+                    self._portfolio_buy_halted = True
 
         pairs_data = {}
         for pair, state in all_states.items():

@@ -1620,10 +1620,17 @@ class HydraEngine:
         if signal.action == SignalAction.BUY and signal.confidence >= self.sizer.min_confidence:
             size = self.sizer.calculate(signal.confidence, self.balance, current_price, self.asset)
             size = size * effective_mult
-            # Clamp to available balance so multiplier > 1.0 can't overdraw
+            # PR-B: hard risk caps AFTER size_multiplier (B1) and against
+            # gross inventory (B2). Advertised max_position_pct is the
+            # ceiling on total position notional / equity — not a pre-mult
+            # Kelly-only clamp that mult could defeat up to ~80% cash.
             if current_price > 0:
-                max_size = self.balance / current_price
-                size = min(size, max_size)
+                equity = self.balance + self.position.size * current_price
+                max_notional = equity * self.sizer.max_position_pct
+                current_notional = self.position.size * current_price
+                room_units = max(0.0, max_notional - current_notional) / current_price
+                max_cash_units = self.balance / current_price
+                size = min(size, room_units, max_cash_units)
             if size > 0:
                 cost = size * current_price
                 # Update position (average in)
