@@ -113,16 +113,16 @@ _DEMO_SEED_PRICES: Dict[str, float] = {
 # USD/USDC/USDT -> "STABLE" via STABLE_QUOTES; non-stable BTC quote
 # stays "BTC". Missing key -> 0 bps (safe fallback).
 _BUY_LIMIT_OFFSET_BPS: Dict[tuple, int] = {
-    # BTC on stable quote: NO offset. Empirical 1h DD == 24h DD == -0.33%
-    # means fills already land at the local floor — there is no later
-    # dip to wait for, and any offset just causes missed fills.
-    # SOL on /BTC: small offset; bid drifts with BTC's own decline.
-    ("SOL", "BTC",    "VOLATILE"):    25,
-    ("SOL", "BTC",    "TREND_DOWN"):  30,
-    # SOL on /USD or /USDC or /USDT — the structural early-fire case
-    # (median 1h DD -0.63%, 100% of fills printed lower in the next hour).
-    ("SOL", "STABLE", "VOLATILE"):    65,
-    ("SOL", "STABLE", "TREND_DOWN"):  90,
+    # PR-C / C5: offsets re-calibrated against post-only fill rate on
+    # 15m tape (audit 2026-07-10). Prior 65–90 bps on SOL/STABLE dropped
+    # realistic fill rate to ~0.5% while the engine still booked full size
+    # at close — capital lock + false inventory. Cap offsets so post-only
+    # fill probability remains material (~15–25 bps).
+    # BTC on stable quote: NO offset (fills already at local floor).
+    ("SOL", "BTC",    "VOLATILE"):    10,
+    ("SOL", "BTC",    "TREND_DOWN"):  15,
+    ("SOL", "STABLE", "VOLATILE"):    15,
+    ("SOL", "STABLE", "TREND_DOWN"):  20,
 }
 
 
@@ -2431,6 +2431,10 @@ class HydraAgent:
         action = action_upper.lower()
         entry = self._build_journal_entry(pair, trade, state)
         pre_trade_snap = state.get("_pre_trade_snapshot") if isinstance(state, dict) else None
+        # PR-C / C2: persist snapshot on the journal so resume cancel/reject
+        # can roll back even after process restart.
+        if pre_trade_snap is not None:
+            entry["pre_trade_snapshot"] = pre_trade_snap
 
         # ─── Real-balance preflight ─────────────────────────────────────
         # The engine sizes orders against its internal bookkeeping balance,
@@ -2483,6 +2487,20 @@ class HydraAgent:
                     print(f"  [TRADE] {pair} SELL: exchange {base} balance "
                           f"({real_base_bal:.8f}) < engine amount "
                           f"({amount:.8f}) — clamping to exchange balance")
+                    # PR-C / C3: engine already sold full size optimistically —
+                    # true-up to clamped amount at last close before place.
+                    eng = self.engines.get(pair)
+                    snap = pre_trade_snap
+                    if eng is not None and snap is not None and real_base_bal > 0:
+                        px = eng.prices[-1] if eng.prices else 0.0
+                        if px > 0:
+                            eng.true_up_fill(
+                                side="SELL",
+                                amount=float(real_base_bal),
+                                fill_price=float(px),
+                                pre_trade_snapshot=snap,
+                                reason="SELL clamp to exchange base before place",
+                            )
                     amount = real_base_bal
                     trade["amount"] = amount
                     entry["intent"]["amount"] = amount
@@ -2870,27 +2888,53 @@ class HydraAgent:
         vol_exec = event.get("vol_exec") or 0.0
 
         if state_name == "FILLED":
-            # Engine was optimistically committed at placement time — only
-            # the exchange fee (unknown until fill) remains to be applied.
+            # PR-C / C1: true-up engine to exchange fill price (not candle close).
+            fill_price = float(event.get("avg_fill_price") or 0.0)
+            fill_amt = float(vol_exec) if vol_exec and vol_exec > 0 else float(placed_amount or 0.0)
+            # Prefer event snapshot; fall back to journal-persisted (C2).
+            snap = pre_snap
+            if snap is None and isinstance(entry, dict):
+                snap = entry.get("pre_trade_snapshot")
+            if engine is not None and snap is not None and fill_price > 0 and fill_amt > 0:
+                try:
+                    ok = engine.true_up_fill(
+                        side=side or "",
+                        amount=fill_amt,
+                        fill_price=fill_price,
+                        pre_trade_snapshot=snap,
+                        reason=f"FILLED true-up: {event.get('terminal_reason') or ''}",
+                    )
+                    if ok:
+                        print(f"  [EXEC] {pair} {side} FILLED: true-up "
+                              f"{fill_amt:.8f} @ {fill_price}")
+                except Exception as e:
+                    print(f"  [EXEC] {pair} {side} FILLED: true-up failed ({e}); "
+                          f"fee still applied")
             self._deduct_fill_fee(engine, entry)
             return
         if state_name in ("CANCELLED_UNFILLED", "REJECTED"):
-            if engine is not None and pre_snap is not None:
-                engine.restore_position(pre_snap)
+            snap = pre_snap
+            if snap is None and isinstance(entry, dict):
+                snap = entry.get("pre_trade_snapshot")
+            if engine is not None and snap is not None:
+                engine.restore_position(snap)
                 print(f"  [EXEC] {pair} {side} {state_name}: engine rolled back "
                       f"(reason: {event.get('terminal_reason') or 'n/a'})")
+            elif engine is not None and snap is None:
+                print(f"  [EXEC] {pair} {side} {state_name}: no pre_trade_snapshot "
+                      f"— engine may be stale (operator verify)")
             return
         if state_name == "PARTIALLY_FILLED":
             # Engine was optimistically committed to the full placed_amount;
-            # actual fill was only vol_exec. reconcile_partial_fill restores
-            # to the pre-trade snapshot and replays only the vol_exec portion,
-            # leaving engine state indistinguishable from a world in which
-            # execute_signal had been called with the real fill amount.
+            # actual fill was only vol_exec. true-up via reconcile_partial_fill.
             ratio = (vol_exec / placed_amount) if placed_amount > 0 else 0.0
             limit_price = float(event.get("avg_fill_price") or 0.0)
             if limit_price <= 0 and engine is not None and engine.prices:
                 # Fallback when Kraken didn't report an avg_fill_price
                 limit_price = engine.prices[-1]
+            snap = pre_snap
+            if snap is None and isinstance(entry, dict):
+                snap = entry.get("pre_trade_snapshot")
             if engine is not None:
                 try:
                     engine.reconcile_partial_fill(
@@ -2898,7 +2942,7 @@ class HydraAgent:
                         placed_amount=float(placed_amount),
                         vol_exec=float(vol_exec),
                         limit_price=limit_price,
-                        pre_trade_snapshot=pre_snap,
+                        pre_trade_snapshot=snap,
                         reason=f"PARTIALLY_FILLED: {event.get('terminal_reason') or ''}",
                     )
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "

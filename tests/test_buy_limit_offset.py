@@ -18,23 +18,24 @@ class BuyLimitOffsetBpsTests(unittest.TestCase):
 
     # ── Table lookup correctness ─────────────────────────────────
 
-    def test_sol_usd_trend_down_uses_90bps(self):
-        self.assertEqual(_buy_limit_offset_bps("SOL/USD", "TREND_DOWN"), 90)
+    def test_sol_usd_trend_down_uses_20bps(self):
+        # PR-C: re-calibrated for fill rate (was 90)
+        self.assertEqual(_buy_limit_offset_bps("SOL/USD", "TREND_DOWN"), 20)
 
-    def test_sol_usdc_trend_down_uses_90bps_via_stable_class(self):
-        self.assertEqual(_buy_limit_offset_bps("SOL/USDC", "TREND_DOWN"), 90)
+    def test_sol_usdc_trend_down_uses_20bps_via_stable_class(self):
+        self.assertEqual(_buy_limit_offset_bps("SOL/USDC", "TREND_DOWN"), 20)
 
-    def test_sol_usdt_trend_down_uses_90bps_via_stable_class(self):
-        self.assertEqual(_buy_limit_offset_bps("SOL/USDT", "TREND_DOWN"), 90)
+    def test_sol_usdt_trend_down_uses_20bps_via_stable_class(self):
+        self.assertEqual(_buy_limit_offset_bps("SOL/USDT", "TREND_DOWN"), 20)
 
-    def test_sol_usd_volatile_uses_65bps(self):
-        self.assertEqual(_buy_limit_offset_bps("SOL/USD", "VOLATILE"), 65)
+    def test_sol_usd_volatile_uses_15bps(self):
+        self.assertEqual(_buy_limit_offset_bps("SOL/USD", "VOLATILE"), 15)
 
-    def test_sol_btc_trend_down_uses_30bps(self):
-        self.assertEqual(_buy_limit_offset_bps("SOL/BTC", "TREND_DOWN"), 30)
+    def test_sol_btc_trend_down_uses_15bps(self):
+        self.assertEqual(_buy_limit_offset_bps("SOL/BTC", "TREND_DOWN"), 15)
 
-    def test_sol_btc_volatile_uses_25bps(self):
-        self.assertEqual(_buy_limit_offset_bps("SOL/BTC", "VOLATILE"), 25)
+    def test_sol_btc_volatile_uses_10bps(self):
+        self.assertEqual(_buy_limit_offset_bps("SOL/BTC", "VOLATILE"), 10)
 
     def test_btc_usd_trend_down_no_offset(self):
         # BTC fills already land at local floor (1h DD == 24h DD).
@@ -69,7 +70,7 @@ class BuyLimitOffsetBpsTests(unittest.TestCase):
         self.assertEqual(_buy_limit_offset_bps("SOLUSD", "TREND_DOWN"), 0)
 
     def test_lowercase_pair_normalises(self):
-        self.assertEqual(_buy_limit_offset_bps("sol/usd", "TREND_DOWN"), 90)
+        self.assertEqual(_buy_limit_offset_bps("sol/usd", "TREND_DOWN"), 20)
 
     # ── Env-flag kill switch ─────────────────────────────────────
 
@@ -86,7 +87,7 @@ class BuyLimitOffsetBpsTests(unittest.TestCase):
         os.environ["HYDRA_BUY_OFFSET_DISABLED"] = "0"
         try:
             self.assertEqual(
-                _buy_limit_offset_bps("SOL/USD", "TREND_DOWN"), 90
+                _buy_limit_offset_bps("SOL/USD", "TREND_DOWN"), 20
             )
         finally:
             os.environ.pop("HYDRA_BUY_OFFSET_DISABLED", None)
@@ -96,13 +97,13 @@ class ApplyBuyLimitOffsetTests(unittest.TestCase):
     def setUp(self):
         os.environ.pop("HYDRA_BUY_OFFSET_DISABLED", None)
 
-    def test_sol_usd_trend_down_drops_price_by_90bps(self):
+    def test_sol_usd_trend_down_drops_price_by_20bps(self):
         # SOL/USD price_decimals=2 -> rounds to 2dp
         bid = 200.00
         adj, bps = _apply_buy_limit_offset("SOL/USD", bid, "TREND_DOWN")
-        # 200.00 * (1 - 0.0090) = 198.20
-        self.assertEqual(bps, 90)
-        self.assertAlmostEqual(adj, 198.20, places=2)
+        # 200.00 * (1 - 0.0020) = 199.60
+        self.assertEqual(bps, 20)
+        self.assertAlmostEqual(adj, 199.60, places=2)
 
     def test_btc_usd_volatile_unchanged(self):
         # BTC has no offset (fills already at local floor).
@@ -116,7 +117,7 @@ class ApplyBuyLimitOffsetTests(unittest.TestCase):
         # to the registry's price_decimals (no over-precision rejection).
         bid = 0.0010982
         adj, bps = _apply_buy_limit_offset("SOL/BTC", bid, "TREND_DOWN")
-        self.assertEqual(bps, 30)
+        self.assertEqual(bps, 15)
         # 0.0010982 * 0.9970 ≈ 0.00109490... — exact value depends on
         # the registry's price_decimals; just assert it dropped and is
         # not over-precise (test against str length is brittle, so just

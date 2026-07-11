@@ -1672,7 +1672,12 @@ class HydraEngine:
             base_asset = self.asset.split("/")[0] if "/" in self.asset else self.asset
             min_size = self.sizer.MIN_ORDER_SIZE.get(base_asset, 0.02)
             if self.position.size < min_size:
-                return None  # Entire position is below ordermin — unsellable
+                # PR-C / C4: write off unsellable dust instead of leaving a
+                # permanent [0, ordermin) bag that blocks state forever.
+                written = self.write_off_dust(reason="unsellable_below_ordermin")
+                if written > 0:
+                    return None  # dust cleared; no exchange sell
+                return None
             sell_amount = self.position.size  # Full close
             revenue = sell_amount * current_price
             profit = (current_price - self.position.avg_entry) * sell_amount
@@ -1895,6 +1900,60 @@ class HydraEngine:
         # identically to pre-flag behavior until the agent refreshes.
         self.tradable = snap.get("tradable", True)
 
+    def true_up_fill(
+        self,
+        side: str,
+        amount: float,
+        fill_price: float,
+        pre_trade_snapshot: Optional[Dict[str, Any]] = None,
+        reason: str = "fill_true_up",
+        strategy: str = "MOMENTUM",
+        confidence: float = 0.0,
+    ) -> bool:
+        """PR-C / C1: rewrite engine books to exchange fill price/amount.
+
+        Restores ``pre_trade_snapshot`` then applies the fill at
+        ``fill_price``. Used for both full FILLED and partial events so
+        avg_entry / balance match Kraken truth (not candle close).
+        Returns True if true-up applied, False if skipped (no snapshot).
+        """
+        if amount <= 0 or fill_price <= 0:
+            return False
+        if pre_trade_snapshot is None:
+            return False
+        self.restore_position(pre_trade_snapshot)
+        try:
+            sig_strategy = Strategy(strategy)
+        except ValueError:
+            sig_strategy = Strategy.MOMENTUM
+        if side.upper() == "BUY":
+            self._apply_buy_fill(amount, fill_price, reason, sig_strategy, confidence)
+        elif side.upper() == "SELL":
+            self._apply_sell_fill(amount, fill_price, reason, sig_strategy, confidence)
+        else:
+            return False
+        return True
+
+    def write_off_dust(self, reason: str = "dust_write_off") -> float:
+        """PR-C / C4: zero position residue in [0, ordermin) that cannot sell.
+
+        Returns the written-off size (0 if nothing done).
+        """
+        base_asset = self.asset.split("/")[0] if "/" in self.asset else self.asset
+        min_size = self.sizer.MIN_ORDER_SIZE.get(base_asset, 0.02)
+        size = self.position.size
+        if size <= 0:
+            return 0.0
+        if size >= min_size:
+            return 0.0
+        # Anything below ordermin is unsellable on Kraken — clear books.
+        written = size
+        self.position.size = 0.0
+        self.position.avg_entry = 0.0
+        self.position.params_at_entry = None
+        self.position.unrealized_pnl = 0.0
+        return written
+
     def reconcile_partial_fill(
         self,
         side: str,
@@ -1906,29 +1965,22 @@ class HydraEngine:
         strategy: str = "MOMENTUM",
         confidence: float = 0.0,
     ) -> None:
-        """Correct engine state after a PARTIALLY_FILLED execution event.
+        """Correct engine state after a PARTIALLY_FILLED (or full true-up) event.
 
         At execute_signal time, the engine optimistically committed the full
         `placed_amount` to position/balance. The exchange actually filled only
-        `vol_exec`. This method reverses the un-filled portion.
-
-        When `pre_trade_snapshot` is available (always the case for current-
-        session fills), the safest path is: restore to the snapshot, then
-        replay only the filled portion through the same state-mutation logic
-        as _maybe_execute. This guarantees the end state is indistinguishable
-        from a world in which execute_signal had been called with the real
-        fill amount.
+        `vol_exec` (or full at a different price). Preferred path: restore
+        snapshot + replay filled amount at fill price (PR-C true-up).
 
         When `pre_trade_snapshot` is None (resume-path: previous session's
         snapshot wasn't persisted), we fall back to arithmetic reversal and
-        log a loud warning — accuracy here depends on the caller passing the
-        pre-commit state or accepting drift.
+        accept avg_entry drift.
 
         Args:
             side: "BUY" or "SELL"
             placed_amount: What execute_signal was told to commit
             vol_exec: What actually filled on the exchange
-            limit_price: The limit price of the placed order
+            limit_price: The fill / limit price to book
             pre_trade_snapshot: Snapshot from snapshot_position() taken before
                 execute_signal was called. Preferred path.
             reason / strategy / confidence: carried into the replayed Trade
@@ -1938,23 +1990,29 @@ class HydraEngine:
             return
         if vol_exec < 0:
             vol_exec = 0.0
-        # Full fill — nothing to reconcile
+
+        # PR-C: always prefer restore+replay when snapshot exists — even on
+        # full fills — so avg_entry tracks exchange fill price not candle close.
+        if pre_trade_snapshot is not None:
+            if vol_exec <= 0:
+                self.restore_position(pre_trade_snapshot)
+                return
+            self.true_up_fill(
+                side=side,
+                amount=float(vol_exec),
+                fill_price=float(limit_price),
+                pre_trade_snapshot=pre_trade_snapshot,
+                reason=reason,
+                strategy=strategy,
+                confidence=confidence,
+            )
+            return
+
+        # Full fill without snapshot — nothing arithmetic to reverse
         if vol_exec >= placed_amount * 0.999999:  # float-safe
             return
 
-        if pre_trade_snapshot is not None:
-            self.restore_position(pre_trade_snapshot)
-            if vol_exec <= 0:
-                return  # fully unfilled — restore was sufficient
-            try:
-                sig_strategy = Strategy(strategy)
-            except ValueError:
-                sig_strategy = Strategy.MOMENTUM
-            if side.upper() == "BUY":
-                self._apply_buy_fill(vol_exec, limit_price, reason, sig_strategy, confidence)
-            elif side.upper() == "SELL":
-                self._apply_sell_fill(vol_exec, limit_price, reason, sig_strategy, confidence)
-            return
+        # Fallback: no snapshot available (resume-path). Arithmetic reversal
 
         # Fallback: no snapshot available (resume-path). Arithmetic reversal
         # of the unfilled delta. Cannot recover exact avg_entry weighting if
