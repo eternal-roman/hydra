@@ -1846,6 +1846,7 @@ class HydraEngine:
             strategy=sig_strategy,
         )
         # Re-apply selective rails so generate_only + external execute cannot bypass
+        # (brain/coordinator cannot open chop BUYs or skip TREND_DOWN flatten).
         if self.regime_selective and self.candles and self.prices:
             regime = RegimeDetector.detect(
                 self.candles, self.prices,

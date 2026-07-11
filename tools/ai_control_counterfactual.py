@@ -148,21 +148,12 @@ def policy_max_loose(state: Dict[str, Any], pos_size: float, **_kw) -> PolicyDec
 
 
 def policy_ai_proxy_selective(state: Dict[str, Any], pos_size: float, **_kw) -> PolicyDecision:
-    """Engine-backed selective rails (single source of truth in HydraEngine).
-
-    When run_policy sets regime_selective=True, tick() already applied
-    _apply_regime_selective. This policy only executes the post-filter signal.
-    """
+    """Execute post-filter engine signal (rails applied in HydraEngine.tick)."""
     action, conf, reason, strategy = _engine_action(state)
-    notes = ["control:engine_regime_selective", f"pos={pos_size:.6f}"]
     return PolicyDecision(
-        action, conf, 1.0, f"engine_sel|{strategy}|{reason}", notes,
+        action, conf, 1.0, f"engine_sel|{strategy}|{reason}",
+        ["control:engine_regime_selective"],
     )
-
-
-def policy_engine_selective(state: Dict[str, Any], pos_size: float, **_kw) -> PolicyDecision:
-    """Alias of policy_ai_proxy_selective for explicit naming in retests."""
-    return policy_ai_proxy_selective(state, pos_size=pos_size, **_kw)
 
 
 def policy_ai_proxy_aggressive(state: Dict[str, Any], pos_size: float, **_kw) -> PolicyDecision:
@@ -184,7 +175,6 @@ POLICIES = {
     "no_friction": policy_no_friction,
     "max_loose": policy_max_loose,
     "ai_proxy_selective": policy_ai_proxy_selective,
-    "engine_selective": policy_engine_selective,
     "ai_proxy_aggressive": policy_ai_proxy_aggressive,
 }
 
@@ -221,17 +211,19 @@ def run_policy(
     else:
         os.environ.pop("HYDRA_FRICTION_GATE_DISABLED", None)
 
-    sizing = dict(SIZING_COMPETITION if mode == "competition" else {"kelly_multiplier": 0.25, "min_confidence": 0.65, "max_position_pct": 0.30})
-    # Lower min_conf for loose / AI-proxy policies before engine construction
-    # engine_selective keeps competition min_conf (0.65); engine applies 0.55 floor itself
+    sizing = dict(
+        SIZING_COMPETITION if mode == "competition"
+        else {"kelly_multiplier": 0.25, "min_confidence": 0.65, "max_position_pct": 0.30}
+    )
+    # Research-only conf floors (not live defaults). Selective uses 0.55 to
+    # match the causal study; live competition keeps 0.65 when flag is on.
     if policy_name in ("loose_conf", "max_loose", "ai_proxy_aggressive"):
         sizing["min_confidence"] = 0.50
     elif policy_name == "ai_proxy_selective":
         sizing["min_confidence"] = 0.55
 
     if regime_selective is None:
-        # Single source of truth: engine-native rails for selective names
-        regime_selective = policy_name in ("ai_proxy_selective", "engine_selective")
+        regime_selective = policy_name == "ai_proxy_selective"
 
     eng = HydraEngine(
         initial_balance=initial,

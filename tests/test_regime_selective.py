@@ -106,9 +106,15 @@ def test_selective_off_passthrough():
 
 
 def test_selective_does_not_lower_min_conf():
-    eng = _engine(True)
-    # Default conservative sizer is 0.65; selective must not drop it to 0.50
-    assert eng.sizer.min_confidence >= 0.55
+    from hydra_engine import SIZING_COMPETITION
+    eng = HydraEngine(
+        initial_balance=1000.0,
+        asset="SOL/USD",
+        sizing=dict(SIZING_COMPETITION),
+        regime_selective=True,
+    )
+    # Product path keeps competition floor; must not silently drop to 0.50/0.55
+    assert eng.sizer.min_confidence == 0.65
 
 
 def test_friction_constants_intact():
@@ -121,3 +127,23 @@ def test_selective_does_not_set_friction_kill(monkeypatch):
     monkeypatch.delenv("HYDRA_FRICTION_GATE_DISABLED", raising=False)
     _ = _engine(True)
     assert os.environ.get("HYDRA_FRICTION_GATE_DISABLED") != "1"
+
+
+def test_block_buy_trend_down_when_flat():
+    eng = _engine(True)
+    eng.position.size = 0.0
+    sig = Signal(SignalAction.BUY, 0.90, "DEF nibble", Strategy.DEFENSIVE)
+    out = eng._apply_regime_selective(Regime.TREND_DOWN, sig)
+    assert out.action == SignalAction.HOLD
+    assert "block_buy_TREND_DOWN" in out.reason
+
+
+def test_force_flatten_rewrites_brain_hold():
+    """Caller HOLD must become SELL when long under TREND_DOWN (no bypass)."""
+    eng = _engine(True)
+    eng.position.size = 1.0
+    eng.position.avg_entry = 100.0
+    sig = Signal(SignalAction.HOLD, 0.5, "brain hold", Strategy.DEFENSIVE)
+    out = eng._apply_regime_selective(Regime.TREND_DOWN, sig)
+    assert out.action == SignalAction.SELL
+    assert "force_flatten" in out.reason

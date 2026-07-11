@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.27.4] — 2026-07-11
+
+Opt-in regime-selective rails from causal AI-control study (re-regulation,
+not deregulation). Absolute strategy alpha remains unproven.
+
+### Added
+- **`HYDRA_REGIME_SELECTIVE=1`** (default **off**): when enabled, engine
+  applies TREND_UP-only BUY entries (conf ≥ 0.55), blocks BUY in other
+  regimes, and force-flattens longs on TREND_DOWN. Wired in `tick()` and
+  re-applied in `execute_signal()` so brain/coordinator cannot bypass.
+- `tests/test_regime_selective.py` + CI step; research tools
+  `tools/ai_control_counterfactual.py`, `tools/retest_regime_selective_ranges.py`.
+
+### Notes
+- Does **not** lower min_confidence to 0.50 or disable the friction gate.
+- Historical causal retest (SOL/USD 1h, realistic fills): selective ≈ **−1.3%**
+  (90d) / **−6.8%** (365d) vs baseline ≈ **−13.2%** / **−14.3%** — better
+  defense, still not absolute profit on those windows.
+- SPOT-ONLY / limit post-only / 15% CB unchanged.
+
+---
+
 ## [2.27.3] — 2026-07-11
 
 Trading-mechanics remediation (PR-A…F): exit guarantees, hard risk caps,
