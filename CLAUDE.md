@@ -80,6 +80,7 @@ regression bug, not a style issue.
 - **Exit guarantees (PR-A)** — Circuit breaker blocks BUY only; SELL always allowed when `position.size > 0` (halt flatten). SELL ignores `min_confidence` (entries still require it). R2 force_holds extreme-negative-funding **BUY** (bounce-chase), never spot SELL (long close).
 - **Hard risk caps (PR-B)** — `max_position_pct` applies **after** brain `size_multiplier` and caps gross inventory (notional/equity). Peak equity never rebases downward on balance seed/resume. Portfolio max DD ≥ 15% sticky-blocks new BUYs (SELL still allowed).
 - **Fill true-up (PR-C)** — Every terminal FILLED/PARTIAL restores `pre_trade_snapshot` and replays at exchange `avg_fill_price` (not candle close). Snapshot persisted on journal PLACED. Unsellable dust below ordermin is written off. BUY limit offsets capped (≤20 bps SOL/STABLE) for post-only fill rate.
+- **Kelly / friction honesty (PR-D)** — PositionSizer uses excess-over-threshold Kelly (conf=min → edge 0.10, conf=1 → 1.0), not `(conf*2-1)`. Friction hurdle is timeframe-aware (≥2.0% on 1h+ bars). Go-live plumbing gates: `python scripts/go_live_gates.py`.
 
 Subsystem detail (indicators, regime, Kelly sizing, price precision,
 execution stream lifecycle, resume reconciliation, forex modifier,

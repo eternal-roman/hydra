@@ -778,8 +778,14 @@ class PositionSizer:
         if confidence < self.min_confidence or balance < costmin or price <= 0:
             return 0.0
 
-        # Kelly edge estimate scaled by multiplier
-        edge = max(0.0, (confidence * 2.0 - 1.0))  # 0 at 50% conf, 1 at 100%
+        # PR-D / D1: excess-over-threshold Kelly.
+        # Old formula edge=(conf*2-1) treated conf=0.65 as a 30% edge (massive
+        # oversize for an uncalibrated heuristic). Now conf at the execution
+        # floor maps to a small edge (0.10) and only conf→1.0 reaches full
+        # edge 1.0. Kelly multiplier (quarter/half) still scales on top.
+        span = max(1e-9, 1.0 - self.min_confidence)
+        t = max(0.0, min(1.0, (confidence - self.min_confidence) / span))
+        edge = 0.10 + 0.90 * t  # 0.10 at min_conf → 1.0 at conf=1.0
         kelly = edge * self.kelly_multiplier
 
         position_value = kelly * balance
@@ -1612,7 +1618,15 @@ class HydraEngine:
         if (signal.action == SignalAction.BUY
                 and os.environ.get("HYDRA_FRICTION_GATE_DISABLED") != "1"):
             expected = self._expected_move_pct(signal, current_price)
+            # PR-D / D2: timeframe-aware hurdle. On 1h+ candles the BB-mid /
+            # 2×ATR proxies almost always clear 0.84% (audit: 0/437 blocks
+            # on SOL 1y), so the gate was inert. Raise the floor for longer
+            # bars so only trades with material expected move clear.
             hurdle = self.FRICTION_HURDLE_MULT * self.ROUND_TRIP_FRICTION_PCT
+            if getattr(self, "candle_interval", 15) >= 60:
+                hurdle = max(hurdle, 2.0)  # percent
+            elif getattr(self, "candle_interval", 15) >= 30:
+                hurdle = max(hurdle, 1.2)
             if expected is not None and expected < hurdle:
                 self.friction_skips += 1
                 return None
