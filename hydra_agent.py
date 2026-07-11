@@ -734,8 +734,17 @@ class HydraAgent:
 
         Caps at the most recent 200 non-failed entries (matches the prior
         [-200:] cap on the unfiltered list)."""
-        return [e for e in self.order_journal
-                if e.get("lifecycle", {}).get("state") != "PLACEMENT_FAILED"][-200:]
+        # Strip in-memory-only blobs that are large / redundant on disk.
+        # pre_trade_snapshot is kept in-memory for same-session cancel/true-up;
+        # on resume, CANCELLED_UNFILLED without snapshot still warns (pre-PR-C).
+        # We DO persist a compact snapshot key when present so resume rollback
+        # can restore engine books after crash mid-PLACED.
+        out: List[Dict[str, Any]] = []
+        for e in self.order_journal:
+            if e.get("lifecycle", {}).get("state") == "PLACEMENT_FAILED":
+                continue
+            out.append(e)
+        return out[-200:]
 
     def _save_snapshot(self):
         """Atomically save session state to disk (.tmp -> os.replace).
@@ -1488,66 +1497,65 @@ class HydraAgent:
                                 all_states[pair] = engine_states[pair]
 
                 # Phase 2.5: Execute finalized signals on engines (deferred from
-                # generate_only=True). Always runs (PR-E / E5) so coordinator
-                # overrides apply even without a brain. Skip swap pairs.
+                # generate_only=True). Always runs so coordinator overrides apply
+                # even without a brain. Skip swap pairs.
                 swap_pairs = set()
                 if pending_swaps:
                     for s in pending_swaps:
                         swap_pairs.add(s["sell_pair"])
                         swap_pairs.add(s["buy_pair"])
-                if True:  # was `if self.brain` — always execute post-coord
-                    for pair in self.pairs:
-                        if pair in swap_pairs:
-                            continue
-                        state = all_states.get(pair)
-                        if not state:
-                            continue
-                        sig = state.get("signal", {})
-                        ai = state.get("ai_decision", {})
-                        engine = self.engines[pair]
-                        pre_trade_snap = engine.snapshot_position()
-                        # Clamp the brain's size_multiplier to [0.0, 1.5] so no single
-                        # modifier can exceed Kelly's hard cap.
-                        _sm = ai.get("size_multiplier")
-                        _brain_mult = float(1.0 if _sm is None else _sm)
-                        _final_mult = max(0.0, min(1.5, _brain_mult))
-                        _action = sig.get("action", "HOLD")
-                        if self._should_block_buy_for_portfolio_dd(
-                            self._portfolio_buy_halted, _action
-                        ):
-                            trade = None
-                            print(
-                                f"  [PORTFOLIO CB] {pair}: BUY blocked "
-                                f"(portfolio max DD "
-                                f"{self._portfolio_max_drawdown_pct:.1f}%)"
-                            )
-                        else:
-                            trade = engine.execute_signal(
-                                action=_action,
-                                confidence=sig.get("confidence", 0),
-                                reason=sig.get("reason", ""),
-                                strategy=state.get("strategy", "MOMENTUM"),
-                                size_multiplier=_final_mult,
-                            )
-                        if trade is None and sig.get("action") in ("BUY", "SELL") and ai:
-                            print(f"  [BRAIN] {pair}: {sig['action']} signal did not execute "
-                                  f"(conf={sig.get('confidence', 0):.2f}, "
-                                  f"size_mult={ai.get('size_multiplier', 1.0):.2f}, "
-                                  f"brain={ai.get('action', '?')})")
-                        if trade:
-                            is_usd_pair = (pair.split("/")[1].upper() if "/" in pair else "") in STABLE_QUOTES
-                            value_decimals = 2 if is_usd_pair else 8
-                            state["last_trade"] = {
-                                "action": trade.action,
-                                "price": round(trade.price, 8),
-                                "amount": round(trade.amount, 8),
-                                "value": round(trade.value, value_decimals),
-                                "reason": trade.reason,
-                                "confidence": round(trade.confidence, 4),
-                                "profit": round(trade.profit, value_decimals) if trade.profit is not None else None,
-                                "params_at_entry": trade.params_at_entry,
-                            }
-                            state["_pre_trade_snapshot"] = pre_trade_snap
+                for pair in self.pairs:
+                    if pair in swap_pairs:
+                        continue
+                    state = all_states.get(pair)
+                    if not state:
+                        continue
+                    sig = state.get("signal", {})
+                    ai = state.get("ai_decision", {})
+                    engine = self.engines[pair]
+                    pre_trade_snap = engine.snapshot_position()
+                    # Clamp the brain's size_multiplier to [0.0, 1.5] so no single
+                    # modifier can exceed Kelly's hard cap.
+                    _sm = ai.get("size_multiplier")
+                    _brain_mult = float(1.0 if _sm is None else _sm)
+                    _final_mult = max(0.0, min(1.5, _brain_mult))
+                    _action = sig.get("action", "HOLD")
+                    if self._should_block_buy_for_portfolio_dd(
+                        getattr(self, "_portfolio_buy_halted", False), _action
+                    ):
+                        trade = None
+                        print(
+                            f"  [PORTFOLIO CB] {pair}: BUY blocked "
+                            f"(portfolio max DD "
+                            f"{getattr(self, '_portfolio_max_drawdown_pct', 0.0):.1f}%)"
+                        )
+                    else:
+                        trade = engine.execute_signal(
+                            action=_action,
+                            confidence=sig.get("confidence", 0),
+                            reason=sig.get("reason", ""),
+                            strategy=state.get("strategy", "MOMENTUM"),
+                            size_multiplier=_final_mult,
+                        )
+                    if trade is None and sig.get("action") in ("BUY", "SELL") and ai:
+                        print(f"  [BRAIN] {pair}: {sig['action']} signal did not execute "
+                              f"(conf={sig.get('confidence', 0):.2f}, "
+                              f"size_mult={ai.get('size_multiplier', 1.0):.2f}, "
+                              f"brain={ai.get('action', '?')})")
+                    if trade:
+                        is_usd_pair = (pair.split("/")[1].upper() if "/" in pair else "") in STABLE_QUOTES
+                        value_decimals = 2 if is_usd_pair else 8
+                        state["last_trade"] = {
+                            "action": trade.action,
+                            "price": round(trade.price, 8),
+                            "amount": round(trade.amount, 8),
+                            "value": round(trade.value, value_decimals),
+                            "reason": trade.reason,
+                            "confidence": round(trade.confidence, 4),
+                            "profit": round(trade.profit, value_decimals) if trade.profit is not None else None,
+                            "params_at_entry": trade.params_at_entry,
+                        }
+                        state["_pre_trade_snapshot"] = pre_trade_snap
 
                 # Print status and place orders (sequential — rate limiting required)
                 # Skip swap pairs — the swap handler manages their execution.
@@ -1848,16 +1856,10 @@ class HydraAgent:
             # Engine retains previous candle data from warmup / prior ticks.
             return None
 
-        # Snapshot position before tick so we can rollback if exchange order fails.
-        # When generate_only=True (brain active), execute_signal happens later and
-        # snapshots there. When generate_only=False, tick() may execute internally.
-        pre_trade_snap = engine.snapshot_position() if not self.brain else None
-        # PR-E / E5: always generate_only so coordinator can mutate the
-        # signal before execute_signal (brain-off used to execute inside
-        # tick() and ignore coordinator SELL/BUY rewrites that tick).
+        # Always generate_only so coordinator can mutate the signal before
+        # phase-2.5 execute_signal. Pre-trade snapshots are taken in phase 2.5
+        # immediately before execute (not here).
         state = engine.tick(generate_only=True)
-        if pre_trade_snap and state.get("last_trade"):
-            state["_pre_trade_snapshot"] = pre_trade_snap
         return state
 
     def _apply_brain(self, pair: str, state: dict, all_engine_states: dict) -> dict:

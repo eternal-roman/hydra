@@ -180,6 +180,26 @@ jobs:
       - name: Run flywheel + friction/fee-true tests (v2.27)
         run: python -m pytest tests/test_flywheel.py tests/test_friction_fee.py tests/test_demo_mode.py -v
 
+      - name: Run trading-mechanics remediation tests (PR-A…F exit/caps/true-up/Kelly/quant/warmup)
+        run: |
+          python -m pytest \
+            tests/test_exit_guarantees.py \
+            tests/test_position_caps.py \
+            tests/test_fill_trueup.py \
+            tests/test_kelly_edge.py \
+            tests/test_warmup_unified.py \
+            tests/test_pr_e_quant_crosspair.py \
+            tests/test_remediation_loose_ends.py \
+            -v
+
+      - name: Run go-live plumbing gates (sqlite required; skip if absent)
+        run: |
+          if [ -f hydra_history.sqlite ]; then
+            python scripts/go_live_gates.py
+          else
+            echo "hydra_history.sqlite not present — skipping go_live_gates"
+          fi
+
       - name: Run live-execution harness (smoke + mock)
         run: |
           python tests/live_harness/harness.py --mode smoke

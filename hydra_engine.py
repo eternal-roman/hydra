@@ -2040,8 +2040,6 @@ class HydraEngine:
             return
 
         # Fallback: no snapshot available (resume-path). Arithmetic reversal
-
-        # Fallback: no snapshot available (resume-path). Arithmetic reversal
         # of the unfilled delta. Cannot recover exact avg_entry weighting if
         # the original trade was an average-in — we accept that drift and log.
         unfilled = placed_amount - vol_exec
@@ -2362,6 +2360,10 @@ class HydraEngine:
             "candle_status": self._candle_status(),
             "halted": self.halted,
             "halt_reason": self.halt_reason,
+            # Exposed so CrossPairCoordinator Rule 3 can refuse swaps into an
+            # informational-only (unfunded) bridge before the agent dashboard
+            # layer stamps tradable again later in the tick.
+            "tradable": bool(self.tradable),
             "indicators": signal.indicators if signal.indicators else {},
             "candles": [
                 {"o": c.open, "h": c.high, "l": c.low, "c": c.close, "t": c.timestamp}

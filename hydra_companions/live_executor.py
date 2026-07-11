@@ -73,16 +73,40 @@ class LiveExecutor:
             self._broadcast_failed(p.proposal_id, p.companion_id, result["error"])
             return {"ok": False, "error": result["error"]}
 
-        # Placement succeeded; lifecycle continues via ExecutionStream.
+        # Register with the agent's ExecutionStream so fills are not dropped
+        # (unknown order_id). Engine/journal still do not book this path —
+        # companion live remains opt-in and inventory-blind until a full
+        # agent _place_order adapter lands. Registration at least prevents
+        # silent WS event loss.
+        order_id = result.get("txid") or result.get("ordertx")
+        if isinstance(order_id, list):
+            order_id = order_id[0] if order_id else None
+        stream = getattr(self.agent, "execution_stream", None)
+        if stream is not None and order_id and order_id != "unknown":
+            try:
+                stream.register(
+                    order_id=str(order_id),
+                    userref=userref,
+                    pair=p.pair,
+                    side=str(p.side).upper(),
+                    placed_amount=float(p.size),
+                    journal_index=-1,  # no agent journal row (companion path)
+                    engine_ref=None,
+                    pre_trade_snapshot=None,
+                )
+            except Exception as reg_err:
+                print(f"  [COMPANION LIVE] execution_stream.register failed: "
+                      f"{type(reg_err).__name__}: {reg_err}")
+
         self._broadcast("companion.trade.executed", {
             "proposal_id": p.proposal_id,
             "companion_id": p.companion_id,
             "user_id": p.user_id,
             "status": "placed",
             "userref": userref,
-            "txid": result.get("txid") or result.get("ordertx"),
+            "txid": order_id,
         })
-        return {"ok": True, "userref": userref}
+        return {"ok": True, "userref": userref, "order_id": order_id}
 
     def execute_ladder(self, p: "LadderProposal") -> dict:
         # Per-companion daily cap backstop, mirroring execute_trade().
