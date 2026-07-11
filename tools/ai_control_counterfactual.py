@@ -148,7 +148,12 @@ def policy_max_loose(state: Dict[str, Any], pos_size: float, **_kw) -> PolicyDec
 
 
 def policy_ai_proxy_selective(state: Dict[str, Any], pos_size: float, **_kw) -> PolicyDecision:
-    """Execute post-filter engine signal (rails applied in HydraEngine.tick)."""
+    """Pass-through: rails live in HydraEngine when regime_selective=True.
+
+    Does not re-implement TREND_UP / force-flatten logic here (single source of
+    truth). Research sizer floor may be 0.55 for study fidelity; live competition
+    stays min_conf 0.65 unless the operator changes sizing.
+    """
     action, conf, reason, strategy = _engine_action(state)
     return PolicyDecision(
         action, conf, 1.0, f"engine_sel|{strategy}|{reason}",

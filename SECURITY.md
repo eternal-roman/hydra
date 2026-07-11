@@ -30,5 +30,5 @@ In scope:
 - Logic flaws that could cause unintended order execution
 
 Out of scope:
-- Trading strategy effectiveness or financial losses
+- Trading strategy effectiveness or financial losses (see README / CHANGELOG: expectancy is research, not a guarantee)
 - Issues in third-party dependencies (report upstream)

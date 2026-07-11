@@ -17,7 +17,7 @@ the tick-loop wrapper at lines 2155-2193, any `order_journal.append` site, or
 | Mode | Duration | Cost | What it runs |
 |---|---|---|---|
 | `smoke` | ~1.5s | $0 | Import + agent construction only |
-| `mock` *(default)* | ~1.5s | $0 | 33+ scenarios via monkey-patched Kraken (H/F/E/S/R/Hp/W) |
+| `mock` *(default)* | ~1.5s | $0 | **35** scenarios via monkey-patched Kraken (H/F/E/S/R/Hp/W) — CI gate |
 | `validate` | ~10s | $0 | 3 scenarios hitting real Kraken read-only + `--validate` |
 | `live` | ~3min | <$0.01 | 7 scenarios with real post-only orders + immediate cancel |
 
@@ -44,8 +44,9 @@ Exit codes: `0` all passed, `1` scenario failure, `2` harness setup error.
 
 ## Scenario catalog
 
-Source of truth is `scenarios.py` → `ALL_SCENARIOS`. 41+ scenarios across 8
-categories:
+Source of truth is `scenarios.py` → `ALL_SCENARIOS`. Mock CI runs the registered
+subset that currently reports **35/35**; full registry includes live-only (`L*`)
+scenarios not executed in `mock` mode. Categories:
 
 | Prefix | Category | Count | What it tests |
 |---|---|---|---|

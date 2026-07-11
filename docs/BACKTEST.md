@@ -1,34 +1,36 @@
 # HYDRA Backtesting & Experimentation — Runbook
 
-User-facing guide for the v2.10.0 backtest platform. For the full design spec,
+User-facing guide for the research backtest platform. For the full design spec,
 see [`BACKTEST_SPEC.md`](./BACKTEST_SPEC.md).
 
+> **Honest scope:** Default `BacktestRunner` replays **`HydraEngine` + optional
+> cross-pair coordinator**. It does **not** run the full live AI brain on every
+> tick (brain modifiers are intentionally out of Phase-1 backtest). Positive
+> backtest metrics are **not** a go-live guarantee. For causal next-bar
+> counterfactuals (rails on/off), see `tools/ai_control_counterfactual.py` and
+> `tools/retest_regime_selective_ranges.py` (require `hydra_history.sqlite`).
+
 > **v2.26.0 note:** the **AI Reviewer** and **Shadow Validator** were archived
-> in v2.26.0 (built + CI-tested, never wired into production — `reviewer=None`).
-> The live platform today is engine replay + experiments + walk-forward, surfaced
-> through the dashboard **RESEARCH** tab. Their design is kept as history in
-> `BACKTEST_SPEC.md`. See CHANGELOG v2.26.0.
+> (built + CI-tested, never production-wired). Live research surface is engine
+> replay + experiments + walk-forward in the **RESEARCH** tab. Design history
+> remains in `BACKTEST_SPEC.md`.
 
 ---
 
 ## What it is
 
-A strictly-additive backtesting and experimentation layer that sits **on top of**
-the live agent without touching its code path. You can:
+A backtesting and experimentation layer that reuses live engine code without
+placing exchange orders. You can:
 
-1. Run historical simulations using the exact same `HydraEngine` code that trades
-   live (zero logic drift — guaranteed by `tests/test_backtest_drift.py`).
-2. Compare presets (default, ideal, divergent, aggressive, defensive, and three
-   regime-focused variants) and custom parameter sweeps side-by-side.
-3. Watch a backtest render in real time alongside live in a dockable "observer
-   modal" — the same pair-card / equity-chart / regime-ribbon components you see
-   on the live tab, so "what is" and "what if" use the same visual language.
-4. Optionally let the AI Brain (Analyst + Risk Manager) run backtests
-   **mid-deliberation** via Anthropic tool-use, so hypotheses are validated
-   against history before they influence a live trade.
+1. Run historical simulations with the same `HydraEngine` logic as live
+   (`tests/test_backtest_drift.py` guards drift for the Phase-1 path).
+2. Compare presets and parameter sweeps (Sharpe, drawdown, win rate — **not**
+   automatic proof of live edge).
+3. Stream results in the dashboard **RESEARCH** tab (observer modal).
+4. Optionally invoke backtests from the AI brain **tool-use** path mid-session
+   (when enabled) — still subject to the engine-only replay limitations above.
 
-Everything is gated behind flags and kill switches. Default behavior with no
-opt-in flag is identical to v2.9.x.
+Kill switch: `HYDRA_BACKTEST_DISABLED=1`.
 
 > The **AI Reviewer** (rigor gates) and **Shadow Validator** were archived in
 > v2.26.0 — built and CI-tested but never wired into production. Their design
