@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [2.27.5] — 2026-07-11
 
 Evidence-weighted rails cleanup: harden defense + trend capture, remove
 weaker/opt-in re-regulation and research clutter that encouraged false
@@ -17,8 +17,6 @@ defaults. Absolute strategy alpha remains unproven.
   0.65, force-flatten TREND_DOWN, ride mid-TREND_UP except extreme
   overbought reason. Kill: `=0`. Spec: `docs/HOLD_THROUGH.md`.
   Tests: `tests/test_hold_through.py` (CI).
-- History store open-path drops orphan `regression_*` tables (Mode C
-  self-comparison leftovers) so the DB stays raw OHLC + meta only.
 
 ### Changed
 - Engine constructor `regime_selective=` → `hold_through=`; env
@@ -27,11 +25,18 @@ defaults. Absolute strategy alpha remains unproven.
   **reason-only** (no conf-based cut that failed calibration).
 - Docs/README/SKILL: honest expectancy + decision tree; no TA overlay
   product defaults (multi-pair bakeoff: no clear winner).
+- History store is **OHLC-only**: open-path drops orphan `regression_*`
+  tables if present; docstrings/comments no longer claim a release-
+  snapshot / Mode C role (feature removed in v2.26.1 as inert
+  self-comparison). Research Lab walk-forward kernel retained.
 
 ### Removed
 - **`HYDRA_REGIME_SELECTIVE`** and `tests/test_regime_selective.py`.
 - `tools/retest_regime_selective_ranges.py` and superpowers plans/specs
   for selective rails (superseded by hold-through).
+- Residual Mode C language from `hydra_history_store`,
+  `hydra_walk_forward`, and `hydra_backtest_server` (code path was
+  already gone; comments still advertised it).
 
 ### Notes
 - Does **not** disable friction, drop competition min_conf, or change
