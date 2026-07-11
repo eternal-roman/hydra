@@ -17,6 +17,7 @@ from hydra_companions.config import live_execution_enabled  # noqa: E402
 
 LIVE = "HYDRA_COMPANION_LIVE_EXECUTION"
 PROP = "HYDRA_COMPANION_PROPOSALS_ENABLED"
+DISABLED = "HYDRA_COMPANION_DISABLED"
 
 
 def _set(key, val):
@@ -27,15 +28,24 @@ def _set(key, val):
 
 
 def _with_env(live=None, proposals=None, fn=None):
+    """Isolate companion gates from suite env pollution.
+
+    live_execution_enabled() also requires proposals_enabled() which
+    requires the companion not to be disabled — clear DISABLED for the
+    duration so parallel/prior tests cannot false-fail the money gate.
+    """
     prev_live = os.environ.get(LIVE)
     prev_prop = os.environ.get(PROP)
+    prev_dis = os.environ.get(DISABLED)
     try:
         _set(LIVE, live)
         _set(PROP, proposals)
+        _set(DISABLED, None)  # companion subsystem on for this probe
         return fn()
     finally:
         _set(LIVE, prev_live)
         _set(PROP, prev_prop)
+        _set(DISABLED, prev_dis)
 
 
 def test_default_unset_is_off():

@@ -88,17 +88,20 @@ def test_r1_does_not_fire_below_threshold():
 # ─── R2: funding extreme short + SELL ────────────────────────
 
 
-def test_r2_fires_on_extreme_negative_funding_and_sell():
+def test_r2_does_not_force_hold_sell_on_extreme_negative_funding():
+    """PR-A: spot SELL is a long close — R2 must never trap exits."""
     qi = dict(FRESH_INDICATORS_BALANCED, funding_bps_8h=-(FUNDING_EXTREME_BPS + 5))
     r = apply_rules("SELL", {"positioning_bias": "crowded_short"}, qi)
-    assert r.force_hold is True
-    assert "R2" in [f.rule_id for f in r.triggered]
+    assert r.force_hold is False
+    assert "R2" not in [f.rule_id for f in r.triggered]
 
 
-def test_r2_does_not_fire_on_buy():
+def test_r2_fires_on_extreme_negative_funding_and_buy():
+    """PR-A: R2 repurposed — block BUY into capitulation bounce-chase."""
     qi = dict(FRESH_INDICATORS_BALANCED, funding_bps_8h=-(FUNDING_EXTREME_BPS + 5))
     r = apply_rules("BUY", {}, qi)
-    assert "R2" not in [f.rule_id for f in r.triggered]
+    assert r.force_hold is True
+    assert "R2" in [f.rule_id for f in r.triggered]
 
 
 # ─── R3: short_squeeze + BUY ────────────────────────────────
@@ -382,15 +385,15 @@ def test_qfe_fires_at_exact_min_profit():
     assert r.force_exit is True
 
 
-def test_qfe_blocked_by_crowded_short_bias():
-    """Shorts crowded = squeeze likely, don't exit the long."""
+def test_qfe_crowded_short_bias_alone_does_not_block():
+    """PR-A: LLM bias alone must not veto QFE without deterministic OI squeeze."""
     r = evaluate_qfe(
         position_size=1.5,
         unrealized_pnl_pct=5.0,
         quant_indicators=FRESH_INDICATORS_BALANCED,
         positioning_bias="crowded_short",
     )
-    assert r.force_exit is False
+    assert r.force_exit is True
 
 
 def test_qfe_blocked_by_short_squeeze_regime():
@@ -493,16 +496,24 @@ def test_qfe_crowded_long_does_not_block():
     assert r.force_exit is True
 
 
-def test_qfe_integration_with_r2_force_hold():
-    """Simulate R2 (funding extreme short + SELL) blocking a profitable exit.
-    apply_rules should set force_hold, then evaluate_qfe should override."""
+def test_qfe_integration_with_r1_force_hold_on_prior_buy_context():
+    """R1 force_holds BUY into crowded long; QFE still releases a profitable SELL.
+
+    PR-A: R2 no longer force_holds SELL. Integration path is any force_hold
+    source (here R10-style nulls, or a prior session hold) + QFE on SELL.
+    """
     qi = dict(
         FRESH_INDICATORS_BALANCED,
-        funding_bps_8h=-(FUNDING_EXTREME_BPS + 10),
+        funding_bps_8h=FUNDING_EXTREME_BPS + 10,
     )
-    rule_result = apply_rules("SELL", {"positioning_bias": "balanced"}, qi)
-    assert rule_result.force_hold is True, "R2 should fire"
-    assert "R2" in [f.rule_id for f in rule_result.triggered]
+    # R1 still blocks new long entries under extreme positive funding
+    buy_rules = apply_rules("BUY", {"positioning_bias": "balanced"}, qi)
+    assert buy_rules.force_hold is True, "R1 should fire on BUY"
+    assert "R1" in [f.rule_id for f in buy_rules.triggered]
+
+    # SELL under same funding is not force_held by R2 (spot long close)
+    sell_rules = apply_rules("SELL", {"positioning_bias": "balanced"}, qi)
+    assert sell_rules.force_hold is False
 
     qfe = evaluate_qfe(
         position_size=1.5,
@@ -510,7 +521,7 @@ def test_qfe_integration_with_r2_force_hold():
         quant_indicators=qi,
         positioning_bias="balanced",
     )
-    assert qfe.force_exit is True, "QFE should override R2 for profitable exit"
+    assert qfe.force_exit is True, "QFE should release profitable exit"
 
 
 def test_qfe_integration_with_r10_force_hold():

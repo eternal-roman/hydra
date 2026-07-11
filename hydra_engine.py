@@ -412,13 +412,17 @@ class SignalGenerator:
     # Volume is confirmatory, not primary — caps at VOLUME_WEIGHT above average
     VOLUME_WEIGHT = 0.05
 
+    # PR-F: single warmup gate (matches RegimeDetector's 50-bar requirement).
+    # Pre-PR-F signals could fire at 26 bars while regime was still forced RANGING.
+    WARMUP_CANDLES = 50
+
     @staticmethod
     def generate(
         strategy: Strategy, prices: List[float], candles: List[Candle],
         momentum_rsi_lower: float = 30.0, momentum_rsi_upper: float = 70.0,
         mean_reversion_rsi_buy: float = 35.0, mean_reversion_rsi_sell: float = 65.0,
     ) -> Signal:
-        if len(prices) < 26:
+        if len(prices) < SignalGenerator.WARMUP_CANDLES:
             return Signal(
                 action=SignalAction.HOLD,
                 confidence=0.0,
@@ -683,10 +687,13 @@ class SignalGenerator:
         # In TREND_DOWN, RSI oscillates 20-45; old threshold of 50 never fired.
         # Threshold 40 captures bounce exits before dead-cat-bounce failure.
         if rsi > 40:
-            # Severity: 0 at RSI 40, 1 at RSI 100. Range = 60 (100 - threshold).
+            # PR-A / A3: floor conf at 0.65 so dashboard + any residual conf
+            # gates agree with "SELL when RSI>40". Execution no longer needs
+            # min_confidence on SELL (A2), but operators reading conf still
+            # saw soft 0.50–0.64 SELLs that looked non-actionable.
+            # Severity: 0 at RSI 40 → conf 0.65; 1 at RSI 100 → conf 0.90.
             rsi_severity = (rsi - 40.0) / 60.0
-            # Range: BASE(0.50) + severity(0.40) = 0.90
-            conf = min(0.90, BASE + rsi_severity * 0.40)
+            conf = min(0.90, 0.65 + rsi_severity * 0.25)
             return Signal(
                 action=SignalAction.SELL,
                 confidence=conf,
@@ -775,8 +782,14 @@ class PositionSizer:
         if confidence < self.min_confidence or balance < costmin or price <= 0:
             return 0.0
 
-        # Kelly edge estimate scaled by multiplier
-        edge = max(0.0, (confidence * 2.0 - 1.0))  # 0 at 50% conf, 1 at 100%
+        # PR-D / D1: excess-over-threshold Kelly.
+        # Old formula edge=(conf*2-1) treated conf=0.65 as a 30% edge (massive
+        # oversize for an uncalibrated heuristic). Now conf at the execution
+        # floor maps to a small edge (0.10) and only conf→1.0 reaches full
+        # edge 1.0. Kelly multiplier (quarter/half) still scales on top.
+        span = max(1e-9, 1.0 - self.min_confidence)
+        t = max(0.0, min(1.0, (confidence - self.min_confidence) / span))
+        edge = 0.10 + 0.90 * t  # 0.10 at min_conf → 1.0 at conf=1.0
         kelly = edge * self.kelly_multiplier
 
         position_value = kelly * balance
@@ -1116,7 +1129,10 @@ class CrossPairCoordinator:
 
         # Rule 2: BTC recovery boost
         # stable_btc trending up while stable_sol is still down — recovery likely
-        if btc_regime == "TREND_UP" and sol_regime == "TREND_DOWN":
+        rule2_recovery = (
+            btc_regime == "TREND_UP" and sol_regime == "TREND_DOWN"
+        )
+        if rule2_recovery:
             sol_conf = 0.5
             if sol_state and sol_state.get("signal"):
                 sol_conf = sol_state["signal"].get("confidence", 0.5)
@@ -1128,13 +1144,19 @@ class CrossPairCoordinator:
             }
 
         # Rule 3: Coordinated swap
-        # SOL weakening vs stable but strengthening vs BTC — rotate into BTC
-        if sol_regime == "TREND_DOWN" and bridge_regime == "TREND_UP":
+        # SOL weakening vs stable but strengthening vs BTC — rotate into BTC.
+        # PR-E / E3–E4: do NOT overwrite Rule 2 recovery (prefer hold for bounce).
+        # Also require bridge engine to be tradable when that flag is present
+        # (info-only bridge cannot fund the buy leg).
+        if sol_regime == "TREND_DOWN" and bridge_regime == "TREND_UP" and not rule2_recovery:
             sol_pos = 0.0
             if sol_state and sol_state.get("position"):
                 sol_pos = sol_state["position"].get("size", 0.0)
-            # Only suggest swap if we actually hold SOL via stable_sol
-            if sol_pos > 0:
+            bridge_tradable = True
+            if bridge_state is not None and "tradable" in bridge_state:
+                bridge_tradable = bool(bridge_state.get("tradable"))
+            # Only suggest swap if we actually hold SOL and bridge can trade
+            if sol_pos > 0 and bridge_tradable:
                 overrides[sol_key] = {
                     "action": "OVERRIDE",
                     "signal": "SELL",
@@ -1456,6 +1478,31 @@ class HydraEngine:
         self.tick_count += 1
 
         if self.halted:
+            # PR-A: breaker stops new risk but must not freeze inventory.
+            # With an open position, emit SELL (and execute unless generate_only)
+            # so the agent brain path can also complete the flatten.
+            flatten_trade = None
+            if self.position.size > 0 and self.prices:
+                flatten_sig = Signal(
+                    action=SignalAction.SELL,
+                    confidence=1.0,
+                    reason=f"HALT FLATTEN: {self.halt_reason}",
+                    strategy=Strategy.DEFENSIVE,
+                )
+                if not generate_only:
+                    flatten_trade = self._maybe_execute(flatten_sig)
+                # After execute, position may be flat → report HOLD; else SELL.
+                if self.position.size > 0:
+                    out_sig = flatten_sig
+                else:
+                    out_sig = Signal(
+                        action=SignalAction.HOLD, confidence=0.0,
+                        reason=f"HALTED (flat): {self.halt_reason}",
+                        strategy=Strategy.DEFENSIVE,
+                    )
+                return self._build_state(
+                    Regime.VOLATILE, Strategy.DEFENSIVE, out_sig, flatten_trade,
+                )
             return self._build_state(
                 Regime.VOLATILE,
                 Strategy.DEFENSIVE,
@@ -1548,11 +1595,13 @@ class HydraEngine:
     def _maybe_execute(self, signal: Signal, size_multiplier: float = 1.0) -> Optional[Trade]:
         """Execute trade if signal is actionable.
 
-        HF-002 fix: refuse to execute on a halted engine. Previously, only
-        tick() checked the halted flag (early return at line 866-868); callers
-        that invoked execute_signal() directly (e.g., the swap handler at
-        hydra_agent.py:1337) would bypass the halt check. This adds defense-
-        in-depth so every execution path respects halt state.
+        Halt policy (PR-A / exit guarantees):
+          * BUY is refused while ``halted`` — circuit breaker stops new risk.
+          * SELL is **allowed** while halted when ``position.size > 0`` so the
+            breaker cannot trap inventory through further mark-to-market loss.
+          * Entries still require ``min_confidence``; exits do **not** (A2) —
+            Kelly sizes entries, full-close on any SELL once a position exists
+            and is above ordermin.
 
         Informational-only engines (tradable=False) never produce a Trade
         — the agent-level guard (real quote-currency balance) flipped the
@@ -1561,9 +1610,13 @@ class HydraEngine:
         """
         if not self.tradable:
             return None
-        if self.halted:
-            return None
         if not self.prices:
+            return None
+
+        # Halt blocks new risk only. Risk-reducing SELLs must still run.
+        if self.halted and signal.action != SignalAction.SELL:
+            return None
+        if self.halted and signal.action == SignalAction.SELL and self.position.size <= 0:
             return None
 
         current_price = self.prices[-1]
@@ -1578,7 +1631,15 @@ class HydraEngine:
         if (signal.action == SignalAction.BUY
                 and os.environ.get("HYDRA_FRICTION_GATE_DISABLED") != "1"):
             expected = self._expected_move_pct(signal, current_price)
+            # PR-D / D2: timeframe-aware hurdle. On 1h+ candles the BB-mid /
+            # 2×ATR proxies almost always clear 0.84% (audit: 0/437 blocks
+            # on SOL 1y), so the gate was inert. Raise the floor for longer
+            # bars so only trades with material expected move clear.
             hurdle = self.FRICTION_HURDLE_MULT * self.ROUND_TRIP_FRICTION_PCT
+            if getattr(self, "candle_interval", 15) >= 60:
+                hurdle = max(hurdle, 2.0)  # percent
+            elif getattr(self, "candle_interval", 15) >= 30:
+                hurdle = max(hurdle, 1.2)
             if expected is not None and expected < hurdle:
                 self.friction_skips += 1
                 return None
@@ -1586,10 +1647,17 @@ class HydraEngine:
         if signal.action == SignalAction.BUY and signal.confidence >= self.sizer.min_confidence:
             size = self.sizer.calculate(signal.confidence, self.balance, current_price, self.asset)
             size = size * effective_mult
-            # Clamp to available balance so multiplier > 1.0 can't overdraw
+            # PR-B: hard risk caps AFTER size_multiplier (B1) and against
+            # gross inventory (B2). Advertised max_position_pct is the
+            # ceiling on total position notional / equity — not a pre-mult
+            # Kelly-only clamp that mult could defeat up to ~80% cash.
             if current_price > 0:
-                max_size = self.balance / current_price
-                size = min(size, max_size)
+                equity = self.balance + self.position.size * current_price
+                max_notional = equity * self.sizer.max_position_pct
+                current_notional = self.position.size * current_price
+                room_units = max(0.0, max_notional - current_notional) / current_price
+                max_cash_units = self.balance / current_price
+                size = min(size, room_units, max_cash_units)
             if size > 0:
                 cost = size * current_price
                 # Update position (average in)
@@ -1621,22 +1689,22 @@ class HydraEngine:
                 self.trades.append(trade)
                 return trade
 
-        elif (signal.action == SignalAction.SELL and self.position.size > 0
-              and signal.confidence >= self.sizer.min_confidence):
-            # Fix 6: full-close on any SELL signal that passes min_confidence.
-            # Previously a binary 50/50 split at conf=0.7 left partial positions
-            # that were awkward to re-close — the 50% branch even fell through
-            # to "force full close" when the half-sell would land below
-            # ordermin or leave dust, proving the surrounding code found the
-            # binary split inconvenient.
-            # Symmetry principle: Kelly governs ENTRY size (continuous). If we
-            # decided to exit, we exit fully. Spot-only: "half-exit" doesn't
-            # reduce risk proportionally, it just delays the exit until the
-            # next signal at potentially worse prices.
+        elif signal.action == SignalAction.SELL and self.position.size > 0:
+            # PR-A / A2: exits ignore min_confidence. Kelly sizes entries only.
+            # Soft DEFENSIVE/GRID SELL signals (conf 0.50–0.64) must still
+            # flatten inventory — reusing the entry floor trapped longs in
+            # TREND_DOWN (audit: 200+ dead SELLs / SOL-year).
+            # Full-close only (Fix 6): spot-only half-exit does not reduce risk
+            # proportionally; it delays the exit to a worse price.
             base_asset = self.asset.split("/")[0] if "/" in self.asset else self.asset
             min_size = self.sizer.MIN_ORDER_SIZE.get(base_asset, 0.02)
             if self.position.size < min_size:
-                return None  # Entire position is below ordermin — unsellable
+                # PR-C / C4: write off unsellable dust instead of leaving a
+                # permanent [0, ordermin) bag that blocks state forever.
+                written = self.write_off_dust(reason="unsellable_below_ordermin")
+                if written > 0:
+                    return None  # dust cleared; no exchange sell
+                return None
             sell_amount = self.position.size  # Full close
             revenue = sell_amount * current_price
             profit = (current_price - self.position.avg_entry) * sell_amount
@@ -1859,6 +1927,60 @@ class HydraEngine:
         # identically to pre-flag behavior until the agent refreshes.
         self.tradable = snap.get("tradable", True)
 
+    def true_up_fill(
+        self,
+        side: str,
+        amount: float,
+        fill_price: float,
+        pre_trade_snapshot: Optional[Dict[str, Any]] = None,
+        reason: str = "fill_true_up",
+        strategy: str = "MOMENTUM",
+        confidence: float = 0.0,
+    ) -> bool:
+        """PR-C / C1: rewrite engine books to exchange fill price/amount.
+
+        Restores ``pre_trade_snapshot`` then applies the fill at
+        ``fill_price``. Used for both full FILLED and partial events so
+        avg_entry / balance match Kraken truth (not candle close).
+        Returns True if true-up applied, False if skipped (no snapshot).
+        """
+        if amount <= 0 or fill_price <= 0:
+            return False
+        if pre_trade_snapshot is None:
+            return False
+        self.restore_position(pre_trade_snapshot)
+        try:
+            sig_strategy = Strategy(strategy)
+        except ValueError:
+            sig_strategy = Strategy.MOMENTUM
+        if side.upper() == "BUY":
+            self._apply_buy_fill(amount, fill_price, reason, sig_strategy, confidence)
+        elif side.upper() == "SELL":
+            self._apply_sell_fill(amount, fill_price, reason, sig_strategy, confidence)
+        else:
+            return False
+        return True
+
+    def write_off_dust(self, reason: str = "dust_write_off") -> float:
+        """PR-C / C4: zero position residue in [0, ordermin) that cannot sell.
+
+        Returns the written-off size (0 if nothing done).
+        """
+        base_asset = self.asset.split("/")[0] if "/" in self.asset else self.asset
+        min_size = self.sizer.MIN_ORDER_SIZE.get(base_asset, 0.02)
+        size = self.position.size
+        if size <= 0:
+            return 0.0
+        if size >= min_size:
+            return 0.0
+        # Anything below ordermin is unsellable on Kraken — clear books.
+        written = size
+        self.position.size = 0.0
+        self.position.avg_entry = 0.0
+        self.position.params_at_entry = None
+        self.position.unrealized_pnl = 0.0
+        return written
+
     def reconcile_partial_fill(
         self,
         side: str,
@@ -1870,29 +1992,22 @@ class HydraEngine:
         strategy: str = "MOMENTUM",
         confidence: float = 0.0,
     ) -> None:
-        """Correct engine state after a PARTIALLY_FILLED execution event.
+        """Correct engine state after a PARTIALLY_FILLED (or full true-up) event.
 
         At execute_signal time, the engine optimistically committed the full
         `placed_amount` to position/balance. The exchange actually filled only
-        `vol_exec`. This method reverses the un-filled portion.
-
-        When `pre_trade_snapshot` is available (always the case for current-
-        session fills), the safest path is: restore to the snapshot, then
-        replay only the filled portion through the same state-mutation logic
-        as _maybe_execute. This guarantees the end state is indistinguishable
-        from a world in which execute_signal had been called with the real
-        fill amount.
+        `vol_exec` (or full at a different price). Preferred path: restore
+        snapshot + replay filled amount at fill price (PR-C true-up).
 
         When `pre_trade_snapshot` is None (resume-path: previous session's
         snapshot wasn't persisted), we fall back to arithmetic reversal and
-        log a loud warning — accuracy here depends on the caller passing the
-        pre-commit state or accepting drift.
+        accept avg_entry drift.
 
         Args:
             side: "BUY" or "SELL"
             placed_amount: What execute_signal was told to commit
             vol_exec: What actually filled on the exchange
-            limit_price: The limit price of the placed order
+            limit_price: The fill / limit price to book
             pre_trade_snapshot: Snapshot from snapshot_position() taken before
                 execute_signal was called. Preferred path.
             reason / strategy / confidence: carried into the replayed Trade
@@ -1902,22 +2017,26 @@ class HydraEngine:
             return
         if vol_exec < 0:
             vol_exec = 0.0
-        # Full fill — nothing to reconcile
-        if vol_exec >= placed_amount * 0.999999:  # float-safe
+
+        # PR-C: always prefer restore+replay when snapshot exists — even on
+        # full fills — so avg_entry tracks exchange fill price not candle close.
+        if pre_trade_snapshot is not None:
+            if vol_exec <= 0:
+                self.restore_position(pre_trade_snapshot)
+                return
+            self.true_up_fill(
+                side=side,
+                amount=float(vol_exec),
+                fill_price=float(limit_price),
+                pre_trade_snapshot=pre_trade_snapshot,
+                reason=reason,
+                strategy=strategy,
+                confidence=confidence,
+            )
             return
 
-        if pre_trade_snapshot is not None:
-            self.restore_position(pre_trade_snapshot)
-            if vol_exec <= 0:
-                return  # fully unfilled — restore was sufficient
-            try:
-                sig_strategy = Strategy(strategy)
-            except ValueError:
-                sig_strategy = Strategy.MOMENTUM
-            if side.upper() == "BUY":
-                self._apply_buy_fill(vol_exec, limit_price, reason, sig_strategy, confidence)
-            elif side.upper() == "SELL":
-                self._apply_sell_fill(vol_exec, limit_price, reason, sig_strategy, confidence)
+        # Full fill without snapshot — nothing arithmetic to reverse
+        if vol_exec >= placed_amount * 0.999999:  # float-safe
             return
 
         # Fallback: no snapshot available (resume-path). Arithmetic reversal
@@ -2241,6 +2360,10 @@ class HydraEngine:
             "candle_status": self._candle_status(),
             "halted": self.halted,
             "halt_reason": self.halt_reason,
+            # Exposed so CrossPairCoordinator Rule 3 can refuse swaps into an
+            # informational-only (unfunded) bridge before the agent dashboard
+            # layer stamps tradable again later in the tick.
+            "tradable": bool(self.tradable),
             "indicators": signal.indicators if signal.indicators else {},
             "candles": [
                 {"o": c.open, "h": c.high, "l": c.low, "c": c.close, "t": c.timestamp}

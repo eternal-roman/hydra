@@ -82,8 +82,8 @@ Using the OHLC data, compute:
 Each strategy produces a signal: **BUY**, **SELL**, or **HOLD** with a confidence score (0–1).
 
 **MOMENTUM Strategy:**
-- BUY when: RSI 30–70, MACD histogram > 0, price > BB middle. Confidence scales with MACD strength.
-- SELL when: RSI > 75 OR MACD histogram crosses negative.
+- BUY when: RSI 30–70, MACD histogram > noise floor, price > BB middle. Confidence scales with MACD strength.
+- SELL when: symmetric stack (RSI in band, hist negative, price < BB mid) **or** extreme RSI > upper+15 (default >85).
 
 **MEAN_REVERSION Strategy:**
 - BUY when: price ≤ BB lower AND RSI < 35. Confidence scales with distance from middle band.
@@ -93,16 +93,20 @@ Each strategy produces a signal: **BUY**, **SELL**, or **HOLD** with a confidenc
 - Divide BB range into 5 zones. BUY in bottom zone, SELL in top zone.
 
 **DEFENSIVE Strategy:**
-- BUY only when RSI < 25 (extreme oversold), small position.
-- SELL when RSI > 40 (reduce exposure early — old threshold of 50 never fired in TREND_DOWN).
+- BUY only when RSI < 25 (extreme oversold); conf capped 0.75.
+- SELL when RSI > 40 (reduce exposure). Conf floors at **0.65** from RSI 40 (maps to executable).
+- **Exit guarantee:** SELL does **not** require min_confidence (entries still do). Soft exits flatten.
 
 ### Phase 4: Size Position (Kelly Criterion)
 
 ```
-edge = max(0, (confidence * 2 - 1))      # 0 at 50% conf, 1 at 100%
-kelly = edge * multiplier                 # 0.25 conservative, 0.50 competition
-position_value = kelly * balance          # Quote currency value to trade
+# Excess-over-threshold Kelly (not conf*2-1):
+t = (confidence - min_confidence) / (1 - min_confidence)   # 0 at floor, 1 at 100%
+edge = 0.10 + 0.90 * t                                      # small edge at 0.65, full at 1.0
+kelly = edge * multiplier                                   # 0.25 conservative, 0.50 competition
+position_value = kelly * balance
 position_size = position_value / current_price
+# Then clamp notional/equity ≤ max_position_pct AFTER any size_multiplier
 ```
 
 **Sizing modes:**
@@ -112,8 +116,9 @@ position_size = position_value / current_price
 **Hard limits:**
 - Minimum trade cost: pair-aware (Kraken costmin — 0.5 USDC, 0.00002 BTC)
 - Minimum order size: pair-aware (Kraken ordermin — 0.02 SOL, 0.00005 BTC)
-- Sell-side dust prevention: partial sells below ordermin force full close; positions below ordermin are unsellable
-- Confidence threshold to execute: 0.65 (both modes)
+- Sell-side dust: positions below ordermin are **written off** (not left as permanent bags)
+- Confidence threshold for **entries**: 0.65 (both modes); **exits ignore min_confidence**
+- Gross inventory + size_mult cannot exceed max_position_pct of equity
 
 ### Phase 5: Execute Trade
 
@@ -191,13 +196,15 @@ END LOOP
 
 ## Risk Management Rules
 
-1. **Circuit Breaker**: Stop all trading if max drawdown exceeds 15%
+1. **Circuit Breaker (per engine)**: Halt **new BUYs** if max drawdown exceeds 15%; **SELL still allowed** (flatten inventory). Portfolio-level 15% max DD also sticky-blocks BUYs.
 2. **Dead Man's Switch**: Always run `kraken order cancel-after 60` before live orders
-3. **Position Limits**: No single position > 30% of portfolio
-4. **Trade Threshold**: Only execute when confidence ≥ 0.65
-5. **Minimum Size**: Enforce Kraken ordermin per asset + costmin per quote currency
-6. **Regime Warmup**: Require 50+ candles before generating signals
+3. **Position Limits**: No single position notional > max_position_pct of equity (30%/40%), applied after brain size_multiplier
+4. **Trade Threshold**: Entries only when confidence ≥ 0.65; exits do not use this floor
+5. **Minimum Size**: Enforce Kraken ordermin per asset + costmin per quote currency; dust below ordermin written off
+6. **Regime Warmup**: Require 50+ candles before generating **any** non-HOLD signal (`SignalGenerator.WARMUP_CANDLES`)
 7. **Rate Limiting**: Respect Kraken API limits — minimum 2s between requests
+8. **Fill true-up**: Engine books exchange `avg_fill_price` on FILLED/PARTIAL (not candle close)
+9. **Quant R2**: Extreme negative funding force_holds **BUY** (bounce-chase), never spot **SELL** (long close)
 
 ## Indicator Reference
 
