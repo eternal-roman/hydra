@@ -1327,6 +1327,12 @@ class HydraEngine:
     ROUND_TRIP_FRICTION_PCT = 0.42
     FRICTION_HURDLE_MULT = 2.0
 
+    # Opt-in re-regulation (AI-control study): TREND_UP-only BUY + force-flatten
+    # TREND_DOWN. Kill switch HYDRA_REGIME_SELECTIVE; default OFF. Does NOT
+    # lower min_conf to 0.50 or disable the friction gate.
+    REGIME_SELECTIVE_BUY_MIN_CONF = 0.55
+    REGIME_SELECTIVE_FLATTEN_CONF = 0.70
+
     def __init__(self, initial_balance: float = 10000.0, asset: str = "BTC/USD",
                  sizing: Optional[Dict[str, float]] = None,
                  candle_interval: int = 15,
@@ -1337,7 +1343,8 @@ class HydraEngine:
                  momentum_rsi_upper: float = 70.0,
                  mean_reversion_rsi_buy: float = 35.0,
                  mean_reversion_rsi_sell: float = 65.0,
-                 tradable: bool = True):
+                 tradable: bool = True,
+                 regime_selective: Optional[bool] = None):
         self.asset = asset
         self.initial_balance = initial_balance
         self.balance = initial_balance
@@ -1350,6 +1357,11 @@ class HydraEngine:
         # flips this flag per-tick based on real exchange holdings of the
         # quote currency — pairs whose quote we don't hold cannot transact.
         self.tradable = tradable
+        if regime_selective is None:
+            raw = os.environ.get("HYDRA_REGIME_SELECTIVE", "").strip().lower()
+            self.regime_selective = raw in ("1", "true", "yes", "on")
+        else:
+            self.regime_selective = bool(regime_selective)
 
         self.position = Position(asset=asset)
         cfg = sizing or SIZING_CONSERVATIVE
@@ -1524,6 +1536,8 @@ class HydraEngine:
             mean_reversion_rsi_buy=self.mean_reversion_rsi_buy,
             mean_reversion_rsi_sell=self.mean_reversion_rsi_sell,
         )
+        # Opt-in re-regulation: block chop entries + force TREND_DOWN flatten
+        signal = self._apply_regime_selective(regime, signal)
 
         # Execute if actionable (skip when generate_only for external review)
         trade = None if generate_only else self._maybe_execute(signal)
@@ -1558,6 +1572,46 @@ class HydraEngine:
         if raw <= 1.0:
             return raw
         return min(2.0, 4.0 ** (raw - 1.0))
+
+    def _apply_regime_selective(self, regime: Regime, signal: Signal) -> Signal:
+        """Re-regulation stack from causal AI-control study (default off).
+
+        When ``regime_selective`` is True:
+          1. Long + TREND_DOWN → force SELL (flatten), conf ≥ 0.70
+          2. BUY outside TREND_UP → HOLD (SKIP semantics)
+          3. BUY in TREND_UP with conf < 0.55 → HOLD
+
+        Does not disable friction or lower the PositionSizer min_confidence.
+        """
+        if not self.regime_selective:
+            return signal
+        if self.position.size > 0 and regime == Regime.TREND_DOWN:
+            return Signal(
+                action=SignalAction.SELL,
+                confidence=max(
+                    float(signal.confidence), self.REGIME_SELECTIVE_FLATTEN_CONF
+                ),
+                reason=f"REGIME_SELECTIVE:force_flatten|{signal.reason}",
+                strategy=Strategy.DEFENSIVE,
+            )
+        if signal.action == SignalAction.BUY:
+            if regime != Regime.TREND_UP:
+                return Signal(
+                    action=SignalAction.HOLD,
+                    confidence=signal.confidence,
+                    reason=(
+                        f"REGIME_SELECTIVE:block_buy_{regime.value}|{signal.reason}"
+                    ),
+                    strategy=signal.strategy,
+                )
+            if float(signal.confidence) < self.REGIME_SELECTIVE_BUY_MIN_CONF:
+                return Signal(
+                    action=SignalAction.HOLD,
+                    confidence=signal.confidence,
+                    reason=f"REGIME_SELECTIVE:low_conf|{signal.reason}",
+                    strategy=signal.strategy,
+                )
+        return signal
 
     def _expected_move_pct(self, signal: Signal, current_price: float) -> Optional[float]:
         """Strategy-implied expected gross move for a BUY, in percent.
@@ -1791,6 +1845,15 @@ class HydraEngine:
             reason=reason,
             strategy=sig_strategy,
         )
+        # Re-apply selective rails so generate_only + external execute cannot bypass
+        if self.regime_selective and self.candles and self.prices:
+            regime = RegimeDetector.detect(
+                self.candles, self.prices,
+                self.volatile_atr_mult, self.volatile_bb_mult, self.trend_ema_ratio,
+            )
+            signal = self._apply_regime_selective(regime, signal)
+            if signal.action == SignalAction.HOLD:
+                return None
         return self._maybe_execute(signal, size_multiplier=size_multiplier)
 
     def snapshot_params(self) -> Dict[str, float]:
