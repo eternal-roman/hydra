@@ -73,6 +73,9 @@ SPOT_TO_DERIVATIVES: Dict[str, Dict[str, object]] = {
     # USDC-quoted spot pairs (pre-v2.19 default; still supported as opt-in)
     "BTC/USDC": {"perp": "PF_XBTUSD", "quarterly_prefix": "FF_XBTUSD"},
     "SOL/USDC": {"perp": "PF_SOLUSD", "quarterly_prefix": "FF_SOLUSD"},
+    # USDT-quoted spot (PR-E / E7 — first-class stable quote in STABLE_QUOTES)
+    "BTC/USDT": {"perp": "PF_XBTUSD", "quarterly_prefix": "FF_XBTUSD"},
+    "SOL/USDT": {"perp": "PF_SOLUSD", "quarterly_prefix": "FF_SOLUSD"},
     # Bridge — no direct perp, synthetic from SOL/USD ÷ BTC/USD
     "SOL/BTC":  {"perp": None, "quarterly_prefix": None, "synthetic": True},
 }

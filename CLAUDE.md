@@ -81,6 +81,8 @@ regression bug, not a style issue.
 - **Hard risk caps (PR-B)** — `max_position_pct` applies **after** brain `size_multiplier` and caps gross inventory (notional/equity). Peak equity never rebases downward on balance seed/resume. Portfolio max DD ≥ 15% sticky-blocks new BUYs (SELL still allowed).
 - **Fill true-up (PR-C)** — Every terminal FILLED/PARTIAL restores `pre_trade_snapshot` and replays at exchange `avg_fill_price` (not candle close). Snapshot persisted on journal PLACED. Unsellable dust below ordermin is written off. BUY limit offsets capped (≤20 bps SOL/STABLE) for post-only fill rate.
 - **Kelly / friction honesty (PR-D)** — PositionSizer uses excess-over-threshold Kelly (conf=min → edge 0.10, conf=1 → 1.0), not `(conf*2-1)`. Friction hurdle is timeframe-aware (≥2.0% on 1h+ bars). Go-live plumbing gates: `python scripts/go_live_gates.py`.
+- **Quant/cross-pair (PR-E)** — `HYDRA_QUANT_INDICATORS_DISABLED=1` skips `apply_rules`/QFE (no R10 blackout). Rules re-applied after brain OVERRIDE. Rule 2 recovery preferred over Rule 3 swap; Rule 3 requires bridge `tradable`. Always `tick(generate_only=True)` then post-coord execute. USDT pairs mapped in `SPOT_TO_DERIVATIVES`.
+- **Unified warmup (PR-F)** — `SignalGenerator.WARMUP_CANDLES = 50` (aligned with regime detector).
 
 Subsystem detail (indicators, regime, Kelly sizing, price precision,
 execution stream lifecycle, resume reconciliation, forex modifier,

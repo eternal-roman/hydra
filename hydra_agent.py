@@ -1487,16 +1487,15 @@ class HydraAgent:
                                 print(f"  [WARN] Brain failed for {pair}: {e}")
                                 all_states[pair] = engine_states[pair]
 
-                # Phase 2.5: Execute finalized signals on engines (deferred from generate_only)
-                # When brain is active, tick() ran with generate_only=True, so we must
-                # now execute the final (possibly brain-modified) signals on the engines.
-                # Skip pairs involved in pending swaps — the swap handler manages their execution.
+                # Phase 2.5: Execute finalized signals on engines (deferred from
+                # generate_only=True). Always runs (PR-E / E5) so coordinator
+                # overrides apply even without a brain. Skip swap pairs.
                 swap_pairs = set()
                 if pending_swaps:
                     for s in pending_swaps:
                         swap_pairs.add(s["sell_pair"])
                         swap_pairs.add(s["buy_pair"])
-                if self.brain:
+                if True:  # was `if self.brain` — always execute post-coord
                     for pair in self.pairs:
                         if pair in swap_pairs:
                             continue
@@ -1853,7 +1852,10 @@ class HydraAgent:
         # When generate_only=True (brain active), execute_signal happens later and
         # snapshots there. When generate_only=False, tick() may execute internally.
         pre_trade_snap = engine.snapshot_position() if not self.brain else None
-        state = engine.tick(generate_only=bool(self.brain))
+        # PR-E / E5: always generate_only so coordinator can mutate the
+        # signal before execute_signal (brain-off used to execute inside
+        # tick() and ignore coordinator SELL/BUY rewrites that tick).
+        state = engine.tick(generate_only=True)
         if pre_trade_snap and state.get("last_trade"):
             state["_pre_trade_snapshot"] = pre_trade_snap
         return state
@@ -1969,27 +1971,33 @@ class HydraAgent:
             rules_force_hold = False
             rules_size_mult = 1.0
             rules_force_hold_reason = ""
+            engine_action_for_rules = state["signal"]["action"]
+            quant_out_for_rules = {
+                "positioning_bias": getattr(decision, "positioning_bias", None)
+                    or state.get("ai_positioning_bias") or "",
+                "force_hold": False,
+            }
+            # PR-E / E1: kill switch must skip rules entirely (not just the
+            # derivatives stream). Otherwise null indicators R10-blackout.
+            _quant_rules_disabled = (
+                os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1"
+            )
             try:
-                from hydra_quant_rules import apply_rules as _apply_quant_rules
-                engine_action_for_rules = state["signal"]["action"]
-                quant_out_for_rules = {
-                    "positioning_bias": getattr(decision, "positioning_bias", None)
-                        or state.get("ai_positioning_bias") or "",
-                    "force_hold": False,  # already handled by brain layer
-                }
-                rule_result = _apply_quant_rules(
-                    engine_action=engine_action_for_rules,
-                    quant_output=quant_out_for_rules,
-                    quant_indicators=state.get("quant_indicators") or None,
-                )
-                rules_triggered = [
-                    {"rule_id": f.rule_id, "name": f.name, "effect": f.effect,
-                     "size_mult": f.size_mult, "reason": f.reason}
-                    for f in rule_result.triggered
-                ]
-                rules_force_hold = rule_result.force_hold
-                rules_force_hold_reason = rule_result.force_hold_reason
-                rules_size_mult = rule_result.size_multiplier
+                if not _quant_rules_disabled:
+                    from hydra_quant_rules import apply_rules as _apply_quant_rules
+                    rule_result = _apply_quant_rules(
+                        engine_action=engine_action_for_rules,
+                        quant_output=quant_out_for_rules,
+                        quant_indicators=state.get("quant_indicators") or None,
+                    )
+                    rules_triggered = [
+                        {"rule_id": f.rule_id, "name": f.name, "effect": f.effect,
+                         "size_mult": f.size_mult, "reason": f.reason}
+                        for f in rule_result.triggered
+                    ]
+                    rules_force_hold = rule_result.force_hold
+                    rules_force_hold_reason = rule_result.force_hold_reason
+                    rules_size_mult = rule_result.size_multiplier
             except Exception as re:
                 print(f"  [QUANT RULES] apply_rules error ({type(re).__name__}: {re})")
 
@@ -2077,6 +2085,42 @@ class HydraAgent:
             elif decision.action == "OVERRIDE":
                 state["signal"]["action"] = decision.final_signal
                 state["signal"]["reason"] = f"[AI OVERRIDE] {decision.combined_summary}"
+                # PR-E / E2: re-run rules on FINAL action so SELL→BUY cannot
+                # skip R1 (or any direction-sensitive rule).
+                if (not _quant_rules_disabled
+                        and decision.final_signal
+                        and decision.final_signal != engine_action_for_rules):
+                    try:
+                        from hydra_quant_rules import apply_rules as _apply_quant_rules
+                        rr2 = _apply_quant_rules(
+                            engine_action=decision.final_signal,
+                            quant_output=quant_out_for_rules,
+                            quant_indicators=state.get("quant_indicators") or None,
+                        )
+                        if rr2.force_hold:
+                            rules_force_hold = True
+                            rules_force_hold_reason = rr2.force_hold_reason
+                            final_size_multiplier = 0.0
+                            state["signal"]["action"] = "HOLD"
+                            state["signal"]["reason"] = (
+                                f"[QUANT RULES FORCE_HOLD post-OVERRIDE] "
+                                f"{rr2.force_hold_reason}"
+                            )
+                            for f in rr2.triggered:
+                                rules_triggered.append({
+                                    "rule_id": f.rule_id, "name": f.name,
+                                    "effect": f.effect, "size_mult": f.size_mult,
+                                    "reason": f.reason,
+                                })
+                            state["ai_decision"]["rules_force_hold"] = True
+                            state["ai_decision"]["rules_force_hold_reason"] = (
+                                rr2.force_hold_reason
+                            )
+                            state["ai_decision"]["size_multiplier"] = 0.0
+                            state["ai_decision"]["rules_triggered"] = rules_triggered
+                    except Exception as re2:
+                        print(f"  [QUANT RULES] post-OVERRIDE re-apply error "
+                              f"({type(re2).__name__}: {re2})")
             elif decision.action == "ADJUST":
                 state["signal"]["reason"] = f"[AI ADJUSTED] {decision.combined_summary}"
             # CONFIRM leaves signal unchanged, just adds reasoning
@@ -2090,7 +2134,8 @@ class HydraAgent:
             qfe_trigger_values: dict = {}
             if (engine_action_for_rules == "SELL"
                     and state["signal"]["action"] == "HOLD"
-                    and not blocked_by_api_down):
+                    and not blocked_by_api_down
+                    and not _quant_rules_disabled):
                 pos = state.get("position", {})
                 pos_size = pos.get("size", 0)
                 avg_entry = pos.get("avg_entry", 0)

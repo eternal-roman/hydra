@@ -412,13 +412,17 @@ class SignalGenerator:
     # Volume is confirmatory, not primary — caps at VOLUME_WEIGHT above average
     VOLUME_WEIGHT = 0.05
 
+    # PR-F: single warmup gate (matches RegimeDetector's 50-bar requirement).
+    # Pre-PR-F signals could fire at 26 bars while regime was still forced RANGING.
+    WARMUP_CANDLES = 50
+
     @staticmethod
     def generate(
         strategy: Strategy, prices: List[float], candles: List[Candle],
         momentum_rsi_lower: float = 30.0, momentum_rsi_upper: float = 70.0,
         mean_reversion_rsi_buy: float = 35.0, mean_reversion_rsi_sell: float = 65.0,
     ) -> Signal:
-        if len(prices) < 26:
+        if len(prices) < SignalGenerator.WARMUP_CANDLES:
             return Signal(
                 action=SignalAction.HOLD,
                 confidence=0.0,
@@ -1125,7 +1129,10 @@ class CrossPairCoordinator:
 
         # Rule 2: BTC recovery boost
         # stable_btc trending up while stable_sol is still down — recovery likely
-        if btc_regime == "TREND_UP" and sol_regime == "TREND_DOWN":
+        rule2_recovery = (
+            btc_regime == "TREND_UP" and sol_regime == "TREND_DOWN"
+        )
+        if rule2_recovery:
             sol_conf = 0.5
             if sol_state and sol_state.get("signal"):
                 sol_conf = sol_state["signal"].get("confidence", 0.5)
@@ -1137,13 +1144,19 @@ class CrossPairCoordinator:
             }
 
         # Rule 3: Coordinated swap
-        # SOL weakening vs stable but strengthening vs BTC — rotate into BTC
-        if sol_regime == "TREND_DOWN" and bridge_regime == "TREND_UP":
+        # SOL weakening vs stable but strengthening vs BTC — rotate into BTC.
+        # PR-E / E3–E4: do NOT overwrite Rule 2 recovery (prefer hold for bounce).
+        # Also require bridge engine to be tradable when that flag is present
+        # (info-only bridge cannot fund the buy leg).
+        if sol_regime == "TREND_DOWN" and bridge_regime == "TREND_UP" and not rule2_recovery:
             sol_pos = 0.0
             if sol_state and sol_state.get("position"):
                 sol_pos = sol_state["position"].get("size", 0.0)
-            # Only suggest swap if we actually hold SOL via stable_sol
-            if sol_pos > 0:
+            bridge_tradable = True
+            if bridge_state is not None and "tradable" in bridge_state:
+                bridge_tradable = bool(bridge_state.get("tradable"))
+            # Only suggest swap if we actually hold SOL and bridge can trade
+            if sol_pos > 0 and bridge_tradable:
                 overrides[sol_key] = {
                     "action": "OVERRIDE",
                     "signal": "SELL",
