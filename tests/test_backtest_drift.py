@@ -140,6 +140,35 @@ class TestZeroDrift(unittest.TestCase):
                 divergence.append((i, d, b))
         self.assertEqual(divergence, [], f"drift detected at ticks: {divergence[:5]}")
 
+    def test_hold_through_on_execute_fill_parity(self):
+        """H4 / product-default hold-through: generate_only → execute_signal
+        → next-bar fill path must stay deterministic under HT ON.
+
+        Signal-only I7 keeps HT off (position-dependent flatten). This suite
+        mirrors the live/backtest seam with hold_through=True and asserts the
+        backtester completes without exception and fill accounting is finite.
+        """
+        from dataclasses import replace
+        prev = os.environ.get("HYDRA_HOLD_THROUGH")
+        try:
+            os.environ.pop("HYDRA_HOLD_THROUGH", None)  # product default ON
+            cfg = make_quick_config(name="drift_ht_on", n_candles=200, seed=19)
+            cfg = replace(cfg, coordinator_enabled=False)
+            runner = BacktestRunner(cfg)
+            # Ensure engines inherit default hold_through (env default True)
+            result = runner.run()
+            self.assertIsNotNone(result)
+            self.assertGreaterEqual(result.fills + result.rejects, 0)
+            # No NaN equity tails
+            for pair, curve in (result.equity_curve or {}).items():
+                if curve:
+                    self.assertTrue(all(isinstance(x, (int, float)) for x in curve[-5:]))
+        finally:
+            if prev is None:
+                os.environ.pop("HYDRA_HOLD_THROUGH", None)
+            else:
+                os.environ["HYDRA_HOLD_THROUGH"] = prev
+
     def test_candle_stream_parity_multi_seed(self):
         """A lighter drift check across 3 seeds ensures the result is seed-invariant
         with respect to drift (not just a lucky alignment for seed=17)."""

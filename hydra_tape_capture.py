@@ -68,8 +68,24 @@ class TapeCapture:
         self._thr.start()
 
     def stop(self) -> None:
+        """Stop writer thread without blocking shutdown forever.
+
+        v2.27.6: never use unbounded ``put`` for the sentinel — a full queue
+        (stalled SQLite) would hang agent shutdown *before* snapshot flush.
+        """
         self._stop.set()
-        self._q.put(None)  # sentinel
+        try:
+            self._q.put_nowait(None)  # sentinel
+        except queue.Full:
+            try:
+                # Drop one item to make room for sentinel (best-effort).
+                self._q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._q.put_nowait(None)
+            except queue.Full:
+                pass  # thread will exit on _stop even without sentinel
         if self._thr:
             self._thr.join(timeout=5.0)
         self._thr = None

@@ -47,7 +47,7 @@ from hydra_engine import (
     SIZING_CONSERVATIVE,  # noqa: F401 — re-exported for callers
 )
 
-HYDRA_VERSION = "2.27.5"
+HYDRA_VERSION = "2.27.6"
 
 # Reasonable defaults; enforced at config construction and runtime.
 DEFAULT_MAX_TICKS = 200_000
@@ -290,8 +290,11 @@ class SyntheticSource(CandleSource):
         self.seed = seed
 
     def iter_candles(self, pair: str) -> Iterator[Candle]:
-        # Seed per-pair so distinct pairs get distinct series but remain reproducible
-        pair_seed = self.seed ^ (hash(pair) & 0xFFFF)
+        # Seed per-pair so distinct pairs get distinct series but remain
+        # reproducible across processes (stdlib hash() is PYTHONHASHSEED-
+        # salted; zlib.adler32 is stable). v2.27.6 / I12.
+        import zlib
+        pair_seed = self.seed ^ (zlib.adler32(pair.encode("utf-8")) & 0xFFFF)
         rng = random.Random(pair_seed)
         price = self.start_price
         ts = int(time.time()) - self.n_candles * 60 * 15
@@ -709,10 +712,38 @@ class BacktestRunner:
                 fill = self.filler.try_fill(order, current_candles[pair])
                 engine = self.engines[pair]
                 if fill.filled:
-                    # Engine state was updated optimistically at execute_signal time;
-                    # we model fees by deducting them from balance now.
+                    # v2.27.6: rewrite books to fill price (live PR-C parity)
+                    # then deduct maker fee. trade_log is appended only here
+                    # so rejected intents never skew holding-time stats.
+                    side = str(order.side).upper()
+                    applied = engine.true_up_fill(
+                        side=side,
+                        amount=float(order.size),
+                        fill_price=float(fill.fill_price),
+                        pre_trade_snapshot=order.pre_trade_snapshot,
+                        reason=f"backtest_fill:{fill.reason}",
+                        strategy="MOMENTUM",
+                        confidence=0.0,
+                    )
+                    if not applied:
+                        # Fallback if snapshot missing: keep optimistic books.
+                        pass
                     engine.balance -= fill.fee_paid
                     result.fills += 1
+                    result.trade_log.append({
+                        "tick": tick,
+                        "pair": pair,
+                        "side": side,
+                        "price": float(fill.fill_price),
+                        "amount": float(order.size),
+                        "value": float(fill.fill_price) * float(order.size),
+                        "reason": f"backtest_fill:{fill.reason}",
+                        "confidence": 0.0,
+                        "strategy": "MOMENTUM",
+                        "profit": None,
+                        "timestamp": getattr(current_candles[pair], "timestamp", None),
+                        "fee_paid": float(fill.fee_paid),
+                    })
                 else:
                     # Post-only miss → full rollback to pre-trade snapshot.
                     engine.restore_position(order.pre_trade_snapshot)
@@ -783,19 +814,8 @@ class BacktestRunner:
                     placed_tick=tick,
                     pre_trade_snapshot=pre_snap,
                 )
-                result.trade_log.append({
-                    "tick": tick,
-                    "pair": pair,
-                    "side": trade.action,
-                    "price": trade.price,
-                    "amount": trade.amount,
-                    "value": trade.value,
-                    "reason": trade.reason,
-                    "confidence": trade.confidence,
-                    "strategy": trade.strategy,
-                    "profit": trade.profit,
-                    "timestamp": trade.timestamp,
-                })
+                # Intent is pending only — confirmed fills append to trade_log
+                # on next-bar fill (v2.27.6; avoids reject skew on holding stats).
 
             # 6) Record per-tick series for result + UI streaming.
             for pair, state in engine_states.items():

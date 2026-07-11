@@ -3,8 +3,16 @@ import subprocess
 import json
 import os
 import shlex
+import threading
+import time
+from typing import Optional
 
 WSL_DISTRO = os.environ.get("HYDRA_WSL_DISTRO", "Ubuntu")
+# Process-wide floor between authenticated REST invocations (CLAUDE 2s invariant).
+# Agent also sleeps at call sites; this is the hard gate for concurrent callers
+# (companion ladder, multi-thread). Public market data may share the same path —
+# 2s is still correct under Kraken throttle policy.
+KRAKEN_REST_FLOOR_S = 2.0
 
 from hydra_pair_registry import (
     PairRegistry,
@@ -46,6 +54,10 @@ class KrakenCLI:
     # need isolation can call `set_registry(default_registry())` to
     # reset between cases.
     registry: PairRegistry = default_registry()
+
+    # Global REST spacing (monotonic + lock). Shared across all KrakenCLI uses.
+    _rest_lock = threading.Lock()
+    _last_rest_mono: float = 0.0
 
     # Suffixes Kraken uses for non-tradable (staked/bonded/locked/earn) assets.
     # Re-exposed from hydra_pair_registry so external callers
@@ -97,8 +109,18 @@ class KrakenCLI:
             pass
         return "unknown"
 
-    @staticmethod
-    def _run(args: list, timeout: int = 20) -> dict:
+    @classmethod
+    def _throttle_rest(cls) -> None:
+        """Enforce ≥KRAKEN_REST_FLOOR_S between any KrakenCLI._run calls."""
+        with cls._rest_lock:
+            now = time.monotonic()
+            wait = KRAKEN_REST_FLOOR_S - (now - cls._last_rest_mono)
+            if wait > 0:
+                time.sleep(wait)
+            cls._last_rest_mono = time.monotonic()
+
+    @classmethod
+    def _run(cls, args: list, timeout: int = 20) -> dict:
         """Execute a kraken CLI command via WSL and return parsed JSON.
 
         Every arg is passed through `shlex.quote` before being joined
@@ -106,7 +128,11 @@ class KrakenCLI:
         and known-good pair names today, but the companion/dashboard
         surface is growing and a single unescaped caller would grant
         RCE in the WSL environment. v2.15.0 hardens the boundary.
+
+        v2.27.6: process-wide 2s REST floor (lock + monotonic) so concurrent
+        callers cannot stack under the Kraken throttle.
         """
+        cls._throttle_rest()
         quoted = " ".join(shlex.quote(str(a)) for a in args)
 
         # Multi-tenancy: inject dynamic API keys if provided in the process environment
@@ -374,6 +400,27 @@ class KrakenCLI:
     # ─── Order Execution ───
 
     @classmethod
+    def _assert_spot_limit_post_only(cls, order_type: str, post_only: bool) -> Optional[dict]:
+        """Hard gate: Hydra places only limit post-only spot orders.
+
+        Returns an error dict if rejected, else None. Opt-in market is
+        intentionally unsupported (CLAUDE limit-post-only invariant).
+        """
+        ot = (order_type or "").strip().lower()
+        if ot != "limit":
+            return {
+                "error": (
+                    f"Hydra refuses order_type={order_type!r}; "
+                    "only limit post-only is allowed"
+                ),
+            }
+        if not post_only:
+            return {
+                "error": "Hydra refuses post_only=False; only limit post-only is allowed",
+            }
+        return None
+
+    @classmethod
     def order_buy(cls, pair: str, volume: float, price: float = None,
                   order_type: str = "limit", post_only: bool = True,
                   validate: bool = False, userref: int = None) -> dict:
@@ -382,13 +429,17 @@ class KrakenCLI:
         `userref` is the numeric client tag that flows back to us via
         `order_userref` on the WS executions stream — our primary
         correlation key between a local journal entry and the exchange.
+
+        v2.27.6: hard-rejects non-limit / non-post-only (defense in depth).
         """
+        denied = cls._assert_spot_limit_post_only(order_type, post_only)
+        if denied is not None:
+            return denied
         p = cls._resolve_pair(pair)
-        args = ["order", "buy", p, f"{volume:.8f}", "--type", order_type, "--yes"]
-        if price is not None and order_type != "market":
+        args = ["order", "buy", p, f"{volume:.8f}", "--type", "limit", "--yes"]
+        if price is not None:
             args.extend(["--price", cls._format_price(pair, price)])
-        if post_only and order_type == "limit":
-            args.extend(["--oflags", "post"])
+        args.extend(["--oflags", "post"])
         if userref is not None:
             args.extend(["--userref", str(int(userref))])
         if validate:
@@ -404,13 +455,17 @@ class KrakenCLI:
         `userref` is the numeric client tag that flows back to us via
         `order_userref` on the WS executions stream — our primary
         correlation key between a local journal entry and the exchange.
+
+        v2.27.6: hard-rejects non-limit / non-post-only (defense in depth).
         """
+        denied = cls._assert_spot_limit_post_only(order_type, post_only)
+        if denied is not None:
+            return denied
         p = cls._resolve_pair(pair)
-        args = ["order", "sell", p, f"{volume:.8f}", "--type", order_type, "--yes"]
-        if price is not None and order_type != "market":
+        args = ["order", "sell", p, f"{volume:.8f}", "--type", "limit", "--yes"]
+        if price is not None:
             args.extend(["--price", cls._format_price(pair, price)])
-        if post_only and order_type == "limit":
-            args.extend(["--oflags", "post"])
+        args.extend(["--oflags", "post"])
         if userref is not None:
             args.extend(["--userref", str(int(userref))])
         if validate:

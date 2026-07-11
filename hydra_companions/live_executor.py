@@ -16,9 +16,9 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
-from hydra_companions.config import PROPOSALS_LOG
+from hydra_companions.config import PROPOSALS_LOG, live_execution_enabled
 
 if TYPE_CHECKING:
     from hydra_companions.executor import TradeProposal, LadderProposal
@@ -36,9 +36,29 @@ class LiveExecutor:
         self.agent = agent
         self.coordinator = coordinator
 
+    def _money_gates(self, p) -> Optional[dict]:
+        """Final pre-exchange gates (v2.27.6 audit).
+
+        - Re-check HYDRA_COMPANION_LIVE_EXECUTION (install-time is not enough).
+        - Refuse real placement when agent is in --paper mode.
+        """
+        if not live_execution_enabled():
+            self._broadcast_failed(
+                p.proposal_id, p.companion_id, "live execution disabled")
+            return {"ok": False, "error": "live execution disabled"}
+        if getattr(self.agent, "paper", False):
+            self._broadcast_failed(
+                p.proposal_id, p.companion_id,
+                "agent paper mode — refuse live place")
+            return {"ok": False, "error": "agent paper mode — refuse live place"}
+        return None
+
     # ----- public -----
 
     def execute_trade(self, p: "TradeProposal") -> dict:
+        denied = self._money_gates(p)
+        if denied is not None:
+            return denied
         # Per-companion daily cap backstop (final gate before the exchange).
         # v2.26.2: coordinator.handle_confirm reserves the slot (increments
         # the counter) BEFORE dispatching here, so the count this gate reads
@@ -109,6 +129,9 @@ class LiveExecutor:
         return {"ok": True, "userref": userref, "order_id": order_id}
 
     def execute_ladder(self, p: "LadderProposal") -> dict:
+        denied = self._money_gates(p)
+        if denied is not None:
+            return denied
         # Per-companion daily cap backstop, mirroring execute_trade().
         # v2.26.2: the coordinator's check-and-reserve is now atomic (one lock
         # over read + compare + increment), so the TOCTOU this gate originally

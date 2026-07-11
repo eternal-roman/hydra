@@ -53,15 +53,15 @@ def test_constructor_overrides_env(monkeypatch):
     assert eng.hold_through is True
 
 
-def test_block_buy_ranging():
+def test_skip_buy_ranging():
     eng = _engine(True)
     sig = Signal(SignalAction.BUY, 0.90, "MR", Strategy.MEAN_REVERSION)
     out = eng._apply_hold_through(Regime.RANGING, sig)
     assert out.action == SignalAction.HOLD
-    assert "HOLD_THROUGH:block_buy" in out.reason
+    assert "HOLD_THROUGH:skip_buy" in out.reason
 
 
-def test_block_buy_below_065():
+def test_skip_buy_below_065():
     eng = _engine(True)
     sig = Signal(SignalAction.BUY, 0.60, "MOM", Strategy.MOMENTUM)
     out = eng._apply_hold_through(Regime.TREND_UP, sig)

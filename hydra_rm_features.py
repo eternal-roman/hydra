@@ -38,7 +38,6 @@ history to flag on this axis."
 """
 
 import math
-from collections import deque
 from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Minimum samples for a meaningful Pearson correlation. Below this, the
