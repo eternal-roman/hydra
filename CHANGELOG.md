@@ -6,6 +6,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.27.3] — 2026-07-11
+
+Trading-mechanics remediation (PR-A…F): exit guarantees, hard risk caps,
+fill true-up, Kelly/friction honesty, quant/cross-pair fixes, unified warmup,
+and CI coverage for the new safety tests.
+
+### Fixed
+- **Exit path:** circuit breaker blocks BUY only; SELL flattens while halted.
+  SELL ignores `min_confidence` (entries still gated). DEFENSIVE SELL conf
+  floors at 0.65 from RSI>40.
+- **R2 quant rule:** extreme negative funding force_holds BUY (bounce-chase),
+  never spot SELL (long close). QFE floor raised to 1.0%; LLM `crowded_short`
+  alone no longer vetoes QFE without deterministic OI squeeze.
+- **Position caps:** `max_position_pct` applied after brain `size_multiplier`
+  and as gross inventory ceiling. Peak equity never rebases downward on seed/
+  resume. Portfolio max DD ≥15% sticky-blocks BUYs (SELL allowed).
+- **Fill accounting:** every FILLED/PARTIAL restores pre-trade snapshot and
+  replays at exchange `avg_fill_price`. Journal persists snapshot for resume
+  rollback. Dust below ordermin written off. BUY offsets reduced (≤20 bps
+  SOL/STABLE) for post-only fill rate.
+- **Kelly / friction:** excess-over-threshold Kelly (conf=min → edge 0.10);
+  1h+ friction hurdle raised so the gate is not inert.
+- **Quant kill switch:** `HYDRA_QUANT_INDICATORS_DISABLED=1` skips apply_rules
+  and QFE (no R10 blackout). Rules re-applied after brain OVERRIDE.
+- **Cross-pair:** Rule 2 recovery preferred over Rule 3 swap; Rule 3 requires
+  bridge `tradable` (now emitted from engine state). Always
+  `tick(generate_only=True)` then post-coordinator execute.
+- **Warmup:** `SignalGenerator.WARMUP_CANDLES = 50` aligned with regime detector.
+- **Companion live:** registers orders on ExecutionStream after place (still
+  opt-in / default OFF).
+
+### Added
+- `tests/test_exit_guarantees.py`, `test_position_caps.py`, `test_fill_trueup.py`,
+  `test_kelly_edge.py`, `test_warmup_unified.py`, `test_pr_e_quant_crosspair.py`,
+  `test_remediation_loose_ends.py`
+- `scripts/go_live_gates.py` — plumbing + exit-invariant gate on sqlite history
+- CI steps for remediation test pack + optional go-live gates
+
+### Notes
+- SPOT-ONLY / limit post-only unchanged. Strategy expectancy on SOL history
+  remains unproven; this release hardens money-path safety, not alpha.
+
+---
+
 ## [2.27.2] — 2026-07-10
 
 Offline `--demo` first-run path for public clones: full agent loop without
