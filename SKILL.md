@@ -21,12 +21,9 @@ description: >
 
 ## Overview
 
-HYDRA detects what the market is doing *right now* and selects a strategy for that
-condition via a four-regime, four-strategy matrix. This is a **design** for regime
-adaptation — not a claim that the default path is profitable. Historical engine
-replays on SOL/USD (local sqlite) have shown **absolute losses** on multi-month
-windows; opt-in `HYDRA_REGIME_SELECTIVE` improved *relative* defense in a causal
-study but still did not prove absolute alpha.
+HYDRA selects a strategy from a four-regime matrix. That is a **design**, not a
+profit claim. Default **hold-through** rails (`HYDRA_HOLD_THROUGH=0` to disable)
+filter entries/exits; sqlite replays still show absolute losses on some windows.
 
 Matrix:
 
@@ -211,7 +208,7 @@ END LOOP
 8. **Fill true-up**: Engine books exchange `avg_fill_price` on FILLED/PARTIAL (not candle close)
 9. **Quant R2**: Extreme negative funding force_holds **BUY** (bounce-chase), never spot **SELL** (long close)
 10. **Friction gate (entries)**: BUY skipped when strategy-implied move cannot clear ~2× round-trip friction (SKIP, not BLOCK). Kill: `HYDRA_FRICTION_GATE_DISABLED=1`
-11. **Regime selective (opt-in, default off)**: `HYDRA_REGIME_SELECTIVE=1` → BUY only in TREND_UP (conf ≥ 0.55), force-flatten long on TREND_DOWN. Applied in `tick` and re-applied in `execute_signal`. Does **not** disable friction or drop competition min_conf to 0.50.
+11. **Hold-through (default on)**: TREND_UP BUY ≥0.65; flatten TREND_DOWN; ride mid-UP except extreme overbought. Kill: `HYDRA_HOLD_THROUGH=0`. See `docs/HOLD_THROUGH.md`.
 12. **QFE (R11)**: Exit-only, profit-only SELL through force_hold when engine already wants SELL, unrealized P&L ≥ `QFE_MIN_PROFIT_PCT` (1.0%), and no deterministic squeeze catalyst; never opens a position; LLM `crowded_short` alone does not veto
 
 ## Indicator Reference
@@ -253,7 +250,7 @@ END LOOP
 hydra/
 ├── SKILL.md              # This file — trading spec (agent-readable)
 ├── README.md / CLAUDE.md # Overview + authoritative invariants index
-├── hydra_engine.py       # Indicators, regime, signals, sizing, selective rails
+├── hydra_engine.py       # Indicators, regime, signals, sizing, hold-through
 ├── hydra_agent.py        # Live loop (Kraken CLI, WS, execution, journal)
 ├── hydra_brain.py        # Optional AI (Analyst + RM + Grok)
 ├── hydra_quant_rules.py  # R1–R11 deterministic rules + QFE

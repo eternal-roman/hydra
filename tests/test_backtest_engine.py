@@ -169,19 +169,46 @@ class TestBacktestRunner(unittest.TestCase):
         self.assertEqual(ra.metrics.total_trades, rb.metrics.total_trades)
 
     def test_different_seed_different_outcome(self):
+        """Seeds change the synthetic path; idle cash under hold-through is OK.
+
+        Hold-through default ON often yields flat cash equity (no trades) on
+        short GBM windows — both seeds then share identical cash curves, so
+        comparing equity is not a seed probe. Prove diversity at the source;
+        when either seed trades or MTM-moves, runner outcomes must also differ.
+        """
+        closes_a = [
+            c.close
+            for c in SyntheticSource(
+                kind="gbm", n_candles=300, seed=1
+            ).iter_candles("SOL/USD")
+        ]
+        closes_b = [
+            c.close
+            for c in SyntheticSource(
+                kind="gbm", n_candles=300, seed=2
+            ).iter_candles("SOL/USD")
+        ]
+        self.assertNotEqual(closes_a, closes_b, "synthetic seeds must diverge")
+
         ra = BacktestRunner(make_quick_config(name="d1", n_candles=300, seed=1)).run()
         rb = BacktestRunner(make_quick_config(name="d2", n_candles=300, seed=2)).run()
-        # Returns can both be 0.0 if neither seed produces a closed trade path;
-        # equity curves still diverge because GBM series differ by seed.
-        if ra.metrics.total_return_pct == rb.metrics.total_return_pct:
-            ea = ra.equity_curve.get("SOL/USD") or []
-            eb = rb.equity_curve.get("SOL/USD") or []
-            self.assertNotEqual(
-                ea, eb,
-                "different seeds must diverge equity even when both returns are 0",
+        self.assertEqual(ra.status, "complete")
+        self.assertEqual(rb.status, "complete")
+        ea = ra.equity_curve.get("SOL/USD") or []
+        eb = rb.equity_curve.get("SOL/USD") or []
+        outcomes_differ = (
+            ra.metrics.total_return_pct != rb.metrics.total_return_pct
+            or ra.metrics.total_trades != rb.metrics.total_trades
+            or ea != eb
+        )
+        if ra.metrics.total_trades + rb.metrics.total_trades > 0 or (
+            ea and (min(ea) != max(ea) or (eb and min(eb) != max(eb)))
+        ):
+            self.assertTrue(
+                outcomes_differ,
+                "when either seed is active, runner outcomes must differ",
             )
-        else:
-            self.assertNotEqual(ra.metrics.total_return_pct, rb.metrics.total_return_pct)
+        # else: pure-cash idle on both seeds under defensive rails — allowed
 
     def test_cancel_token_stops_early(self):
         cfg = make_quick_config(name="c", n_candles=10_000, seed=1)

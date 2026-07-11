@@ -21,7 +21,10 @@ HURDLE = HydraEngine.FRICTION_HURDLE_MULT * HydraEngine.ROUND_TRIP_FRICTION_PCT
 
 
 def _engine(balance=1_000.0):
-    e = HydraEngine(initial_balance=balance, asset="SOL/USD")
+    # Rails off: suite measures friction/fee mechanics, not hold-through
+    e = HydraEngine(
+        initial_balance=balance, asset="SOL/USD", hold_through=False
+    )
     e.prices.append(100.0)
     return e
 

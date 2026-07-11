@@ -4,6 +4,10 @@ HYDRA Engine — Hyper-adaptive Dynamic Regime-switching Universal Agent
 Core strategy engine: indicators, regime detection, signal generation, position sizing.
 Portable pure-Python. No dependencies beyond standard library + json.
 
+Default product rails (hold-through, kill HYDRA_HOLD_THROUGH=0): TREND_UP BUY
+≥0.65, force-flatten TREND_DOWN, ride mid-UP except extreme overbought.
+See docs/HOLD_THROUGH.md. Friction gate / 15% CB / Kelly unchanged.
+
 Usage:
     from hydra_engine import HydraEngine
     engine = HydraEngine()
@@ -1327,11 +1331,11 @@ class HydraEngine:
     ROUND_TRIP_FRICTION_PCT = 0.42
     FRICTION_HURDLE_MULT = 2.0
 
-    # Opt-in re-regulation (AI-control study): TREND_UP-only BUY + force-flatten
-    # TREND_DOWN. Kill switch HYDRA_REGIME_SELECTIVE; default OFF. Does NOT
-    # lower min_conf to 0.50 or disable the friction gate.
-    REGIME_SELECTIVE_BUY_MIN_CONF = 0.55
-    REGIME_SELECTIVE_FLATTEN_CONF = 0.70
+    # Hold-through rails (default ON, all pairs). Kill: HYDRA_HOLD_THROUGH=0.
+    # BUY_MIN ≈ tape p90 of TREND_UP BUY conf. Flatten floor is display-only.
+    # Mid-TREND_UP exit: extreme-overbought reason only (docs/HOLD_THROUGH.md).
+    HOLD_THROUGH_BUY_MIN_CONF = 0.65
+    HOLD_THROUGH_FLATTEN_CONF = 0.65
 
     def __init__(self, initial_balance: float = 10000.0, asset: str = "BTC/USD",
                  sizing: Optional[Dict[str, float]] = None,
@@ -1344,7 +1348,7 @@ class HydraEngine:
                  mean_reversion_rsi_buy: float = 35.0,
                  mean_reversion_rsi_sell: float = 65.0,
                  tradable: bool = True,
-                 regime_selective: Optional[bool] = None):
+                 hold_through: Optional[bool] = None):
         self.asset = asset
         self.initial_balance = initial_balance
         self.balance = initial_balance
@@ -1357,11 +1361,16 @@ class HydraEngine:
         # flips this flag per-tick based on real exchange holdings of the
         # quote currency — pairs whose quote we don't hold cannot transact.
         self.tradable = tradable
-        if regime_selective is None:
-            raw = os.environ.get("HYDRA_REGIME_SELECTIVE", "").strip().lower()
-            self.regime_selective = raw in ("1", "true", "yes", "on")
+        if hold_through is None:
+            raw_ht = os.environ.get("HYDRA_HOLD_THROUGH")
+            if raw_ht is None:
+                self.hold_through = True  # product default
+            else:
+                self.hold_through = raw_ht.strip().lower() in (
+                    "1", "true", "yes", "on",
+                )
         else:
-            self.regime_selective = bool(regime_selective)
+            self.hold_through = bool(hold_through)
 
         self.position = Position(asset=asset)
         cfg = sizing or SIZING_CONSERVATIVE
@@ -1536,8 +1545,7 @@ class HydraEngine:
             mean_reversion_rsi_buy=self.mean_reversion_rsi_buy,
             mean_reversion_rsi_sell=self.mean_reversion_rsi_sell,
         )
-        # Opt-in re-regulation: block chop entries + force TREND_DOWN flatten
-        signal = self._apply_regime_selective(regime, signal)
+        signal = self._apply_hold_through(regime, signal)
 
         # Execute if actionable (skip when generate_only for external review)
         trade = None if generate_only else self._maybe_execute(signal)
@@ -1573,25 +1581,20 @@ class HydraEngine:
             return raw
         return min(2.0, 4.0 ** (raw - 1.0))
 
-    def _apply_regime_selective(self, regime: Regime, signal: Signal) -> Signal:
-        """Re-regulation stack from causal AI-control study (default off).
+    def _apply_hold_through(self, regime: Regime, signal: Signal) -> Signal:
+        """Default rails: TREND_UP BUY ≥0.65, flatten TREND_DOWN, ride mid-UP.
 
-        When ``regime_selective`` is True:
-          1. Long + TREND_DOWN → force SELL (flatten), conf ≥ 0.70
-          2. BUY outside TREND_UP → HOLD (SKIP semantics)
-          3. BUY in TREND_UP with conf < 0.55 → HOLD
-
-        Does not disable friction or lower the PositionSizer min_confidence.
+        Kill: ``hold_through=False`` / ``HYDRA_HOLD_THROUGH=0``.
         """
-        if not self.regime_selective:
+        if not self.hold_through:
             return signal
         if self.position.size > 0 and regime == Regime.TREND_DOWN:
             return Signal(
                 action=SignalAction.SELL,
                 confidence=max(
-                    float(signal.confidence), self.REGIME_SELECTIVE_FLATTEN_CONF
+                    float(signal.confidence), self.HOLD_THROUGH_FLATTEN_CONF
                 ),
-                reason=f"REGIME_SELECTIVE:force_flatten|{signal.reason}",
+                reason=f"HOLD_THROUGH:force_flatten|{signal.reason}",
                 strategy=Strategy.DEFENSIVE,
             )
         if signal.action == SignalAction.BUY:
@@ -1600,17 +1603,29 @@ class HydraEngine:
                     action=SignalAction.HOLD,
                     confidence=signal.confidence,
                     reason=(
-                        f"REGIME_SELECTIVE:block_buy_{regime.value}|{signal.reason}"
+                        f"HOLD_THROUGH:block_buy_{regime.value}|{signal.reason}"
                     ),
                     strategy=signal.strategy,
                 )
-            if float(signal.confidence) < self.REGIME_SELECTIVE_BUY_MIN_CONF:
+            if float(signal.confidence) < self.HOLD_THROUGH_BUY_MIN_CONF:
                 return Signal(
                     action=SignalAction.HOLD,
                     confidence=signal.confidence,
-                    reason=f"REGIME_SELECTIVE:low_conf|{signal.reason}",
+                    reason=f"HOLD_THROUGH:low_conf|{signal.reason}",
                     strategy=signal.strategy,
                 )
+        if (
+            signal.action == SignalAction.SELL
+            and self.position.size > 0
+            and regime == Regime.TREND_UP
+            and "extreme overbought" not in (signal.reason or "").lower()
+        ):
+            return Signal(
+                action=SignalAction.HOLD,
+                confidence=signal.confidence,
+                reason=f"HOLD_THROUGH:ride_trend|{signal.reason}",
+                strategy=signal.strategy,
+            )
         return signal
 
     def _expected_move_pct(self, signal: Signal, current_price: float) -> Optional[float]:
@@ -1845,14 +1860,13 @@ class HydraEngine:
             reason=reason,
             strategy=sig_strategy,
         )
-        # Re-apply selective rails so generate_only + external execute cannot bypass
-        # (brain/coordinator cannot open chop BUYs or skip TREND_DOWN flatten).
-        if self.regime_selective and self.candles and self.prices:
+        # Re-apply rails on external execute (brain/coordinator cannot bypass).
+        if self.hold_through and self.candles and self.prices:
             regime = RegimeDetector.detect(
                 self.candles, self.prices,
                 self.volatile_atr_mult, self.volatile_bb_mult, self.trend_ema_ratio,
             )
-            signal = self._apply_regime_selective(regime, signal)
+            signal = self._apply_hold_through(regime, signal)
             if signal.action == SignalAction.HOLD:
                 return None
         return self._maybe_execute(signal, size_multiplier=size_multiplier)

@@ -50,9 +50,20 @@ class TestZeroDrift(unittest.TestCase):
     def setUp(self):
         _neutralize_circuit_breaker()
         self._original_cb = HydraEngine.CIRCUIT_BREAKER_PCT
+        # Hold-through force-flatten is position-dependent (long + TREND_DOWN
+        # → SELL). Direct path uses generate_only (never opens positions) so
+        # it would HOLD while the backtester SELLs — false I7 drift. Kill
+        # rails for signal-layer parity only (same pattern as CB neutralize).
+        self._hold_through_prev = os.environ.get("HYDRA_HOLD_THROUGH")
+        os.environ["HYDRA_HOLD_THROUGH"] = "0"
 
     def tearDown(self):
         HydraEngine.CIRCUIT_BREAKER_PCT = 15.0  # repo default; see hydra_engine.py
+        prev = getattr(self, "_hold_through_prev", None)
+        if prev is None:
+            os.environ.pop("HYDRA_HOLD_THROUGH", None)
+        else:
+            os.environ["HYDRA_HOLD_THROUGH"] = prev
 
     def _collect_direct(self, candles, candle_interval=15):
         """Run a single HydraEngine through the candles and collect per-tick state.
@@ -73,6 +84,7 @@ class TestZeroDrift(unittest.TestCase):
             asset="SOL/USD",
             sizing=SIZING_CONSERVATIVE,
             candle_interval=candle_interval,
+            hold_through=False,
         )
         states = []
         for c in candles:
