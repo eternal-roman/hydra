@@ -130,6 +130,13 @@ class Harness:
         self._friction_gate_prev = os.environ.get("HYDRA_FRICTION_GATE_DISABLED")
         os.environ["HYDRA_FRICTION_GATE_DISABLED"] = "1"
 
+        # Hold-through default ON rides mid-TREND_UP SELLs (except extreme
+        # overbought). Harness SELL scenarios seed positions and call
+        # execute_signal under TREND_UP — rails would return engine_rejected
+        # and never reach _place_order. Kill rails for plumbing tests only.
+        self._hold_through_prev = os.environ.get("HYDRA_HOLD_THROUGH")
+        os.environ["HYDRA_HOLD_THROUGH"] = "0"
+
         # Stash real on-disk state files so they don't leak into the harness.
         # HydraAgent.__init__ runs the legacy journal migrator AND merges
         # the rolling order journal, either of which would otherwise pull
@@ -183,6 +190,12 @@ class Harness:
             os.environ.pop("HYDRA_FRICTION_GATE_DISABLED", None)
         else:
             os.environ["HYDRA_FRICTION_GATE_DISABLED"] = prev
+        # Restore hold-through env to its pre-isolation value.
+        prev = getattr(self, "_hold_through_prev", None)
+        if prev is None:
+            os.environ.pop("HYDRA_HOLD_THROUGH", None)
+        else:
+            os.environ["HYDRA_HOLD_THROUGH"] = prev
         # Restore real time.sleep if we patched it
         if hasattr(self, "_original_time_sleep"):
             time.sleep = self._original_time_sleep
