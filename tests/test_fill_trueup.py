@@ -6,6 +6,11 @@ import pytest
 from hydra_engine import HydraEngine
 
 
+@pytest.fixture(autouse=True)
+def _rails_off(monkeypatch):
+    monkeypatch.setenv("HYDRA_HOLD_THROUGH", "0")
+
+
 def _seed(eng: HydraEngine, n: int = 40, px: float = 100.0) -> None:
     for i in range(n):
         p = px + i * 0.01

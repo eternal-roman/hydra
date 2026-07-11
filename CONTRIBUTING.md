@@ -18,9 +18,7 @@ python hydra_agent.py --demo --duration 15          # offline agent loop
 python hydra_engine.py && python hydra_backtest.py   # pure synthetic demos
 python -m pytest tests/ -q
 python tests/live_harness/harness.py --mode mock    # if you touch execution
-# Optional: regime-selective unit + causal fidelity (needs hydra_history.sqlite)
-python -m pytest tests/test_regime_selective.py -q
-python tools/retest_regime_selective_ranges.py
+python -m pytest tests/test_hold_through.py -q   # hold-through rails
 cd dashboard && npm install && npm run build
 ```
 

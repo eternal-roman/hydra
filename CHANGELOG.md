@@ -6,6 +6,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+Evidence-weighted rails cleanup: harden defense + trend capture, remove
+weaker/opt-in re-regulation and research clutter that encouraged false
+defaults. Absolute strategy alpha remains unproven.
+
+### Added
+- **`HYDRA_HOLD_THROUGH`** (**default ON**, all pairs): TREND_UP BUY conf ≥
+  0.65, force-flatten TREND_DOWN, ride mid-TREND_UP except extreme
+  overbought reason. Kill: `=0`. Spec: `docs/HOLD_THROUGH.md`.
+  Tests: `tests/test_hold_through.py` (CI).
+- History store open-path drops orphan `regression_*` tables (Mode C
+  self-comparison leftovers) so the DB stays raw OHLC + meta only.
+
+### Changed
+- Engine constructor `regime_selective=` → `hold_through=`; env
+  `HYDRA_REGIME_SELECTIVE` → `HYDRA_HOLD_THROUGH` (default inverted: ON).
+- Entry floor **0.65** (was selective 0.55); mid-trend exit is
+  **reason-only** (no conf-based cut that failed calibration).
+- Docs/README/SKILL: honest expectancy + decision tree; no TA overlay
+  product defaults (multi-pair bakeoff: no clear winner).
+
+### Removed
+- **`HYDRA_REGIME_SELECTIVE`** and `tests/test_regime_selective.py`.
+- `tools/retest_regime_selective_ranges.py` and superpowers plans/specs
+  for selective rails (superseded by hold-through).
+
+### Notes
+- Does **not** disable friction, drop competition min_conf, or change
+  SPOT-ONLY / limit post-only / 15% CB.
+- Triangle unchanged (SOL/USD, SOL/BTC, BTC/USD) — isolation work did not
+  support a “bad pairs” delist; under-capture + window regime remain the
+  binding constraints.
+
+---
+
 ## [2.27.4] — 2026-07-11
 
 Opt-in regime-selective rails from causal AI-control study (re-regulation,

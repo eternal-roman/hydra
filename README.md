@@ -14,9 +14,9 @@
 - **Spot-only** execution on the SOL/BTC/USD triangle (default: `SOL/USD`, `SOL/BTC`, `BTC/USD`)
 - **Limit post-only** — never market; 2s REST floor; 15% drawdown **blocks new BUYs** (SELL flatten still allowed)
 - **AI quant pipeline** (optional): Market Quant + Risk Manager + Grok + R1–R11 rules
-- **Opt-in regime-selective rails** (`HYDRA_REGIME_SELECTIVE=1`, **default off**): TREND_UP-only entries + force-flatten on TREND_DOWN — re-regulation from a causal study; relative loss control on historical SOL windows, **not** absolute alpha
-- **Research stack**: backtests, walk-forward, paper **flywheel** (no live flywheel orders), causal counterfactuals under `tools/`
-- **Companions** (optional chat/proposals; live execution **opt-in**, default off)
+- **Hold-through rails** (default on; `HYDRA_HOLD_THROUGH=0` off): TREND_UP entries ≥0.65 conf, flatten downs, ride mid-trends — defense + capture discipline, **not** a profit claim
+- **Research stack**: backtests, walk-forward, paper flywheel (no live flywheel orders), tools under `tools/`
+- **Companions** (chat/proposals; live execution opt-in, default off)
 
 ## Safety (non-negotiable)
 
@@ -27,7 +27,7 @@
 | Rate limit | ≥ 2s between Kraken REST calls |
 | Drawdown | 15% max → **no new BUYs**; inventory SELL still allowed |
 | Companion live | `HYDRA_COMPANION_LIVE_EXECUTION` default **off** |
-| Regime selective | `HYDRA_REGIME_SELECTIVE` default **off** |
+| Hold-through | `HYDRA_HOLD_THROUGH` default **on** (`=0` off) |
 
 ## Quick start
 
@@ -111,16 +111,13 @@ Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`]
 
 ```
 Candle/Ticker WS → indicators → regime → strategy signal
-        → (optional) regime-selective rails (env opt-in)
-        → (optional) AI brain + R1–R11 rules
-        → Kelly size → limit post-only via kraken-cli (WSL)
-        → ExecutionStream / journal / snapshot
-        → dashboard WS :8765
+        → hold-through rails (default on)
+        → (optional) AI brain + R1–R11
+        → Kelly size → limit post-only (kraken-cli / WSL)
+        → ExecutionStream / journal / snapshot → dashboard WS :8765
 ```
 
-**Backtests** replay `HydraEngine` (+ coordinator when enabled). The full AI brain is **not** on the default backtest path (Phase-1 engine + coordinator only).
-
-**v2.27 line (short):** friction gate on BUY entries; fee-true live accounting; paper flywheel (no live order path); opt-in `HYDRA_REGIME_SELECTIVE` (v2.27.4).
+**Backtests** replay `HydraEngine` (+ coordinator). Full AI brain is not on the Phase-1 backtest path.
 
 ## Testing
 
@@ -131,10 +128,7 @@ CI runs on every PR to `main` (Python 3.10–3.12 + dashboard build + mock harne
 python -m pytest tests/ -q
 
 # Safety / money-path packs
-python -m pytest tests/test_flywheel.py tests/test_friction_fee.py tests/test_regime_selective.py -v
-
-# Causal historical fidelity (needs hydra_history.sqlite; no lookahead fills)
-python tools/retest_regime_selective_ranges.py
+python -m pytest tests/test_flywheel.py tests/test_friction_fee.py tests/test_hold_through.py -v
 
 # Execution path (mandatory for placement changes)
 python tests/live_harness/harness.py --mode smoke
@@ -150,7 +144,7 @@ Harness: `smoke` · `mock` (**35** scenarios in CI) · `validate` · `live` (exp
 
 | Path | Role |
 |------|------|
-| `hydra_engine.py` | Indicators, regime, signals, sizing, opt-in selective rails |
+| `hydra_engine.py` | Indicators, regime, signals, sizing, hold-through rails |
 | `hydra_agent.py` | Live loop, orders, journal, resume |
 | `hydra_brain.py` / `hydra_quant_rules.py` | AI + deterministic rules |
 | `hydra_flywheel.py` | Paper multi-sleeve allocator (CLI only) |
@@ -177,6 +171,7 @@ Harness: `smoke` · `mock` (**35** scenarios in CI) · `validate` · `live` (exp
 | [`SKILL.md`](SKILL.md) | Full trading specification |
 | [`docs/BACKTEST.md`](docs/BACKTEST.md) | Backtest runbook |
 | [`docs/COMPANION_SPEC.md`](docs/COMPANION_SPEC.md) | Companion system |
+| [`docs/HOLD_THROUGH.md`](docs/HOLD_THROUGH.md) | Hold-through rails (default on) |
 
 ## Troubleshooting
 
@@ -188,13 +183,13 @@ Harness: `smoke` · `mock` (**35** scenarios in CI) · `validate` · `live` (exp
 | Port 3000 taken | Vite uses `strictPort` — free the port |
 | Port 8765 taken | Pass `--ws-port 8766` (or free the port) |
 | Dashboard disconnected | Start agent first (hosts WS on 8765); `--demo` works offline |
-| No trades | Entry min_confidence 0.65; friction gate may skip thin BUYs; ranging often HOLD |
+| No trades | Hold-through blocks non-TREND_UP BUYs; min_conf 0.65; friction may skip thin entries |
 | Paper mode idle / 0 ticks | Needs working kraken-cli OHLC; use `--demo` without WSL |
-| Want fewer chop entries | Opt-in `HYDRA_REGIME_SELECTIVE=1` (default off; not a profit guarantee) |
+| Want raw engine (no rails) | `HYDRA_HOLD_THROUGH=0` |
 
 ## Disclaimer
 
-This is experimental research software, **not** financial advice. Historical backtests and research tools are **not** promises of future profit. Use least-privilege API keys. Safety nets (dead-man switch, circuit breaker, selective rails) are not guarantees.
+Experimental research software, **not** financial advice. Backtests are not promises of profit. Use least-privilege API keys. Safety rails are not guarantees.
 
 ## License
 

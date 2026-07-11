@@ -3,12 +3,9 @@
 User-facing guide for the research backtest platform. For the full design spec,
 see [`BACKTEST_SPEC.md`](./BACKTEST_SPEC.md).
 
-> **Honest scope:** Default `BacktestRunner` replays **`HydraEngine` + optional
-> cross-pair coordinator**. It does **not** run the full live AI brain on every
-> tick (brain modifiers are intentionally out of Phase-1 backtest). Positive
-> backtest metrics are **not** a go-live guarantee. For causal next-bar
-> counterfactuals (rails on/off), see `tools/ai_control_counterfactual.py` and
-> `tools/retest_regime_selective_ranges.py` (require `hydra_history.sqlite`).
+> **Honest scope:** Phase-1 `BacktestRunner` = `HydraEngine` + optional coordinator
+> (no full AI brain). Positive metrics are not go-live. Default engine includes
+> hold-through rails (`docs/HOLD_THROUGH.md`).
 
 > **v2.26.0 note:** the **AI Reviewer** and **Shadow Validator** were archived
 > (built + CI-tested, never production-wired). Live research surface is engine

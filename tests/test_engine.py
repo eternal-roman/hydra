@@ -549,7 +549,10 @@ class TestHydraEngine:
         assert "CIRCUIT BREAKER" in state["halt_reason"]
 
     def test_buy_updates_position(self):
-        engine = HydraEngine(initial_balance=10000, asset="SOL/USDC")
+        # hold_through default ON blocks MR/RANGING buys — base-path test
+        engine = HydraEngine(
+            initial_balance=10000, asset="SOL/USDC", hold_through=False
+        )
         # Phase 1: stable ranging to establish Bollinger Bands
         import random
         rng = random.Random(42)
@@ -790,7 +793,10 @@ class TestSnapshotAndRollback:
 
     def test_rollback_restores_after_failed_buy(self):
         """Simulates engine commit + rollback for a failed BUY order."""
-        engine = HydraEngine(initial_balance=10000, asset="SOL/USDC")
+        # hold_through default ON would re-apply rails on execute_signal
+        engine = HydraEngine(
+            initial_balance=10000, asset="SOL/USDC", hold_through=False
+        )
         for i in range(60):
             engine.ingest_candle({
                 "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
@@ -1090,7 +1096,10 @@ class TestHaltedEngineExecuteSignal:
 
     def _halted_engine(self):
         from hydra_engine import HydraEngine
-        eng = HydraEngine(initial_balance=100.0, asset="SOL/USDC")
+        # hold_through default ON would convert mid-TREND_UP SELL → HOLD
+        eng = HydraEngine(
+            initial_balance=100.0, asset="SOL/USDC", hold_through=False
+        )
         # Seed enough candles to pass warmup
         for i in range(60):
             price = 100.0 + i * 0.1

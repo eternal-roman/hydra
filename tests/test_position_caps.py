@@ -18,6 +18,7 @@ from hydra_engine import HydraEngine, SIZING_COMPETITION, SIZING_CONSERVATIVE
 def _disable_friction_for_cap_tests(monkeypatch):
     """Cap tests isolate sizing; friction on flat synthetic series is orthogonal."""
     monkeypatch.setenv("HYDRA_FRICTION_GATE_DISABLED", "1")
+    monkeypatch.setenv("HYDRA_HOLD_THROUGH", "0")
 
 
 def _seed(eng: HydraEngine, n: int = 60, px: float = 50.0) -> None:

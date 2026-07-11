@@ -15,6 +15,61 @@ def test_init_creates_schema(tmp_path):
     names = [r[0] for r in rows]
     assert "ohlc" in names
     assert "meta" in names
+    assert not any(n.startswith("regression_") for n in names)
+
+
+def test_init_drops_orphan_regression_tables(tmp_path):
+    """Mode C leftovers must not survive open — keep only raw OHLC + meta."""
+    db = tmp_path / "h.sqlite"
+    with sqlite3.connect(str(db)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO meta VALUES('schema_version', '2');
+            CREATE TABLE ohlc(
+              pair TEXT NOT NULL, grain_sec INTEGER NOT NULL, ts INTEGER NOT NULL,
+              open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL,
+              close REAL NOT NULL, volume REAL NOT NULL,
+              source TEXT NOT NULL, ingested_at INTEGER NOT NULL,
+              PRIMARY KEY(pair, grain_sec, ts));
+            INSERT INTO ohlc VALUES(
+              'BTC/USD', 3600, 1700000000, 1,1,1,1,1, 'kraken_archive', 0);
+            CREATE TABLE regression_run(
+              run_id TEXT PRIMARY KEY, hydra_version TEXT NOT NULL,
+              git_sha TEXT NOT NULL, param_hash TEXT NOT NULL,
+              pair TEXT NOT NULL, grain_sec INTEGER NOT NULL,
+              spec_json TEXT NOT NULL, override_reason TEXT,
+              created_at INTEGER NOT NULL);
+            INSERT INTO regression_run VALUES(
+              'dead', '9.9.9-timing-probe', 'abc', '', 'BTC/USD', 3600,
+              '{}', NULL, 1);
+            CREATE TABLE regression_metrics(
+              run_id TEXT NOT NULL, fold_idx INTEGER NOT NULL,
+              metric TEXT NOT NULL, value REAL NOT NULL,
+              PRIMARY KEY(run_id, fold_idx, metric));
+            CREATE TABLE regression_trade(
+              run_id TEXT NOT NULL, trade_idx INTEGER NOT NULL,
+              ts INTEGER NOT NULL, side TEXT NOT NULL, price REAL NOT NULL,
+              size REAL NOT NULL, fee REAL NOT NULL, regime TEXT, reason TEXT,
+              PRIMARY KEY(run_id, trade_idx));
+            CREATE TABLE regression_equity_curve(
+              run_id TEXT NOT NULL, ts INTEGER NOT NULL, equity REAL NOT NULL,
+              PRIMARY KEY(run_id, ts));
+            """
+        )
+        conn.commit()
+    HistoryStore(str(db))
+    with sqlite3.connect(str(db)) as conn:
+        names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "ohlc" in names
+        assert "meta" in names
+        assert not any(n.startswith("regression_") for n in names)
+        assert conn.execute("SELECT COUNT(*) FROM ohlc").fetchone()[0] == 1
 
 
 def test_schema_version_recorded(tmp_path):

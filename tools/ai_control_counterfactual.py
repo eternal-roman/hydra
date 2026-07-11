@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Causal counterfactual: baseline rails vs 'more AI control' policies.
+"""Causal counterfactual: raw engine vs hold-through / loose policies.
 
 NO FORWARD-LOOKING BIAS
 -----------------------
@@ -13,12 +13,15 @@ NO FORWARD-LOOKING BIAS
 What this answers
 -----------------
 Not "would Claude/Grok have said X" (that requires online LLM calls).
-It answers the *testable* core of "if AI were given more control / less railing":
+It answers the *testable* core of rails vs deregulation:
 
   Q1. Does *relaxing rails* (lower conf bar, disable friction) improve causal P&L?
-  Q2. Does an *AI-shaped discretionary proxy* (regime filters, early flatten,
-      skip ranging entries) improve causal P&L vs engine baseline?
+  Q2. Does product hold-through (policy name ``ai_proxy_selective`` legacy)
+      improve causal P&L vs raw engine baseline?
   Q3. Where did rails block trades that would have helped or hurt?
+
+Product defaults live in HydraEngine (hold_through=True); this tool only
+replays. Spec: docs/HOLD_THROUGH.md.
 
 Usage:
   python tools/ai_control_counterfactual.py
@@ -148,16 +151,11 @@ def policy_max_loose(state: Dict[str, Any], pos_size: float, **_kw) -> PolicyDec
 
 
 def policy_ai_proxy_selective(state: Dict[str, Any], pos_size: float, **_kw) -> PolicyDecision:
-    """Pass-through: rails live in HydraEngine when regime_selective=True.
-
-    Does not re-implement TREND_UP / force-flatten logic here (single source of
-    truth). Research sizer floor may be 0.55 for study fidelity; live competition
-    stays min_conf 0.65 unless the operator changes sizing.
-    """
+    """Pass-through when engine has hold_through=True (legacy policy name)."""
     action, conf, reason, strategy = _engine_action(state)
     return PolicyDecision(
-        action, conf, 1.0, f"engine_sel|{strategy}|{reason}",
-        ["control:engine_regime_selective"],
+        action, conf, 1.0, f"engine_ht|{strategy}|{reason}",
+        ["control:engine_hold_through"],
     )
 
 
@@ -206,7 +204,7 @@ def run_policy(
     fee_bps: float = 16.0,
     mode: str = "competition",
     sample_every: int = 1,
-    regime_selective: Optional[bool] = None,
+    hold_through: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Causal replay for one policy. Engines are independent per policy."""
     # Env for friction
@@ -220,22 +218,20 @@ def run_policy(
         SIZING_COMPETITION if mode == "competition"
         else {"kelly_multiplier": 0.25, "min_confidence": 0.65, "max_position_pct": 0.30}
     )
-    # Research-only conf floors (not live defaults). Selective uses 0.55 to
-    # match the causal study; live competition keeps 0.65 when flag is on.
+    # Research conf floors. Loose policies drop to 0.50; product rails keep 0.65.
     if policy_name in ("loose_conf", "max_loose", "ai_proxy_aggressive"):
         sizing["min_confidence"] = 0.50
-    elif policy_name == "ai_proxy_selective":
-        sizing["min_confidence"] = 0.55
 
-    if regime_selective is None:
-        regime_selective = policy_name == "ai_proxy_selective"
+    # Baseline / loose = rails off (raw engine). Hold-through policy = product default.
+    if hold_through is None:
+        hold_through = policy_name == "ai_proxy_selective"
 
     eng = HydraEngine(
         initial_balance=initial,
         asset="PAIR",
         sizing=sizing,
         candle_interval=60,  # 1h bars in this experiment
-        regime_selective=bool(regime_selective),
+        hold_through=bool(hold_through),
     )
 
     pending: Optional[Pending] = None

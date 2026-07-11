@@ -26,6 +26,12 @@ from hydra_quant_rules import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _rails_off(monkeypatch):
+    """Exit-path unit tests exercise raw execute_signal, not product rails."""
+    monkeypatch.setenv("HYDRA_HOLD_THROUGH", "0")
+
+
 FRESH = {
     "funding_bps_8h": 10.0,
     "oi_delta_1h_pct": 0.5,
@@ -37,7 +43,9 @@ FRESH = {
 
 
 def _seeded(balance: float = 100.0, asset: str = "SOL/USD") -> HydraEngine:
-    eng = HydraEngine(initial_balance=balance, asset=asset)
+    eng = HydraEngine(
+        initial_balance=balance, asset=asset, hold_through=False
+    )
     for i in range(60):
         px = 100.0 + (i % 5) * 0.1
         eng.ingest_candle({

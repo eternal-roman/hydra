@@ -190,7 +190,7 @@ jobs:
             tests/test_warmup_unified.py \
             tests/test_pr_e_quant_crosspair.py \
             tests/test_remediation_loose_ends.py \
-            tests/test_regime_selective.py \
+            tests/test_hold_through.py \
             -v
 
       - name: Run go-live plumbing gates (sqlite required; skip if absent)

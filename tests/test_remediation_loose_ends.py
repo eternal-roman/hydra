@@ -16,6 +16,11 @@ from hydra_engine import CrossPairCoordinator, HydraEngine, SIZING_COMPETITION
 from hydra_quant_rules import FUNDING_EXTREME_BPS, apply_rules
 
 
+@pytest.fixture(autouse=True)
+def _rails_off(monkeypatch):
+    monkeypatch.setenv("HYDRA_HOLD_THROUGH", "0")
+
+
 def _seed(eng: HydraEngine, n: int = 55, px: float = 100.0) -> None:
     for i in range(n):
         p = px * (1.0 + 0.002 * ((i % 7) - 3))

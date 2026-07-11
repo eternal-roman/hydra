@@ -115,8 +115,7 @@ class HistoryStore:
             if existing is not None and existing != SCHEMA_VERSION:
                 if existing == 1 and SCHEMA_VERSION == 2:
                     # 1 -> 2: additive bump (originally the regression_* tables,
-                    # since removed in the release-regression cleanup). Nothing
-                    # to backfill; any old DB keeps its now-unused empty tables.
+                    # since removed in the release-regression cleanup).
                     pass
                 else:
                     raise RuntimeError(
@@ -125,6 +124,17 @@ class HistoryStore:
                         f"the DB to rebuild from archive."
                     )
             conn.executescript(_SCHEMA)
+            # Mode C release-regression was removed (self-comparison gate;
+            # Wilcoxon always p=1). Orphan tables are not trustworthy decision
+            # records and are not backtest inputs — drop if present. Canonical
+            # store retains only meta + ohlc (raw candles).
+            for _orphan in (
+                "regression_trade",
+                "regression_equity_curve",
+                "regression_metrics",
+                "regression_run",
+            ):
+                conn.execute(f"DROP TABLE IF EXISTS {_orphan}")
             # Bump recorded version idempotently.
             conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
