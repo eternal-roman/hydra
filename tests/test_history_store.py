@@ -19,7 +19,7 @@ def test_init_creates_schema(tmp_path):
 
 
 def test_init_drops_orphan_regression_tables(tmp_path):
-    """Mode C leftovers must not survive open — keep only raw OHLC + meta."""
+    """Legacy release-gate tables must not survive open — raw OHLC + meta only."""
     db = tmp_path / "h.sqlite"
     with sqlite3.connect(str(db)) as conn:
         conn.executescript(

@@ -609,12 +609,10 @@ def mount_backtest_routes(
     broadcaster.register_handler("experiment_delete", _deny_delete)
     broadcaster.register_handler("review_request", _review_request)
 
-    # ── v2.20.0 — Research tab WS routes ──────────────────────────────
-    # Read-only handlers backed by the canonical hydra_history.sqlite store.
-    # Lab (Mode B) is deferred: walk-forward in-handler would block the WS
-    # thread for minutes per pair, and Mode C (releases) carries the user's
-    # operational priority. Lab gets a clear "deferred" error so the UI can
-    # render the same way today and tomorrow.
+    # ── Research tab WS routes ────────────────────────────────────────
+    # Dataset coverage is read-only against hydra_history.sqlite.
+    # Lab walk-forward runs on a daemon thread and streams progress (never
+    # blocks the WS loop for multi-minute OOS work).
 
     def _research_dataset_coverage(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Read-only: per (pair, grain_sec) coverage of the canonical store."""
@@ -639,7 +637,7 @@ def mount_backtest_routes(
             return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
     def _research_lab_run(payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Mode B walk-forward — async via daemon thread, streams progress."""
+        """Research Lab walk-forward — async via daemon thread, streams progress."""
         import uuid
         from hydra_history_store import HistoryStore
         from hydra_walk_forward import (
