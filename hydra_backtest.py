@@ -72,7 +72,7 @@ class BacktestConfig:
 
     pairs: Tuple[str, ...] = ("SOL/USD",)
     initial_balance_per_pair: float = 100.0
-    candle_interval: int = 15  # minutes
+    candle_interval: int = 60  # minutes (matches live default; rails calibrated at 1h)
 
     mode: str = "conservative"  # "conservative" | "competition"
     param_overrides_json: str = "{}"  # JSON-encoded Dict[pair, Dict[param, value]]; frozen-safe

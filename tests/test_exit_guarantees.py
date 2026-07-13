@@ -43,8 +43,12 @@ FRESH = {
 
 
 def _seeded(balance: float = 100.0, asset: str = "SOL/USD") -> HydraEngine:
+    # candle_interval pinned: these tests exercise confidence/halt gates,
+    # not the timeframe-aware friction hurdle (2.0% at the 60m default
+    # would skip the boundary BUY this file asserts on).
     eng = HydraEngine(
-        initial_balance=balance, asset=asset, hold_through=False
+        initial_balance=balance, asset=asset, hold_through=False,
+        candle_interval=15,
     )
     for i in range(60):
         px = 100.0 + (i % 5) * 0.1

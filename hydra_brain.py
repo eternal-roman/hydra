@@ -1196,6 +1196,19 @@ class HydraBrain:
             return ""
         def fmt(v, sfx=""):
             return "null" if v is None else f"{v}{sfx}"
+        if qi.get("derivatives_covered") is False:
+            # Portfolio satellite with no Kraken Futures mapping: rendering
+            # a wall of null funding/OI lines reads as a data OUTAGE to the
+            # Quant. Say what's structurally true instead.
+            def _f(v):
+                return "null" if v is None else f"{v}"
+            return (
+                "\nQUANT INDICATORS (signal input only — SPOT-ONLY execution):"
+                "\n  derivatives_covered: false (no Kraken Futures market for "
+                "this pair — funding/OI/basis structurally unavailable, not stale; "
+                "R10 tracks CVD only)"
+                f"\n  cvd_divergence_sigma: {_f(qi.get('cvd_divergence_sigma'))}"
+            )
         synthetic = qi.get("synthetic_pair")
         synthetic_note = ""
         if synthetic:

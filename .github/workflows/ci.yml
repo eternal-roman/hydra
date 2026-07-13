@@ -196,6 +196,9 @@ jobs:
       - name: Run money-safety gate tests (market reject, throttle, CB boundary, paper refusal)
         run: python -m pytest tests/test_money_safety_gates.py -v
 
+      - name: Run portfolio-edge tests (bridge drain policy, auto pairs, per-quote pools)
+        run: python -m pytest tests/test_bridge_policy.py tests/test_portfolio_auto.py -v
+
       - name: Run go-live plumbing gates (sqlite required; skip if absent)
         run: |
           if [ -f hydra_history.sqlite ]; then

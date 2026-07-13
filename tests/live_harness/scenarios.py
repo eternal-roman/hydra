@@ -749,10 +749,22 @@ def scenario_Hp7_sol_btc_info_only_no_placement(h: Harness):
 
 
 def scenario_Hp8_tradable_reactivates_on_btc_arrival(h: Harness):
-    """v2.11.0: when BTC arrives mid-session (e.g. after a BTC/USDC fill),
-    _refresh_tradable_flags must re-enable the SOL/BTC engine with a
-    clean equity baseline. Exercises the False→True transition that lets
-    the operator organically grow into SOL/BTC trading without restarting."""
+    """v2.11.0 behavior, now behind HYDRA_BRIDGE_TRADING=1 (v2.28 default
+    is exit_only drain): when BTC arrives mid-session, _refresh_tradable_flags
+    re-enables the SOL/BTC engine with a clean equity baseline. Also asserts
+    the v2.28 default: with the flag OFF, BTC arrival must NOT re-arm the
+    bridge."""
+    import os as _os
+    import contextlib as _ctx
+
+    @_ctx.contextmanager
+    def _bridge_flag_on():
+        _os.environ["HYDRA_BRIDGE_TRADING"] = "1"
+        try:
+            yield
+        finally:
+            _os.environ.pop("HYDRA_BRIDGE_TRADING", None)
+
     agent = h.new_agent(pairs=["SOL/BTC"], paper=False, initial_balance=200.0)
     h.seed_candles(agent, "SOL/BTC", base_price=0.001160)
     engine = agent.engines["SOL/BTC"]
@@ -772,15 +784,26 @@ def scenario_Hp8_tradable_reactivates_on_btc_arrival(h: Harness):
 
     # BTC arrives.
     agent._cached_balance = {"USDC": 130.0, "XXBT": 0.0010}
-    agent._refresh_tradable_flags()
+    with _bridge_flag_on():
+        agent._refresh_tradable_flags()
 
-    assert engine.tradable is True, "Hp8: engine must flip to tradable once BTC is held"
-    assert abs(engine.balance - 0.0010) < 1e-12, (
-        f"Hp8: engine balance must equal real BTC holding; got {engine.balance}"
+        assert engine.tradable is True, "Hp8: engine must flip to tradable once BTC is held"
+        assert abs(engine.balance - 0.0010) < 1e-12, (
+            f"Hp8: engine balance must equal real BTC holding; got {engine.balance}"
+        )
+        # Clean equity baseline — drawdown counter reset.
+        assert engine.max_drawdown == 0.0
+        assert engine.equity_history == []
+
+    # v2.28 default (flag off): BTC arrival must NOT re-arm the bridge.
+    engine.tradable = False
+    engine.balance = 0.0
+    engine.position.size = 0.0
+    agent._refresh_tradable_flags()
+    assert engine.tradable is False, (
+        "Hp8: bridge default is signal-only — BTC arrival must not re-arm it"
     )
-    # Clean equity baseline — drawdown counter reset.
-    assert engine.max_drawdown == 0.0
-    assert engine.equity_history == []
+    assert engine.exit_only is True
 
 
 # ═════════════════════════════════════════════════════════════════

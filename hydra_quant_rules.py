@@ -379,6 +379,12 @@ def _count_stale_fields(qi: Dict[str, Any]) -> int:
     exists, e.g. SOL/BTC). They are NOT stale — they are unavailable
     by design. Skip them; R10 only watches the fields the synthetic
     path actually populates (funding + cvd + regime).
+
+    Uncovered-pair awareness: if `derivatives_covered=False`, the pair
+    has no Kraken Futures mapping at all (portfolio satellites like
+    NIGHT/USD). Every derivatives field is unavailable by design, so
+    R10 tracks only the engine-internal CVD signal — otherwise every
+    satellite would be structurally force-held on every tick.
     """
     aggregate = qi.get("staleness_s")
     try:
@@ -387,7 +393,9 @@ def _count_stale_fields(qi: Dict[str, Any]) -> int:
     except (TypeError, ValueError) as e:
         import logging; logging.warning(f"Ignored exception: {e}")
 
-    if qi.get("synthetic_pair"):
+    if qi.get("derivatives_covered") is False:
+        tracked = ("cvd_divergence_sigma",)
+    elif qi.get("synthetic_pair"):
         tracked = ("funding_bps_8h", "cvd_divergence_sigma", "oi_price_regime")
     else:
         tracked = ("funding_bps_8h", "oi_delta_1h_pct", "oi_price_regime",
