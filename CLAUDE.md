@@ -43,7 +43,19 @@ regression bug, not a style issue.
   triangle's stable quote is selected by the agent's `--pairs` flag;
   `STABLE_QUOTES = {USD, USDC, USDT}` are first-class. v2.19 flipped
   the default from USDC → USD; opt back into USDC by passing
-  `--pairs SOL/USDC,SOL/BTC,BTC/USDC`.
+  `--pairs SOL/USDC,SOL/BTC,BTC/USDC`. **`--pairs auto`** discovers every
+  held Kraken asset and adds one satellite pair each (USDC-quoted when
+  USDC is funded, else USD; `HYDRA_AUTO_QUOTE` forces) —
+  `hydra_agent.discover_portfolio_pairs`.
+- **Bridge is signal-only by default (v2.28):** SOL/BTC engines run
+  `exit_only` drain mode (SELLs flow until flat, BUYs refused) —
+  isolation study on real 1h tape showed zero 1y trades and a Sharpe
+  drag when included (`.hydra-flywheel/bridge_isolation.json`).
+  `HYDRA_BRIDGE_TRADING=1` opts back in.
+- **Candles default 60m (v2.28):** the hold-through rails and friction
+  hurdle were calibrated on 1h tape; 15m ran them off-calibration.
+  `--candle-interval` still accepts 1/5/15/30/60; snapshot resume drops
+  candle history on interval mismatch (positions/journal restore).
 - **Version pin:** v2.27.6
 
 ## Defaults (inherited)
@@ -72,6 +84,9 @@ regression bug, not a style issue.
 - **`HYDRA_COMPANION_LIVE_EXECUTION` default OFF** — proposals are paper until opted in
 - **Funding is markPrice-relative, never absolute** — Kraken Futures `PF_*` `fundingRate` is absolute USD-per-contract-per-period. Convert to bps via `(fundingRate / markPrice) * 10000`, never `fundingRate * 10000`. The `_absolute_to_relative_bps` helper in `hydra_derivatives_stream.py` enforces this (±500 bps clamp vs API drift). Pre-v2.15.2 fires used the wrong absolute conversion — not authoritative.
 - **Synthetic pairs declare themselves to R10** — `DerivativesSnapshot.synthetic=True` propagates to `quant_indicators["synthetic_pair"]`; R10 then tracks only funding/cvd/regime (the fields the synthetic path actually populates). Adding a new pair without a direct Kraken Futures perp requires this flag, otherwise R10 will structurally force-hold every tick.
+- **Uncovered pairs declare themselves to R10** — pairs with no `SPOT_TO_DERIVATIVES` entry at all (portfolio satellites, e.g. NIGHT/USD) get `quant_indicators["derivatives_covered"]=False` from `_build_quant_indicators`; R10 then tracks only CVD. Coverage is structural (pair in the futures map), never "snapshot present" — a covered pair with a warming/stale stream must still hit the R10 blackout.
+- **Per-quote balance pools (v2.28)** — live stable-quoted engines are funded from the REAL holding of their own quote currency split across pairs sharing that quote (`_set_engine_balances`); a USDC engine never sizes against USD it cannot spend. Zero pool ⇒ balance 0 (sizer refuses entries) but `tradable` stays True so inventory can exit. Paper keeps the uniform split.
+- **`exit_only` drain mode** — engine-level flag: BUY entries refused (SKIP semantics), every SELL path untouched. Set per-session by the agent (never persisted); the bridge default uses it. Composes with hold-through and the CB.
 - **`hydra_rm_features.py` is pure** — no I/O, subprocess, network, or file access; every function returns `Optional[float]` (or `Optional[dict]`) from input alone, returning `None` on insufficient data. A future contributor adding side effects breaks the "fails-silent with None" contract that lets R10 and RM reason over missing vs corrupted data and that lets `HYDRA_RM_FEATURES_DISABLED` work as an instant rollback.
 - **`PLACEMENT_FAILED` entries are session-only** — pre-exchange diagnostics (`insufficient_USD_balance`, `placement_error:api`) live in the in-memory `HydraAgent.order_journal` for live debugging but MUST NOT persist to `hydra_session_snapshot.json` or the rolling `hydra_order_journal.json`. The `_journal_for_persistence()` helper is the single chokepoint; both write paths (`_save_snapshot` and the per-tick rolling write) go through it. If you add a third write path, route it through the helper too.
 - **Pair identity has one source of truth** — `hydra_pair_registry.PairRegistry` owns alias resolution (XBT↔BTC, ZUSD↔USD, USDC.F→USDC, slashed↔slashless, case-insensitive) and per-pair metadata (price decimals, ordermin, costmin, tick size). `hydra_kraken_cli.KrakenCLI` delegates to the class-level `registry`. New pair-handling code must consume the registry — never re-implement an alias dict. v2.19 absorbed 1048 USDC literals into a single registry + role binding.
@@ -157,6 +172,8 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | `HYDRA_RM_FEATURES_DISABLED` | rm_features | `=1` skips engine-internal feature computation in `_build_quant_indicators`; instant rollback without redeploy. Default off (features enabled). |
 | `HYDRA_BUY_OFFSET_DISABLED` | execution | `=1` reverts BUYs to raw bid (default off). Offset table: `hydra_agent.py:_BUY_LIMIT_OFFSET_BPS` keyed by `(base, quote_class, regime)`; only SOL bases in `VOLATILE`/`TREND_DOWN` carry offsets — BTC bases and RANGING/TREND_UP stay at raw bid (avoid missed fills). Empirical derivation in the code comment. |
 | `HYDRA_QUOTE` | config | Default stable quote when `--quote` is not passed and no `--pairs` override. Choices: `USD` (v2.19+ default), `USDC`, `USDT`. Resolution order: explicit `--quote` > `HYDRA_QUOTE` env > `DEFAULT_QUOTE` (USD). |
+| `HYDRA_BRIDGE_TRADING` | agent | `=1` re-enables SOL/BTC bridge trading. Default OFF (v2.28): the bridge runs exit_only drain mode — evidence in `.hydra-flywheel/bridge_isolation.json` (0 trades/1y; Sharpe drag 2y). Candles/synthetic funding still stream as signal input. |
+| `HYDRA_AUTO_QUOTE` | agent | Forces the satellite quote for `--pairs auto` (`USD`/`USDC`/`USDT`). Default unset: prefer USDC when the account holds USDC above costmin (yield), else the triangle quote. USD remains essential for USD-only listings (e.g. NIGHT/USD) and fill-rate-sensitive flow. |
 | `HYDRA_TAPE_CAPTURE` | history | `=1` (default) wires CandleStream candle-close pushes into a bounded-queue writer that upserts to `hydra_history.sqlite` (`source='tape'`). Set `=0` to disable (e.g. paper-mode tests on a shared DB). |
 | `HYDRA_HISTORY_DB` | history | Path override for the canonical OHLC store. Defaults to `hydra_history.sqlite` in the working directory. Used by the agent (tape capture), `tools/refresh_history.py`, and the SqliteSource backtest path. |
 | `HYDRA_WSL_DISTRO` | cli | WSL distribution name for all `kraken` CLI invocations. Defaults to `Ubuntu`. Override if your distro is named differently (e.g. `Ubuntu-24.04`). Single source of truth: `hydra_kraken_cli.WSL_DISTRO`; isolated modules read the env var directly. |

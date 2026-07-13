@@ -189,7 +189,7 @@ class HydraAgent:
         ws_port: int = 8765,
         mode: str = "conservative",
         paper: bool = False,
-        candle_interval: int = 15,
+        candle_interval: int = 60,
         reset_params: bool = False,
         resume: bool = False,
         demo: bool = False,
@@ -601,6 +601,13 @@ class HydraAgent:
         features. The kill switch HYDRA_RM_FEATURES_DISABLED=1 is read
         on every call so it can be flipped live without restart."""
         quant_indicators: Dict[str, Any] = {}
+        # Structural coverage: is this pair in the Kraken Futures map at all?
+        # (Not "snapshot present" — a covered pair with a warming-up stream
+        # must still hit R10's staleness blackout, fail-safe.)
+        derivatives_covered = (
+            self.derivatives_stream is not None
+            and pair in getattr(self.derivatives_stream, "pairs", [])
+        )
         if self.derivatives_stream is not None:
             try:
                 snap = self.derivatives_stream.latest(pair)
@@ -617,6 +624,12 @@ class HydraAgent:
                     }
             except Exception as e:
                 import logging; logging.warning(f"Ignored exception: {e}")
+        if not derivatives_covered:
+            # Portfolio satellites (no Kraken Futures mapping) declare
+            # themselves so R10 tracks only the fields that can exist —
+            # absent funding/OI keys otherwise read as "stale" and the
+            # pair would be structurally force-held every tick.
+            quant_indicators["derivatives_covered"] = False
 
         engine = self.engines.get(pair)
         if engine is not None:
@@ -764,6 +777,11 @@ class HydraAgent:
             "mode": self.mode,
             "paper": self.paper,
             "pairs": self.pairs,
+            # Indicator semantics are interval-dependent; --resume compares
+            # this against the live setting and drops candle history on
+            # mismatch rather than mixing timeframes silently. getattr:
+            # object.__new__ test constructs may lack the attribute.
+            "candle_interval": getattr(self, "candle_interval", None),
             "competition_start_balance": self._competition_start_balance,
             "engines": {pair: eng.snapshot_runtime() for pair, eng in self.engines.items()},
             "coordinator_regime_history": self.coordinator.regime_history,
@@ -932,11 +950,29 @@ class HydraAgent:
                         print(f"  [SNAPSHOT] Migrated pair keys "
                               f"{source_quote} → {target_quote} "
                               f"(engine state preserved).")
+            # Timeframe guard: candle history recorded at a different
+            # interval must not seed this session's indicators (a 15m RSI
+            # is not a 60m RSI). Positions/balances/journal still restore;
+            # candles re-warm from the REST OHLC seed at the live interval.
+            snap_interval = snapshot.get("candle_interval")
+            drop_candles = (
+                snap_interval is not None
+                and int(snap_interval) != int(self.candle_interval)
+            )
+            if drop_candles:
+                print(f"  [SNAPSHOT] candle_interval changed "
+                      f"({snap_interval}m → {self.candle_interval}m) — "
+                      f"dropping snapshot candle history; positions and "
+                      f"journal restore normally.")
             # Normalize legacy XBT pair names in engine keys
             engines_raw = snapshot.get("engines", {})
             engines = {self._normalize_pair_name(k): v for k, v in engines_raw.items()}
             for pair, eng_snap in engines.items():
                 if pair in self.engines:
+                    if drop_candles:
+                        eng_snap = dict(eng_snap)
+                        eng_snap.pop("candles", None)
+                        eng_snap.pop("prices", None)
                     self.engines[pair].restore_runtime(eng_snap)
             # Normalize coordinator regime history keys
             coord_raw = snapshot.get("coordinator_regime_history", {})
@@ -3282,18 +3318,70 @@ class HydraAgent:
         the position being valued against a tiny converted initial balance.
         """
         prices = self._get_asset_prices()
+
+        # Per-quote pools (live only): each stable-quoted engine is funded
+        # from the REAL holding of its own quote currency, split across the
+        # pairs sharing that quote. A uniform "every stable = $1" slice let
+        # a USDC-quoted engine size orders against USD it cannot spend
+        # (phantom balance → PLACEMENT_FAILED loop) the moment the universe
+        # mixes quotes (--pairs auto). Paper keeps the uniform split — it
+        # simulates strategy, not funding. Fails soft to the uniform slice
+        # when no balance data is available yet.
+        stable_quote_counts: Dict[str, int] = {}
+        for p in self.pairs:
+            q = p.split("/")[1]
+            if q in STABLE_QUOTES:
+                stable_quote_counts[q] = stable_quote_counts.get(q, 0) + 1
+
+        def _stable_slice(q: str) -> float:
+            if self.paper:
+                return per_pair_usd
+            pool = self._get_real_quote_balance(q)
+            if pool is None:
+                return per_pair_usd  # no balance data yet — legacy behavior
+            n = stable_quote_counts.get(q, 1)
+            return pool / n if n else 0.0
+
         for pair in self.pairs:
             engine = self.engines[pair]
             quote = pair.split("/")[1]
             current_price = engine.prices[-1] if engine.prices else 0
             if quote in STABLE_QUOTES:
-                equity = per_pair_usd + engine.position.size * current_price
-                engine.balance = per_pair_usd
+                slice_quote = _stable_slice(quote)
+                equity = slice_quote + engine.position.size * current_price
+                engine.balance = slice_quote
                 engine.initial_balance = equity
                 # PR-B / B3: never rebase peak downward on re-seed / resume.
                 engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
+                # Always tradable: with a zero pool the sizer sizes entries
+                # to 0 (balance < costmin) but held inventory stays sellable.
                 engine.tradable = True
                 continue
+
+            # Non-stable-quoted pairs (the SOL/BTC bridge) are signal-only
+            # by default: on real 1h tape the bridge produced zero trades in
+            # 1y and its only 2y trade lost money while dragging portfolio
+            # Sharpe from -0.63 to -0.99 (isolation study, fees-on realistic
+            # fills; evidence in .hydra-flywheel/bridge_isolation.json).
+            # Its candles still stream for cross-pair confluence and the
+            # synthetic derivatives signal. Existing inventory drains via
+            # exit_only (SELLs flow, BUYs refused) so a held bridge position
+            # is never stranded. Opt back in: HYDRA_BRIDGE_TRADING=1.
+            if os.environ.get("HYDRA_BRIDGE_TRADING") != "1":
+                engine.exit_only = True
+                has_position = engine.position.size > 0
+                equity = engine.position.size * current_price
+                engine.balance = 0.0
+                engine.initial_balance = equity if equity > 0 else 0.0
+                engine.peak_equity = max(
+                    float(engine.peak_equity or 0.0), engine.initial_balance,
+                )
+                engine.tradable = has_position  # exit path stays open until flat
+                state_label = "draining position" if has_position else "signal-only"
+                print(f"  [HYDRA] {pair}: {state_label} — bridge trading off "
+                      f"(HYDRA_BRIDGE_TRADING=1 to trade the bridge)")
+                continue
+            engine.exit_only = False
 
             # Paper mode: keep the legacy USD→quote conversion so strategy
             # simulations are not artificially gated by on-account holdings.
@@ -3362,6 +3450,21 @@ class HydraAgent:
                     # if they somehow are, re-enable them. Balance unchanged.
                     engine.tradable = True
                 continue
+            if os.environ.get("HYDRA_BRIDGE_TRADING") != "1":
+                # Bridge stays in drain mode (see _set_engine_balances):
+                # tradable only while a position remains, never re-activated
+                # just because BTC landed in the account.
+                engine.exit_only = True
+                has_position = engine.position.size > 0
+                if engine.tradable and not has_position:
+                    engine.balance = 0.0
+                    engine.tradable = False
+                    print(f"  [HYDRA] {pair}: bridge flat — now signal-only "
+                          f"(HYDRA_BRIDGE_TRADING=1 to trade the bridge)")
+                elif has_position and not engine.tradable:
+                    engine.tradable = True  # resume surfaced inventory: drain it
+                continue
+            engine.exit_only = False
             real_quote = self._get_real_quote_balance(quote) or 0.0
             costmin = PositionSizer.MIN_COST.get(quote, 0.0)
             should_be_tradable = real_quote > costmin
@@ -4068,6 +4171,100 @@ class HydraAgent:
 
 
 # ═══════════════════════════════════════════════════════════════
+# PORTFOLIO PAIR DISCOVERY (--pairs auto)
+# ═══════════════════════════════════════════════════════════════
+
+def discover_portfolio_pairs(default_quote: str = "USD") -> List[str]:
+    """Resolve every held Kraken asset into a tradable stable-quoted pair.
+
+    Universe = the default triangle (SOL/quote, SOL/BTC, BTC/quote) plus one
+    satellite pair per additional held base asset. Quote selection per
+    satellite:
+
+      1. `HYDRA_AUTO_QUOTE` env (USD | USDC | USDT), if set, wins outright.
+      2. Otherwise prefer BASE/USDC (idle USDC earns yield) **when the
+         account actually holds USDC** — a USDC-quoted engine with no USDC
+         can sell inventory but never buy, so preferring it without funds
+         just parks the pair.
+      3. Fall back to BASE/{default_quote} (USD essential for fill rate and
+         for USD-only listings like NIGHT/USD).
+      4. Skip the asset when Kraken lists neither candidate, or when the
+         holding is below the pair's ordermin (unsellable dust) — nothing
+         actionable exists for it.
+
+    Staked/bonded holdings (.S/.B suffixes) are excluded: they cannot be
+    sold and must not spawn engines. Fails soft: any balance/pair-info
+    error returns just the triangle so a Kraken hiccup cannot brick boot.
+    """
+    from hydra_pair_registry import default_registry, STABLE_QUOTES
+
+    triangle = [f"SOL/{default_quote}", "SOL/BTC", f"BTC/{default_quote}"]
+    bal = KrakenCLI.balance()
+    if not isinstance(bal, dict) or "error" in bal:
+        print(f"  [AUTO-PAIRS] balance fetch failed ({bal!r}) — "
+              f"falling back to the default triangle")
+        return triangle
+
+    # Aggregate spot holdings by canonical asset name.
+    holdings: Dict[str, float] = {}
+    for asset, amount in bal.items():
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            continue
+        if amount <= 0 or KrakenCLI._is_staked(asset):
+            continue
+        canon = KrakenCLI._normalize_asset(asset)
+        holdings[canon] = holdings.get(canon, 0.0) + amount
+
+    forced_quote = (os.environ.get("HYDRA_AUTO_QUOTE") or "").upper().strip()
+    if forced_quote and forced_quote not in STABLE_QUOTES:
+        print(f"  [AUTO-PAIRS] ignoring invalid HYDRA_AUTO_QUOTE="
+              f"{forced_quote!r} (must be one of {sorted(STABLE_QUOTES)})")
+        forced_quote = ""
+    usdc_funded = holdings.get("USDC", 0.0) > 0.5  # costmin threshold
+
+    satellites: List[str] = []
+    reg = default_registry()
+    for base, amount in sorted(holdings.items()):
+        if base in STABLE_QUOTES or base in ("SOL", "BTC"):
+            continue  # stables fund quotes; SOL/BTC are the triangle
+        if forced_quote:
+            quote_order = [forced_quote]
+        elif usdc_funded:
+            quote_order = ["USDC", default_quote]
+        else:
+            quote_order = [default_quote, "USDC"]
+        candidates = []
+        for q in quote_order:
+            if q != base and f"{base}/{q}" not in candidates:
+                candidates.append(f"{base}/{q}")
+        constants = KrakenCLI.load_pair_constants(candidates)
+        chosen = None
+        for cand in candidates:
+            info = constants.get(cand) or constants.get(
+                reg.get(cand).cli_format if reg.get(cand) else cand
+            )
+            if not info:
+                continue
+            ordermin = float(info.get("ordermin") or 0.0)
+            if amount < ordermin:
+                print(f"  [AUTO-PAIRS] {base}: holding {amount} below "
+                      f"ordermin {ordermin} for {cand} — dust, skipping")
+                break
+            chosen = cand
+            break
+        if chosen:
+            satellites.append(chosen)
+            print(f"  [AUTO-PAIRS] {base}: {amount} held → {chosen}")
+        else:
+            print(f"  [AUTO-PAIRS] {base}: no tradable stable-quoted pair "
+                  f"on Kraken — skipping")
+
+    return triangle + satellites
+
+
+# ═══════════════════════════════════════════════════════════════
 # CLI ENTRY POINT
 # ═══════════════════════════════════════════════════════════════
 
@@ -4076,13 +4273,18 @@ def main():
         description="HYDRA — Live Regime-Adaptive Trading Agent for Kraken CLI",
     )
     parser.add_argument("--pairs", type=str, default="SOL/USD,SOL/BTC,BTC/USD",
-                        help="Comma-separated trading pairs (default: SOL/USD,SOL/BTC,BTC/USD; v2.19+ flipped from USDC to USD)")
+                        help="Comma-separated trading pairs (default: SOL/USD,SOL/BTC,BTC/USD; "
+                             "v2.19+ flipped from USDC to USD). Pass 'auto' to discover every "
+                             "held Kraken asset and trade it against USDC (preferred, earns "
+                             "yield) or USD (fill-rate / USD-only listings) — see "
+                             "discover_portfolio_pairs.")
     parser.add_argument("--balance", type=float, default=100.0,
                         help="Reference balance for position sizing (default: 100)")
     parser.add_argument("--interval", type=int, default=None,
                         help="Seconds between ticks (default: 300)")
-    parser.add_argument("--candle-interval", type=int, default=15, choices=[1, 5, 15, 30, 60],
-                        help="OHLC candle period in minutes (default: 15)")
+    parser.add_argument("--candle-interval", type=int, default=60, choices=[1, 5, 15, 30, 60],
+                        help="OHLC candle period in minutes (default: 60 — the timeframe the "
+                             "hold-through rails and friction hurdle were calibrated on)")
     parser.add_argument("--duration", type=int, default=0,
                         help="Total duration in seconds (default: 0 = run forever, Ctrl+C to stop)")
     parser.add_argument("--ws-port", type=int, default=8765,
@@ -4102,7 +4304,19 @@ def main():
                         help="Run agent as specific user (fetches API keys from DB)")
 
     args = parser.parse_args()
-    pairs = [p.strip() for p in args.pairs.split(",")]
+    if args.pairs.strip().lower() == "auto":
+        if args.demo:
+            print("  [AUTO-PAIRS] --demo has no exchange account; using the default triangle")
+            pairs = ["SOL/USD", "SOL/BTC", "BTC/USD"]
+        else:
+            from hydra_config import DEFAULT_QUOTE
+            _env_q = os.environ.get("HYDRA_QUOTE", "").strip().upper()
+            _dq = _env_q if _env_q in STABLE_QUOTES else DEFAULT_QUOTE
+            print(f"\n  [AUTO-PAIRS] Discovering held assets (quote preference: "
+                  f"USDC if funded, else {_dq})...")
+            pairs = discover_portfolio_pairs(default_quote=_dq)
+    else:
+        pairs = [p.strip() for p in args.pairs.split(",")]
     candle_interval = args.candle_interval
 
     if args.interval is not None:

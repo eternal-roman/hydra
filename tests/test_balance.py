@@ -345,7 +345,8 @@ class TestEngineBalanceInit:
             agent.engines[pair] = engine
         return agent
 
-    def test_btc_quoted_balance_uses_real_holding_when_btc_held(self):
+    def test_btc_quoted_balance_uses_real_holding_when_btc_held(self, monkeypatch):
+        monkeypatch.setenv("HYDRA_BRIDGE_TRADING", "1")  # legacy opt-in path
         """v2.11.0: SOL/BTC engine balance = real BTC holding, not a USD
         conversion. tradable=True when the holding exceeds costmin."""
         real_btc = 0.00300
@@ -355,10 +356,12 @@ class TestEngineBalanceInit:
         )
         agent._set_engine_balances(per_pair_usd=100.0)
 
-        # USD-quoted pairs get the 1/N USDC slice
-        assert agent.engines["SOL/USDC"].balance == 100.0
+        # Per-quote pools (v2.28): the real 100 USDC pool splits across the
+        # two USDC-quoted pairs — a uniform 100-each slice would let the
+        # engines double-spend the account.
+        assert agent.engines["SOL/USDC"].balance == 50.0
         assert agent.engines["SOL/USDC"].tradable is True
-        assert agent.engines["BTC/USDC"].balance == 100.0
+        assert agent.engines["BTC/USDC"].balance == 50.0
         assert agent.engines["BTC/USDC"].tradable is True
 
         # SOL/BTC: real BTC holding, not a USD-derived phantom
@@ -408,7 +411,8 @@ class TestEngineBalanceInit:
         assert trade is None, \
             "info-only engine must not produce a Trade for any signal strength"
 
-    def test_refresh_tradable_activates_when_btc_arrives(self):
+    def test_refresh_tradable_activates_when_btc_arrives(self, monkeypatch):
+        monkeypatch.setenv("HYDRA_BRIDGE_TRADING", "1")  # legacy opt-in path
         """v2.11.0: _refresh_tradable_flags re-seats the flag when real BTC
         appears mid-session (e.g., BTC/USDC fill or user deposit). The
         engine transitions False→True and the equity baseline resets."""
@@ -430,7 +434,8 @@ class TestEngineBalanceInit:
         assert sol_btc.peak_equity == sol_btc.initial_balance
         assert sol_btc.max_drawdown == 0.0
 
-    def test_refresh_tradable_deactivates_when_btc_depleted(self):
+    def test_refresh_tradable_deactivates_when_btc_depleted(self, monkeypatch):
+        monkeypatch.setenv("HYDRA_BRIDGE_TRADING", "1")  # legacy opt-in path
         """Symmetric: if BTC is spent down below costmin, the engine flips
         back to info-only on the next refresh."""
         agent = self._bare_agent_for_balance_tests(
@@ -469,7 +474,8 @@ class TestEngineBalanceInit:
         assert abs(pnl_pct) < 5.0, \
             f"P&L should be near 0% after balance reset, got {pnl_pct:+.2f}%"
 
-    def test_paper_mode_preserves_legacy_usd_conversion(self):
+    def test_paper_mode_preserves_legacy_usd_conversion(self, monkeypatch):
+        monkeypatch.setenv("HYDRA_BRIDGE_TRADING", "1")  # legacy opt-in path
         """Paper mode must NOT gate on real holdings — strategy simulations
         should work regardless of live-account composition. Preserves the
         pre-v2.11.0 USD→quote conversion so SOL/BTC remains tradable in paper."""

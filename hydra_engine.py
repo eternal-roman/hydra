@@ -1339,7 +1339,7 @@ class HydraEngine:
 
     def __init__(self, initial_balance: float = 10000.0, asset: str = "BTC/USD",
                  sizing: Optional[Dict[str, float]] = None,
-                 candle_interval: int = 15,
+                 candle_interval: int = 60,
                  volatile_atr_mult: float = 1.8,
                  volatile_bb_mult: float = 1.8,
                  trend_ema_ratio: float = 1.005,
@@ -1362,6 +1362,14 @@ class HydraEngine:
         # flips this flag per-tick based on real exchange holdings of the
         # quote currency — pairs whose quote we don't hold cannot transact.
         self.tradable = tradable
+        # `exit_only` refuses new BUY entries while leaving every SELL path
+        # (including halt flatten, hold-through force-flatten, and QFE) fully
+        # live. SKIP semantics — the tick is not halted. The agent sets this
+        # for pairs being drained out of the tradable universe (e.g. the
+        # SOL/BTC bridge under its signal-only default) so existing inventory
+        # exits normally but no new position can open. Session policy — not
+        # persisted; the agent re-derives it every boot.
+        self.exit_only = False
         if hold_through is None:
             raw_ht = os.environ.get("HYDRA_HOLD_THROUGH")
             if raw_ht is None:
@@ -1694,6 +1702,10 @@ class HydraEngine:
         if self.halted and signal.action == SignalAction.SELL and self.position.size <= 0:
             return None
 
+        # Drain mode: no new entries; exits flow normally (SKIP semantics).
+        if self.exit_only and signal.action == SignalAction.BUY:
+            return None
+
         current_price = self.prices[-1]
         effective_mult = self._apply_size_multiplier(size_multiplier)
 
@@ -1711,9 +1723,9 @@ class HydraEngine:
             # on SOL 1y), so the gate was inert. Raise the floor for longer
             # bars so only trades with material expected move clear.
             hurdle = self.FRICTION_HURDLE_MULT * self.ROUND_TRIP_FRICTION_PCT
-            if getattr(self, "candle_interval", 15) >= 60:
+            if getattr(self, "candle_interval", 60) >= 60:
                 hurdle = max(hurdle, 2.0)  # percent
-            elif getattr(self, "candle_interval", 15) >= 30:
+            elif getattr(self, "candle_interval", 60) >= 30:
                 hurdle = max(hurdle, 1.2)
             if expected is not None and expected < hurdle:
                 self.friction_skips += 1
