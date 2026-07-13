@@ -23,7 +23,7 @@ import sys
 import time
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 # pair_registry is pure stdlib (dataclasses/typing only); importing it
 # does NOT violate the engine's "no numpy/pandas" isolation rule.
@@ -1335,6 +1335,15 @@ class HydraEngine:
     # BUY_MIN ≈ tape p90 of TREND_UP BUY conf. Flatten floor is display-only.
     # Mid-TREND_UP exit: extreme-overbought reason only (docs/HOLD_THROUGH.md).
     HOLD_THROUGH_BUY_MIN_CONF = 0.65
+    # Daily trend-ensemble overlay parameters (see constructor comment).
+    TREND_SMA_DAYS = 200
+    TREND_EMA_FAST_DAYS = 20
+    TREND_EMA_SLOW_DAYS = 100
+    TREND_DON_ENTRY_DAYS = 55
+    TREND_DON_EXIT_DAYS = 20
+    TREND_SCORE_LONG = 0.6      # ensemble score ≥ this ⇒ daily trend long
+    TREND_VOL_LOOKBACK_DAYS = 21
+    MAX_DAILY_CLOSES = 420      # ~14 months; sma200 + headroom
     HOLD_THROUGH_FLATTEN_CONF = 0.65
 
     def __init__(self, initial_balance: float = 10000.0, asset: str = "BTC/USD",
@@ -1380,6 +1389,30 @@ class HydraEngine:
                 )
         else:
             self.hold_through = bool(hold_through)
+
+        # Daily trend-ensemble overlay (v2.28): the only signal family in
+        # this repo with a validated multi-year risk-adjusted edge (BTC 11y
+        # Sharpe 1.36-1.50 @ ~30% maxDD vs B&H 1.13 @ 84%; SOL don55 VT
+        # 1.15 @ 27.7% vs 0.67 @ 96% — .hydra-flywheel/trend_results.json).
+        # Score = 0.4·(close>sma200) + 0.4·(ema20>ema100) + 0.2·donchian
+        # state (long after 55d-close breakout until 20d-close breakdown),
+        # all on DAILY closes. daily_trend_long gates hold-through entries
+        # and flattens on flip; realized daily vol drives entry-size
+        # targeting. Fails OPEN end to end: with < TREND_SMA_DAYS+10 daily
+        # closes the score is None and behavior is identical to pre-overlay.
+        # Kill: HYDRA_TREND_OVERLAY=0 (or trend_overlay=False).
+        raw_to = os.environ.get("HYDRA_TREND_OVERLAY")
+        self.trend_overlay = (
+            raw_to is None or raw_to.strip().lower() in ("1", "true", "yes", "on")
+        )
+        self._daily_closes: List[Tuple[int, float]] = []  # (utc_day, close)
+        self._don_state = 0  # 1 = long regime per Donchian channel state
+        try:
+            self.trend_target_vol = float(
+                os.environ.get("HYDRA_TREND_TARGET_VOL") or 30.0
+            )
+        except (TypeError, ValueError):
+            self.trend_target_vol = 30.0
 
         self.position = Position(asset=asset)
         cfg = sizing or SIZING_CONSERVATIVE
@@ -1436,15 +1469,142 @@ class HydraEngine:
             self.prices[-1] = candle.close
             if self.signed_volumes:
                 self.signed_volumes[-1] = signed
+            self._update_daily_close(candle.timestamp, candle.close)
             return
         self.candles.append(candle)
         self.prices.append(candle.close)
         self.signed_volumes.append(signed)
+        self._update_daily_close(candle.timestamp, candle.close)
         # Keep memory bounded
         if len(self.candles) > self.MAX_CANDLES:
             self.candles = self.candles[-self.MAX_CANDLES:]
             self.prices = self.prices[-self.MAX_CANDLES:]
             self.signed_volumes = self.signed_volumes[-self.MAX_CANDLES:]
+
+    def _update_daily_close(self, ts: float, close: float) -> None:
+        """Maintain the daily-close series that feeds the trend overlay.
+
+        Day boundary = UTC calendar day of the candle timestamp. Same-day
+        candles refresh the day's close in place; a new day appends and
+        advances the Donchian state machine on the just-completed day.
+        Bounded to MAX_DAILY_CLOSES.
+        """
+        if close <= 0:
+            return
+        day = int(ts // 86400)
+        dc = self._daily_closes
+        if dc and dc[-1][0] == day:
+            dc[-1] = (day, close)
+            return
+        if dc and day < dc[-1][0]:
+            return  # out-of-order history (restore edge) — ignore
+        if dc:
+            self._advance_donchian(dc[-1][1])
+        dc.append((day, close))
+        if len(dc) > self.MAX_DAILY_CLOSES:
+            del dc[: len(dc) - self.MAX_DAILY_CLOSES]
+
+    def _advance_donchian(self, completed_close: float) -> None:
+        """Donchian channel state on completed daily closes: long after a
+        TREND_DON_ENTRY_DAYS-close breakout, flat after a
+        TREND_DON_EXIT_DAYS-close breakdown. Close-based (the engine keeps
+        daily closes, not daily highs/lows) — the conservative variant."""
+        # Compare against the window BEFORE the completed close — including
+        # it in its own breakout window makes `>` unsatisfiable.
+        prior = [c for _, c in self._daily_closes[:-1]]
+        if len(prior) < self.TREND_DON_ENTRY_DAYS:
+            return
+        if self._don_state == 0:
+            if completed_close > max(prior[-self.TREND_DON_ENTRY_DAYS:]):
+                self._don_state = 1
+        else:
+            if completed_close < min(prior[-self.TREND_DON_EXIT_DAYS:]):
+                self._don_state = 0
+
+    def seed_daily_closes(self, daily_candles: List[Dict[str, Any]]) -> None:
+        """Seed the daily-close series from REST daily OHLC (or a resampled
+        equivalent). Merges by day and REPLAYS the Donchian state machine
+        from scratch so the state matches the seeded history. Idempotent.
+        The agent calls this at boot (Kraken returns ~720 daily bars — the
+        sma200 warms up immediately instead of after 200 live days)."""
+        merged: Dict[int, float] = {d: c for d, c in self._daily_closes}
+        for raw in daily_candles or []:
+            try:
+                ts = float(raw.get("timestamp") or 0)
+                close = float(raw.get("close") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts <= 0 or close <= 0:
+                continue
+            merged[int(ts // 86400)] = close
+        series = sorted(merged.items())[-self.MAX_DAILY_CLOSES:]
+        self._daily_closes = []
+        self._don_state = 0
+        for day, close in series:
+            if self._daily_closes:
+                self._advance_donchian(self._daily_closes[-1][1])
+            self._daily_closes.append((day, close))
+
+    def daily_trend_score(self) -> Optional[float]:
+        """Ensemble score on daily closes ∈ [0, 1]; None until warmed up.
+
+        0.4·(close > sma200) + 0.4·(ema20 > ema100) + 0.2·donchian_state.
+        The current (forming) day participates as its latest close —
+        equivalent to evaluating on the running close, matching how the
+        validated daily systems marked-to-close intraday.
+        """
+        closes = [c for _, c in self._daily_closes]
+        if len(closes) < self.TREND_SMA_DAYS + 10:
+            return None
+        current = closes[-1]
+        sma = sum(closes[-self.TREND_SMA_DAYS:]) / float(self.TREND_SMA_DAYS)
+        ema_fast = Indicators.ema(closes, self.TREND_EMA_FAST_DAYS)
+        ema_slow = Indicators.ema(closes, self.TREND_EMA_SLOW_DAYS)
+        score = 0.0
+        if current > sma:
+            score += 0.4
+        if ema_fast > ema_slow:
+            score += 0.4
+        if self._don_state == 1:
+            score += 0.2
+        return score
+
+    def daily_trend_long(self) -> Optional[bool]:
+        """True/False once the overlay is warmed up; None ⇒ unavailable
+        (every consumer must fail OPEN on None)."""
+        if not self.trend_overlay:
+            return None
+        score = self.daily_trend_score()
+        if score is None:
+            return None
+        return score >= self.TREND_SCORE_LONG
+
+    def daily_realized_vol_pct(self) -> Optional[float]:
+        """Annualized stdev of daily log returns over TREND_VOL_LOOKBACK_DAYS,
+        percent. None on insufficient data."""
+        closes = [c for _, c in self._daily_closes]
+        if len(closes) < self.TREND_VOL_LOOKBACK_DAYS + 1:
+            return None
+        window = closes[-(self.TREND_VOL_LOOKBACK_DAYS + 1):]
+        rets = []
+        for a, b in zip(window, window[1:]):
+            if a > 0 and b > 0:
+                rets.append(math.log(b / a))
+        if len(rets) < 2:
+            return None
+        stdev = statistics.pstdev(rets)
+        return stdev * math.sqrt(365.0) * 100.0
+
+    def _trend_vol_multiplier(self) -> float:
+        """Entry-size scalar: target/realized annualized vol, capped at 1.0
+        (spot cannot lever up; only de-risking is possible). 1.0 when the
+        overlay is off or vol is unavailable (fail open)."""
+        if not self.trend_overlay:
+            return 1.0
+        vol = self.daily_realized_vol_pct()
+        if vol is None or vol <= 0 or self.trend_target_vol <= 0:
+            return 1.0
+        return max(0.2, min(1.0, self.trend_target_vol / vol))
 
     def cvd_divergence_sigma(self) -> Optional[float]:
         """v2.14 Quant signal: z-score of (cvd_slope − price_slope) measured
@@ -1602,16 +1762,34 @@ class HydraEngine:
         """
         if not self.hold_through:
             return signal
-        if self.position.size > 0 and regime == Regime.TREND_DOWN:
+        # Daily trend overlay: None = warming up / disabled → fail open
+        # (rails behave exactly as pre-overlay).
+        daily_long = self.daily_trend_long()
+        if self.position.size > 0 and (
+            regime == Regime.TREND_DOWN or daily_long is False
+        ):
+            tag = ("force_flatten" if regime == Regime.TREND_DOWN
+                   else "daily_trend_exit")
             return Signal(
                 action=SignalAction.SELL,
                 confidence=max(
                     float(signal.confidence), self.HOLD_THROUGH_FLATTEN_CONF
                 ),
-                reason=f"HOLD_THROUGH:force_flatten|{signal.reason}",
+                reason=f"HOLD_THROUGH:{tag}|{signal.reason}",
                 strategy=Strategy.DEFENSIVE,
             )
         if signal.action == SignalAction.BUY:
+            if daily_long is False:
+                # The validated daily ensemble says no long regime — the
+                # 1h signal alone doesn't clear the bar (this exit/entry
+                # discipline is where the multi-year risk-adjusted edge
+                # comes from; see trend_results.json).
+                return Signal(
+                    action=SignalAction.HOLD,
+                    confidence=signal.confidence,
+                    reason=f"HOLD_THROUGH:daily_trend_flat|{signal.reason}",
+                    strategy=signal.strategy,
+                )
             if regime != Regime.TREND_UP:
                 return Signal(
                     action=SignalAction.HOLD,
@@ -1740,6 +1918,25 @@ class HydraEngine:
         if signal.action == SignalAction.BUY and signal.confidence >= self.sizer.min_confidence:
             size = self.sizer.calculate(signal.confidence, self.balance, current_price, self.asset)
             size = size * effective_mult
+            # v2.28 trend overlay: vol-target entries (target/realized daily
+            # vol, capped 1.0) — the de-risking that cut the validated
+            # ensemble's maxDD from 84% to ~30% at equal-or-better Sharpe.
+            size = size * self._trend_vol_multiplier()
+            # Conviction sizing: when the daily ensemble confirms the long
+            # regime, allocate the vol-targeted fraction of the position cap
+            # (the validated trend systems' sizing shape) instead of the
+            # Kelly-on-confidence crumb — Kelly's uncalibrated-edge input
+            # made entries so small the engine could not compound even when
+            # right. Kelly remains the floor; the gross-inventory cap below
+            # still binds. Kill: HYDRA_TREND_CONVICTION_SIZING=0.
+            if (size > 0
+                    and self.daily_trend_long() is True
+                    and os.environ.get("HYDRA_TREND_CONVICTION_SIZING") != "0"):
+                conviction_value = (
+                    self.balance * self.sizer.max_position_pct
+                    * self._trend_vol_multiplier()
+                )
+                size = max(size, conviction_value / current_price)
             # PR-B: hard risk caps AFTER size_multiplier (B1) and against
             # gross inventory (B2). Advertised max_position_pct is the
             # ceiling on total position notional / equity — not a pre-mult
@@ -2287,12 +2484,33 @@ class HydraEngine:
                  "close": c.close, "volume": c.volume, "timestamp": c.timestamp}
                 for c in self.candles[-self.MAX_CANDLES:]
             ],
+            # v2.28 trend overlay: daily closes span far more history than
+            # the candle window — they must survive --resume or the sma200
+            # would need 200 live days to re-warm.
+            "daily_closes": [[d, c] for d, c in self._daily_closes],
+            "don_state": self._don_state,
         }
 
     def restore_runtime(self, snapshot: Dict[str, Any]):
         """Restore engine runtime state from a snapshot produced by snapshot_runtime."""
         if not snapshot:
             return
+        # v2.28 trend overlay state. Restored FIRST so the candle replay
+        # below extends (never regresses) the daily series; malformed rows
+        # are dropped rather than poisoning the ensemble.
+        restored_dc: List[Tuple[int, float]] = []
+        for row in snapshot.get("daily_closes") or []:
+            try:
+                day, close = int(row[0]), float(row[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if close > 0 and (not restored_dc or day > restored_dc[-1][0]):
+                restored_dc.append((day, close))
+        self._daily_closes = restored_dc[-self.MAX_DAILY_CLOSES:]
+        try:
+            self._don_state = 1 if int(snapshot.get("don_state") or 0) == 1 else 0
+        except (TypeError, ValueError):
+            self._don_state = 0
         self.initial_balance = float(snapshot.get("initial_balance", self.initial_balance))
         self.balance = float(snapshot.get("balance", self.balance))
         p = snapshot.get("position", {})

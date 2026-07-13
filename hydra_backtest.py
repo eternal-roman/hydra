@@ -619,11 +619,43 @@ class BacktestRunner:
             if overrides:
                 engine.apply_tuned_params(overrides)
             self.engines[pair] = engine
+        self._seed_trend_overlay()
         self.coordinator: Optional[CrossPairCoordinator] = (
             CrossPairCoordinator(list(cfg.pairs)) if cfg.coordinator_enabled else None
         )
         self.filler = SimulatedFiller(cfg.fill_model, cfg.maker_fee_bps)
         self._pending: Dict[str, Optional[PendingOrder]] = {p: None for p in cfg.pairs}
+
+    def _seed_trend_overlay(self) -> None:
+        """Seed each engine's daily-close series from PRE-WINDOW history so
+        the trend overlay is warm from tick 1 (mirrors the live agent's
+        daily REST seed at boot). Sqlite sources only — synthetic/csv runs
+        have no pre-history, the overlay reports None, and behavior is
+        identical to pre-overlay (fail-open by design)."""
+        cfg = self.config
+        if cfg.data_source != "sqlite":
+            return
+        try:
+            params = cfg.data_source_params
+            start_ts = int(params["start_ts"])
+            db_path = params["db_path"]
+            grain = int(params.get("grain_sec") or 3600)
+            from hydra_history_store import HistoryStore
+            store = HistoryStore(db_path)
+            lookback = start_ts - 430 * 86400  # MAX_DAILY_CLOSES + margin
+            for pair in cfg.pairs:
+                daily: Dict[int, float] = {}
+                for r in store.fetch(pair, grain, lookback, start_ts):
+                    daily[int(r.ts // 86400)] = r.close  # last bar of the day wins
+                if daily:
+                    self.engines[pair].seed_daily_closes([
+                        {"timestamp": day * 86400, "close": close}
+                        for day, close in sorted(daily.items())
+                    ])
+        except Exception:
+            # Seeding is an enhancement, never a blocker — the overlay
+            # fails open without it.
+            pass
 
     # ---- public API ----
 
@@ -728,8 +760,20 @@ class BacktestRunner:
                     if not applied:
                         # Fallback if snapshot missing: keep optimistic books.
                         pass
-                    engine.balance -= fill.fee_paid
+                    # Fee floor mirrors live _deduct_fill_fee (balance never negative).
+                    engine.balance = max(0.0, engine.balance - fill.fee_paid)
                     result.fills += 1
+                    # Realized P&L: _apply_sell_fill records the closed
+                    # trade (with profit) on engine.trades — surface it so
+                    # Monte Carlo / bootstrap CI have real per-trade
+                    # profits to resample (previously hardcoded None,
+                    # which silently disabled both).
+                    realized_profit = None
+                    if applied and side == "SELL" and engine.trades:
+                        realized_profit = engine.trades[-1].profit
+                        if realized_profit is not None:
+                            # Net of the maker fee the engine books don't carry.
+                            realized_profit = float(realized_profit) - float(fill.fee_paid)
                     result.trade_log.append({
                         "tick": tick,
                         "pair": pair,
@@ -740,7 +784,7 @@ class BacktestRunner:
                         "reason": f"backtest_fill:{fill.reason}",
                         "confidence": 0.0,
                         "strategy": "MOMENTUM",
-                        "profit": None,
+                        "profit": realized_profit,
                         "timestamp": getattr(current_candles[pair], "timestamp", None),
                         "fee_paid": float(fill.fee_paid),
                     })
