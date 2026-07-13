@@ -1224,8 +1224,8 @@ class HydraBrain:
         """
         qi = state.get("quant_indicators") or {}
         keys = (
-            "realized_vol_1h",
-            "realized_vol_24h",
+            "realized_vol_1h_pct",
+            "realized_vol_24h_pct",
             "drawdown_velocity_pct_per_hr",
             "fill_rate_24h",
             "avg_slippage_bps_24h",
@@ -1240,8 +1240,8 @@ class HydraBrain:
 
         return (
             "\nRM ENGINE FEATURES (stdlib pure — null = insufficient window):"
-            f"\n  realized_vol_1h: {fmt(qi.get('realized_vol_1h'))}"
-            f"\n  realized_vol_24h: {fmt(qi.get('realized_vol_24h'))}"
+            f"\n  realized_vol_1h_pct: {fmt(qi.get('realized_vol_1h_pct'))}"
+            f"\n  realized_vol_24h_pct: {fmt(qi.get('realized_vol_24h_pct'))}"
             f"\n  drawdown_velocity_pct_per_hr: {fmt(qi.get('drawdown_velocity_pct_per_hr'))}"
             f"\n  fill_rate_24h: {fmt(qi.get('fill_rate_24h'))}"
             f"\n  avg_slippage_bps_24h: {fmt(qi.get('avg_slippage_bps_24h'))}"
@@ -1385,6 +1385,8 @@ RECENT AI DECISIONS: {recent or 'None yet'}{self._format_spread(state)}{self._fo
         return f"""PAIR: {state.get('asset', '?')} | PRICE: {state.get('price', 0)} | REGIME: {state.get('regime', '?')} | TIMEFRAME: {state.get('candle_interval', '?')}m | CANDLE: {state.get('candle_status', 'unknown')}
 ENGINE SIGNAL: {sig.get('action', '?')} @ {sig.get('confidence', 0):.2f}
 {quant_block}QUANT THESIS: {analyst.get('thesis', 'N/A')}
+QUANT REASONING: {analyst.get('reasoning') or 'N/A'}
+QUANT KEY FACTORS: {', '.join(analyst.get('key_factors') or []) or 'N/A'}
 QUANT CONVICTION: {analyst.get('conviction', 0):.2f}
 QUANT AGREES WITH ENGINE: {analyst.get('signal_agreement', '?')}
 QUANT SIZE_MULTIPLIER (you stack yours on this): {quant_size}
@@ -1455,18 +1457,41 @@ Make the final call. Think carefully, then respond with JSON only."""
             return json.loads(cleaned)
         except Exception as e:
             import logging; logging.warning(f"Ignored exception: {e}")
-        match = re.search(r'\{[^{}]*\}', cleaned, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except Exception as e:
-                import logging; logging.warning(f"Ignored exception: {e}")
-        match = re.search(r'\{.*\}', cleaned, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except Exception as e:
-                import logging; logging.warning(f"Ignored exception: {e}")
+        # Extract the OUTERMOST balanced object. A brace-free regex here
+        # (r'\{[^{}]*\}') would match the first inner sub-object of nested
+        # schemas (e.g. Quant "scenario" / RM "risk_metrics"), silently
+        # dropping force_hold / decision / final_action whenever the model
+        # wraps its JSON in prose.
+        start = cleaned.find("{")
+        while start != -1:
+            depth = 0
+            in_str = False
+            esc = False
+            for i in range(start, len(cleaned)):
+                ch = cleaned[i]
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\":
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(cleaned[start:i + 1])
+                        except Exception as e:
+                            import logging
+                            logging.warning(f"Ignored exception: {e}")
+                        break  # balanced but invalid — try the next '{'
+            start = cleaned.find("{", start + 1)
         print(f"  [BRAIN] Failed to parse JSON: {text[:100]}")
         return None
 

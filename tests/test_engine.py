@@ -1013,6 +1013,27 @@ class TestBrain:
         # Empty
         assert brain._parse_json('') is None
 
+    def test_json_parser_prose_wrapped_nested(self):
+        """Prose-wrapped NESTED JSON must return
+        the outermost object, not the first brace-free sub-object (the old
+        fallback returned {"p_up": ...} and dropped force_hold/decision)."""
+        self._skip_if_no_sdk()
+        from hydra_brain import HydraBrain
+        brain = HydraBrain(anthropic_key="sk-ant-test-fake-key")
+        text = ('Here is my analysis:\n'
+                '{"thesis": "up", "scenario": {"p_up": 0.6, "p_down": 0.4}, '
+                '"force_hold": true}\nHope that helps.')
+        out = brain._parse_json(text)
+        assert out is not None
+        assert out.get("force_hold") is True, out
+        assert "scenario" in out and "thesis" in out
+        # Braces inside strings must not break balance tracking
+        out2 = brain._parse_json(
+            'note {"reason": "range {20-45} rsi", "decision": "CONFIRM"} end')
+        assert out2 is not None and out2["decision"] == "CONFIRM"
+        # Invalid first object, valid second — parser recovers
+        assert brain._parse_json('{broken} then {"ok": 1}') == {"ok": 1}
+
     def test_prompt_builders(self):
         self._skip_if_no_sdk()
         from hydra_brain import HydraBrain

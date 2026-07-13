@@ -1,22 +1,24 @@
-"""Regression tests for AUDIT_2026-07-11 HIGH/MED money-safety fixes (v2.27.6)."""
+"""Money-safety gate regressions: CLI market-order hard reject, global REST
+throttle, companion paper/live refusal, inclusive circuit-breaker boundary,
+hold-through fail-closed, quant kill-switch, RM prompt features, pool enqueue,
+and tape non-blocking stop."""
 from __future__ import annotations
 
 import os
 import sys
 import pathlib
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from hydra_engine import HydraEngine, Regime, Signal, SignalAction, Strategy
+from hydra_engine import HydraEngine
 from hydra_kraken_cli import KrakenCLI, KRAKEN_REST_FLOOR_S
 from hydra_companions.live_executor import LiveExecutor
 from hydra_companions.executor import TradeProposal
-from hydra_companions.config import live_execution_enabled
 from hydra_brain import HydraBrain
 from hydra_quant_rules import evaluate_qfe, apply_rules
 
@@ -113,15 +115,39 @@ def test_live_executor_rechecks_live_flag(monkeypatch):
 
 # ─── M-CB inclusive ────────────────────────────────────────────
 
+def _flat_candles(eng, px: float, n: int = 55, start: int = 0):
+    for i in range(start, start + n):
+        eng.ingest_candle({
+            "open": px, "high": px * 1.001, "low": px * 0.999,
+            "close": px, "volume": 10.0,
+            "timestamp": 1700000000 + i * 900,
+        })
+
+
 def test_circuit_breaker_at_exactly_15_halts():
-    eng = HydraEngine(initial_balance=100.0, asset="SOL/USD", hold_through=False)
-    eng.tradable = True
-    eng.peak_equity = 100.0
-    eng.max_drawdown = 15.0
-    # Force the CB arm path used in tick()
-    if eng.tradable and eng.max_drawdown >= eng.CIRCUIT_BREAKER_PCT:
-        eng.halted = True
+    """Drive the REAL tick() path at exactly 15.0% drawdown and assert the
+    inclusive (>=) comparison halts (an earlier version re-implemented the
+    halt branch inline and could never fail)."""
+    eng = HydraEngine(initial_balance=10000.0, asset="SOL/USD", hold_through=False)
+    _flat_candles(eng, 100.0)
+    eng.peak_equity = 10000.0
+    eng.balance = 8500.0  # flat position → equity 8500 → exactly 15.0% DD
+    eng.tick(generate_only=True)
+    assert eng.max_drawdown == pytest.approx(15.0)
     assert eng.halted is True
+    assert "CIRCUIT BREAKER" in eng.halt_reason
+
+
+def test_circuit_breaker_below_15_does_not_halt():
+    """Negative boundary: 14.99% drawdown must NOT halt (regression guard
+    against >= being tightened to > or the threshold drifting)."""
+    eng = HydraEngine(initial_balance=10000.0, asset="SOL/USD", hold_through=False)
+    _flat_candles(eng, 100.0)
+    eng.peak_equity = 10000.0
+    eng.balance = 8501.0  # 14.99% DD
+    eng.tick(generate_only=True)
+    assert eng.max_drawdown < 15.0
+    assert eng.halted is False
 
 
 # ─── M-HT fail-closed BUY without history ──────────────────────
@@ -154,8 +180,7 @@ def test_agent_quant_kill_switch_skips_apply_rules(monkeypatch):
     assert _quant_rules_disabled is True
     assert called == []
 
-    # Stronger: patch apply_rules import site via agent module predicate helper.
-    from hydra_agent import HydraAgent
+    # Stronger: pin the agent-module predicate helper in source.
     src = open(ROOT / "hydra_agent.py", encoding="utf-8").read()
     assert 'HYDRA_QUANT_INDICATORS_DISABLED") == "1"' in src
     assert "if not _quant_rules_disabled" in src
@@ -198,7 +223,10 @@ def test_rm_features_appear_in_risk_prompt():
         "volatility": {"atr_pct": 1},
         "volume": {"current": 1, "avg_20": 1},
         "quant_indicators": {
-            "realized_vol_1h": 0.12,
+            # Must be the *_pct names the agent writes (this test previously
+            # fed the un-suffixed name the buggy formatter read, encoding the
+            # key mismatch instead of catching it).
+            "realized_vol_1h_pct": 0.12,
             "fill_rate_24h": 0.5,
             "minutes_since_last_trade": 10,
         },
@@ -230,25 +258,40 @@ def test_quant_prompt_includes_synthetic_pair():
 
 # ─── H6 pool-aware tool ───────────────────────────────────────
 
-def test_run_backtest_queues_when_pool_attached():
+def test_run_backtest_queues_when_pool_attached(tmp_path):
+    """With a pool attached, run_backtest must ENQUEUE via
+    pool.submit_experiment (never run inline) and surface the experiment id.
+    The prior version of this test never touched the pool."""
     from hydra_backtest_tool import BacktestToolDispatcher
 
     class FakePool:
+        def __init__(self):
+            self.submitted = []
+
         def submit_experiment(self, exp):
+            self.submitted.append(exp)
             return exp.id
 
-    d = BacktestToolDispatcher(pool=FakePool())
-    # Avoid real run — patch build + new_experiment lightly via execute
-    with patch.object(d, "_tool_run_backtest", wraps=d._tool_run_backtest):
-        # Use list_presets as smoke that dispatcher still works
-        out = d.execute("list_presets", {}, caller="test")
-        assert out.get("success") is True
+    pool = FakePool()
+    d = BacktestToolDispatcher(store_root=tmp_path / "exp", pool=pool)
+    with patch("hydra_backtest_tool.run_experiment") as run_inline:
+        out = d.execute(
+            "run_backtest",
+            {"preset": "default",
+             "hypothesis": "pool enqueue regression pin"},
+            caller="test",
+        )
+    assert out.get("success") is True, out
+    data = out.get("data") or {}
+    assert data.get("status") == "queued"
+    assert len(pool.submitted) == 1
+    assert data.get("experiment_id") == pool.submitted[0].id
+    run_inline.assert_not_called()  # inline path must not fire in pool mode
 
 
 # ─── tape non-blocking stop ────────────────────────────────────
 
 def test_tape_stop_does_not_block_on_full_queue(tmp_path):
-    import queue
     from hydra_tape_capture import TapeCapture
     from hydra_history_store import HistoryStore
 

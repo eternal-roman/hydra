@@ -193,6 +193,9 @@ jobs:
             tests/test_hold_through.py \
             -v
 
+      - name: Run money-safety gate tests (market reject, throttle, CB boundary, paper refusal)
+        run: python -m pytest tests/test_money_safety_gates.py -v
+
       - name: Run go-live plumbing gates (sqlite required; skip if absent)
         run: |
           if [ -f hydra_history.sqlite ]; then
