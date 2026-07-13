@@ -6,6 +6,83 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.28.0] — 2026-07-13
+
+**Portfolio-edge + evidence-gated trend alpha.** Every strategy change in
+this release was gated on real 1h tape (fees-on, realistic fills, 1y/2y/3y
+windows ending 2026-07-11); evidence JSONs live in gitignored
+`.hydra-flywheel/` and are regenerable.
+
+### Added
+- **Daily trend-ensemble overlay** (`HYDRA_TREND_OVERLAY`, default ON —
+  won 6/6 windows): engine-maintained daily-close series (bounded 420d,
+  snapshot-persisted, seeded at boot from Kraken daily OHLC / pre-window
+  sqlite in backtests). Score = 0.4·sma200 + 0.4·ema20x100 + 0.2·don55;
+  BUY requires daily long; positions flatten on ensemble flip. Fails OPEN
+  below 210 daily closes.
+- **Conviction sizing** (`HYDRA_TREND_CONVICTION_SIZING`, default ON —
+  won 3/3): overlay-long entries allocate vol-target(30%/realized, cap 1)
+  × max_position_pct; Kelly floors. `HYDRA_TREND_TARGET_VOL` (30.0).
+- **`--pairs auto`**: discover every held Kraken asset → one satellite
+  pair each (USDC-preferred when funded, USD fallback; `HYDRA_AUTO_QUOTE`
+  forces). Staked/dust excluded; fails soft to the triangle.
+- **Per-quote balance pools** (live): stable-quoted engines fund from the
+  real holding of their own quote — no phantom cross-quote sizing.
+- **Engine `exit_only` drain mode**: BUYs refused (SKIP), all SELL paths
+  live. **R10 coverage contract**: `derivatives_covered=false` satellites
+  tracked on CVD only.
+- **Real-time charts**: agent relays every CandleStream push as
+  `candle_update`; dashboard merges by interval — charts move at WS speed
+  for any number of stacked pairs.
+- Regression suites: `test_trend_overlay.py`, `test_bridge_policy.py`,
+  `test_portfolio_auto.py`, `test_candle_relay.py` (all in CI).
+
+### Changed
+- **SOL/BTC bridge is signal-only by default** (`HYDRA_BRIDGE_TRADING=1`
+  re-enables): isolation study — 0 trades in 1y; only 2y trade lost and
+  dragged Sharpe −0.63→−0.99 (headline triangle "advantage" was cash
+  dilution). Held inventory drains via exit_only.
+- **Candle default 15m → 60m** (agent + engine + backtest parity): rails
+  and friction hurdle were calibrated at 1h. Snapshot records
+  `candle_interval`; `--resume` drops candle history on mismatch.
+- Walk-forward windows re-derived: distinct tiling test segments (the
+  default train+test=1.0 previously collapsed all windows to one slice,
+  reporting fake perfect stability).
+- Backtest `trade_log` SELL fills record realized profit net of fee
+  (was hardcoded None — Monte Carlo/bootstrap CI silently dead); fee
+  deduction floors at 0 (live parity).
+- RM prompt reads `realized_vol_*_pct` (agent key names — vol features
+  rendered null every tick); `_parse_json` extracts the outermost
+  balanced object; RM prompt includes Quant reasoning + key_factors.
+
+### Fixed
+- **Circuit-breaker flatten trap** (HIGH, reproduced): `execute_signal`
+  re-applied hold-through rails while halted — ride-trend converted the
+  HALT FLATTEN SELL to HOLD in a local TREND_UP, trapping inventory on
+  the brain path. Rails now skip while halted; BUY stays blocked.
+- Money-safety gate tests run in CI (file was never referenced);
+  tautological CB and pool-enqueue tests replaced with real-path pins;
+  dashboard `backtest_start` routes through QuotaTracker.
+- Donchian breakout off-by-one (window included the completed close).
+
+### Removed / Rejected
+- Daily-entry path (enter on ensemble alone): FAILED its gate — whipsawed
+  against 1h flattens (−5.4% vs +0.1%, 2y). Removed; do not re-add
+  without a passing gate.
+- Insecure `admin`/`admin` row in local `hydra_users.db` (rotated).
+
+### Studies (operator-requested)
+- **CB threshold sweep** (5%→1000%, 2y): final config maxDD 1.05% —
+  threshold immaterial; raw engine loss ≈ −threshold (a loss floor, never
+  a profit flip). 15% retained as dormant backstop.
+- **1y monthly ROI** (ending 2026-07-11): HYDRA +0.04%, 12/12 months
+  ≥ 0, maxDD 0.05% vs B&H SOL −52.3% / BTC −44.6%. Capital preservation
+  through a bear year; +48pp vs 50/50 B&H.
+- `tests/test_audit_2026_07_11_remediation.py` renamed →
+  `tests/test_money_safety_gates.py` (organic naming policy).
+
+---
+
 ## [2.27.6] — 2026-07-11
 
 Audit 2026-07-11 remediation: money-path defense-in-depth + confirmed
