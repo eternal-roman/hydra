@@ -11,10 +11,15 @@
 ## Highlights
 
 - **Regime switching** on pure-Python indicators (Wilder RSI/ATR, Bollinger, MACD, EMAs)
-- **Spot-only** execution on the SOL/BTC/USD triangle (default: `SOL/USD`, `SOL/BTC`, `BTC/USD`)
+- **Spot-only** execution — default `SOL/USD` + `BTC/USD` trading with the SOL/BTC bridge as
+  signal-only (drain mode; `HYDRA_BRIDGE_TRADING=1` re-enables). `--pairs auto` discovers every
+  held Kraken asset (USDC-preferred quote when funded, USD fallback)
 - **Limit post-only** — never market; 2s REST floor; 15% drawdown **blocks new BUYs** (SELL flatten still allowed)
 - **AI quant pipeline** (optional): Market Quant + Risk Manager + Grok + R1–R11 rules
 - **Hold-through rails** (default on; `HYDRA_HOLD_THROUGH=0` off): TREND_UP entries ≥0.65 conf, flatten downs, ride mid-trends — defense + capture discipline, **not** a profit claim
+- **Daily trend-ensemble overlay** (default on; `HYDRA_TREND_OVERLAY=0` off): sma200/ema20x100/
+  don55 on daily closes gate entries, flatten on regime flip, vol-target conviction sizing —
+  evidence-gated on real tape (`.hydra-flywheel/trend_overlay_gate.json`); 1h candles default
 - **Research stack**: backtests, walk-forward, paper flywheel (no live flywheel orders), tools under `tools/`
 - **Companions** (chat/proposals; live execution opt-in, default off)
 

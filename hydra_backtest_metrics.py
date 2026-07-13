@@ -376,12 +376,16 @@ def walk_forward(
     Backtest is run on the TEST segment only; training is nominal (params
     already baked into config — parameter fitting happens upstream).
 
-    n_windows=5, train_pct=0.6, test_pct=0.4 → windows of 100% size each,
-    stepped by (total - window) / (n-1). For a 1000-candle series this is
-    effectively one full-size run per seed offset.
+    Window sizing guarantees DISTINCT, non-overlapping consecutive test
+    segments: train_pct/test_pct set the train:test ratio within a window,
+    and windows step by exactly one test segment so the n test slices tile
+    the series. (The previous derivation collapsed every window to the
+    identical slice whenever train_pct + test_pct == 1.0 — the default —
+    reporting zero variance as fake "perfect stability".)
 
-    Typical usage (reviewer): n_windows=5, train_pct=0.7, test_pct=0.3 over
-    a 5000-candle history → 5 test slices of 1500 candles each.
+    For a 1000-candle series with train 0.6 / test 0.4 (ratio 1.5) and
+    n_windows=5: test_size = 1000/(1.5+5) ≈ 153, window ≈ 382, step 153 →
+    five distinct 153-candle out-of-sample slices.
     """
     if n_windows < 1:
         raise ValueError("n_windows must be ≥ 1")
@@ -393,14 +397,11 @@ def walk_forward(
     if total_len == 0:
         return WalkForwardReport(n_windows=0, train_pct=train_pct, test_pct=test_pct)
 
-    window_size = max(1, int(total_len * (train_pct + test_pct)))
-    window_size = min(window_size, total_len)
-    test_size = max(1, int(window_size * test_pct / (train_pct + test_pct)))
-    # Step evenly; windows overlap when window_size > (total / n).
-    if n_windows == 1:
-        step = 0
-    else:
-        step = max(1, (total_len - window_size) // (n_windows - 1))
+    # total = test*(ratio+1) + (n-1)*test  →  test = total / (ratio + n)
+    ratio = train_pct / test_pct
+    test_size = max(1, int(total_len / (ratio + n_windows)))
+    window_size = min(total_len, max(1, int(test_size * (ratio + 1.0))))
+    step = test_size
 
     slices: List[WalkForwardSlice] = []
     for i in range(n_windows):

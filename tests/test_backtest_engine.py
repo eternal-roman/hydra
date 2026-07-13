@@ -320,6 +320,40 @@ class TestMetricHelpers(unittest.TestCase):
         self.assertEqual(rets, [0.0, 0.0])
 
 
+class TestTradeLogProfit(unittest.TestCase):
+    """SELL fills must carry realized profit in trade_log — Monte Carlo and
+    bootstrap CI resample these; a None-profit log silently disables both."""
+
+    def test_sell_fills_record_realized_profit(self):
+        import os
+        from dataclasses import replace
+        saved = {k: os.environ.get(k) for k in
+                 ("HYDRA_HOLD_THROUGH", "HYDRA_FRICTION_GATE_DISABLED")}
+        os.environ["HYDRA_HOLD_THROUGH"] = "0"
+        os.environ["HYDRA_FRICTION_GATE_DISABLED"] = "1"
+        try:
+            cfg = make_quick_config(
+                name="mc-profit", n_candles=900, kind="mean_reverting",
+                seed=5, mode="competition",
+            )
+            cfg = replace(cfg, coordinator_enabled=False)
+            result = BacktestRunner(cfg).run()
+            sells = [t for t in result.trade_log if t["side"] == "SELL"]
+            self.assertGreater(len(sells), 0,
+                               "fixture produced no SELL fills — adjust seed")
+            missing = [t for t in sells if t["profit"] is None]
+            self.assertEqual(missing, [],
+                             f"SELL fills missing profit: {missing}")
+            for t in sells:
+                self.assertIsInstance(t["profit"], float)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
 class TestParamHash(unittest.TestCase):
     def test_hash_deterministic(self):
         cfg = make_quick_config(name="h", n_candles=50, seed=1)

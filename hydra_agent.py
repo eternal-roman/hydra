@@ -1198,6 +1198,17 @@ class HydraAgent:
         else:
             print("\n  [HYDRA] Warming up with historical candles...")
             for pair in self.pairs:
+                # Daily seed FIRST (trend overlay: ~720 daily bars warm the
+                # sma200 immediately), then intraday bars refine today's
+                # close. Fail-soft: without the seed the overlay reports
+                # None and the rails run exactly as pre-overlay.
+                daily = KrakenCLI.ohlc(pair, interval=1440)
+                if daily:
+                    self.engines[pair].seed_daily_closes(daily)
+                    score = self.engines[pair].daily_trend_score()
+                    print(f"  [HYDRA] {pair}: {len(daily)} daily bars seeded "
+                          f"(trend score: {score if score is not None else 'warming'})")
+                time.sleep(2)  # Respect rate limits
                 candles = KrakenCLI.ohlc(pair, interval=self.candle_interval)
                 if candles:
                     for c in candles[-200:]:
@@ -4189,7 +4200,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.27.6",
+            "version": "2.28.0",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

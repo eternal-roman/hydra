@@ -311,6 +311,22 @@ class TestWalkForward(unittest.TestCase):
         self.assertGreaterEqual(rep.sharpe_stability, 0.0)
         self.assertEqual(len(rep.improvement_pct_per_slice), len(rep.slices))
 
+    def test_windows_distinct_at_default_pcts(self):
+        """train+test == 1.0 (the default) previously collapsed every window
+        to the identical slice — zero variance reported as fake perfect
+        stability. Test segments must be distinct and non-overlapping."""
+        cfg = make_quick_config(name="wf-distinct", n_candles=400, seed=7)
+        from dataclasses import replace
+        cfg = replace(cfg, coordinator_enabled=False)
+        rep = walk_forward(cfg, train_pct=0.6, test_pct=0.4, n_windows=4)
+        spans = [(s.candles_start, s.candles_end) for s in rep.slices]
+        starts = [s.candles_start for s in rep.slices]
+        self.assertEqual(len(set(spans)), 4, f"identical windows: {spans}")
+        # Consecutive test segments must not overlap (step == test size)
+        for (s1, e1), (s2, _e2) in zip(spans, spans[1:]):
+            self.assertGreaterEqual(s2, e1, f"overlapping tests: {spans}")
+        self.assertEqual(starts, sorted(starts))
+
 
 if __name__ == "__main__":
     unittest.main()
