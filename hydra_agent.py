@@ -421,6 +421,14 @@ class HydraAgent:
                 print(f"  [TAPE] init failed ({type(e).__name__}: {e}); disabled for this run")
                 self._tape_store = None
                 self._tape_capture = None
+
+        # Real-time chart feed: relay every CandleStream push (forming +
+        # closed bars) to the dashboard as a lightweight `candle_update`
+        # message. Without this, charts only refresh on the tick broadcast
+        # (default 300s) even though the WS delivers updates continuously.
+        # Runs inside the WS thread — must stay non-blocking; broadcast_message
+        # is thread-safe and drops silently with no connected clients.
+        self.candle_stream.on_candle(self._relay_candle_update)
         # Tracks the most recently logged unhealthy reason so the tick body
         # only prints on transitions instead of spamming the warning every
         # tick. None means "currently healthy or never warned".
@@ -592,6 +600,43 @@ class HydraAgent:
             ]
         except Exception:
             return []
+
+    def _relay_candle_update(self, pair: str, entry: dict) -> None:
+        """CandleStream push → dashboard `candle_update` message.
+
+        Mirrors the tick loop's WS→engine candle conversion (interval_begin
+        ISO → epoch) so the dashboard can merge updates into the same
+        timeline the state broadcast carries. Never raises — a chart relay
+        must not be able to hurt the stream thread.
+        """
+        try:
+            broadcaster = getattr(self, "broadcaster", None)
+            if broadcaster is None:
+                return
+            ts_raw = entry.get("interval_begin") or entry.get("timestamp")
+            if isinstance(ts_raw, str):
+                try:
+                    ts = datetime.fromisoformat(
+                        ts_raw.replace("Z", "+00:00")
+                    ).timestamp()
+                except Exception:
+                    ts = time.time()
+            elif isinstance(ts_raw, (int, float)):
+                ts = float(ts_raw)
+            else:
+                ts = time.time()
+            broadcaster.broadcast_message("candle_update", {
+                "pair": pair,
+                "candle": {
+                    "o": float(entry.get("open") or 0.0),
+                    "h": float(entry.get("high") or 0.0),
+                    "l": float(entry.get("low") or 0.0),
+                    "c": float(entry.get("close") or 0.0),
+                    "t": ts,
+                },
+            })
+        except Exception:
+            pass  # chart relay is best-effort by design
 
     def _build_quant_indicators(self, pair: str, state: Dict) -> None:
         """Assemble the quant_indicators dict for one pair. Mutates state.
