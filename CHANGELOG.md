@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.28.1] — 2026-07-13
+
+Docs-only patch: research corpus published in-repo.
+
+### Added
+- `research/RETAIL_CRYPTO_EDGE_2026.md` — formal paper: five controlled
+  studies (retail core no-edge, bridge isolation, trend-overlay gates
+  including the rejected daily-entry path, CB threshold sweep, 1y
+  monthly ROI benchmark), market context, who-profits taxonomy, and the
+  verified Kraken Earn carry findings for a US account.
+- `research/data/` — the eight evidence JSONs, committed for
+  reproducibility.
+- `research/QA.md` — operator Q&A record (index-fund comparison, cycle
+  context, why-not-us, US crypto-exposure question, on-exchange yield
+  verification, DD-threshold verdict).
+- CLAUDE.md deep-specs pointer to the research folder.
+
+### Notes
+- No code paths touched; v2.28.0 behavior unchanged.
+
+---
+
 ## [2.28.0] — 2026-07-13
 
 **Portfolio-edge + evidence-gated trend alpha.** Every strategy change in
