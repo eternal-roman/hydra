@@ -1,0 +1,258 @@
+{
+ "triangle_1y": {
+  "status": "complete",
+  "pairs": [
+   "SOL/USD",
+   "SOL/BTC",
+   "BTC/USD"
+  ],
+  "total_return_pct": -0.26,
+  "annualized_pct": -0.3,
+  "sharpe": -1.333,
+  "max_drawdown_pct": 0.28,
+  "trades": 5,
+  "fills": 10,
+  "rejects": 9,
+  "per_pair": {
+   "SOL/USD": {
+    "ret_pct": -0.73,
+    "dd": 0.8,
+    "trades": 4
+   },
+   "SOL/BTC": {
+    "ret_pct": 0.0,
+    "dd": 0.0,
+    "trades": 0
+   },
+   "BTC/USD": {
+    "ret_pct": -0.05,
+    "dd": 0.05,
+    "trades": 1
+   }
+  },
+  "final_equity_per_pair": {
+   "SOL/USD": 992.6687575822838,
+   "SOL/BTC": 1000.0,
+   "BTC/USD": 999.4875989199877
+  },
+  "errors": [],
+  "wall_s": 36.8
+ },
+ "no_bridge_1y": {
+  "status": "complete",
+  "pairs": [
+   "SOL/USD",
+   "BTC/USD"
+  ],
+  "total_return_pct": -0.39,
+  "annualized_pct": -0.45,
+  "sharpe": -1.332,
+  "max_drawdown_pct": 0.43,
+  "trades": 5,
+  "fills": 10,
+  "rejects": 9,
+  "per_pair": {
+   "SOL/USD": {
+    "ret_pct": -0.73,
+    "dd": 0.8,
+    "trades": 4
+   },
+   "BTC/USD": {
+    "ret_pct": -0.05,
+    "dd": 0.05,
+    "trades": 1
+   }
+  },
+  "final_equity_per_pair": {
+   "SOL/USD": 992.6687575822838,
+   "BTC/USD": 999.4875989199877
+  },
+  "errors": [],
+  "wall_s": 24.4
+ },
+ "bridge_only_1y": {
+  "status": "complete",
+  "pairs": [
+   "SOL/BTC"
+  ],
+  "total_return_pct": 0.0,
+  "annualized_pct": 0.0,
+  "sharpe": 0.0,
+  "max_drawdown_pct": 0.0,
+  "trades": 0,
+  "fills": 0,
+  "rejects": 0,
+  "per_pair": {
+   "SOL/BTC": {
+    "ret_pct": 0.0,
+    "dd": 0.0,
+    "trades": 0
+   }
+  },
+  "final_equity_per_pair": {
+   "SOL/BTC": 1000.0
+  },
+  "errors": [],
+  "wall_s": 12.1
+ },
+ "no_bridge_no_coord_1y": {
+  "status": "complete",
+  "pairs": [
+   "SOL/USD",
+   "BTC/USD"
+  ],
+  "total_return_pct": -0.39,
+  "annualized_pct": -0.45,
+  "sharpe": -1.332,
+  "max_drawdown_pct": 0.43,
+  "trades": 5,
+  "fills": 10,
+  "rejects": 9,
+  "per_pair": {
+   "SOL/USD": {
+    "ret_pct": -0.73,
+    "dd": 0.8,
+    "trades": 4
+   },
+   "BTC/USD": {
+    "ret_pct": -0.05,
+    "dd": 0.05,
+    "trades": 1
+   }
+  },
+  "final_equity_per_pair": {
+   "SOL/USD": 992.6687575822838,
+   "BTC/USD": 999.4875989199877
+  },
+  "errors": [],
+  "wall_s": 24.1
+ },
+ "triangle_2y": {
+  "status": "complete",
+  "pairs": [
+   "SOL/USD",
+   "SOL/BTC",
+   "BTC/USD"
+  ],
+  "total_return_pct": -0.58,
+  "annualized_pct": -0.31,
+  "sharpe": -0.992,
+  "max_drawdown_pct": 0.85,
+  "trades": 11,
+  "fills": 22,
+  "rejects": 19,
+  "per_pair": {
+   "SOL/USD": {
+    "ret_pct": -0.78,
+    "dd": 1.04,
+    "trades": 7
+   },
+   "SOL/BTC": {
+    "ret_pct": -0.68,
+    "dd": 0.69,
+    "trades": 1
+   },
+   "BTC/USD": {
+    "ret_pct": -0.26,
+    "dd": 0.94,
+    "trades": 3
+   }
+  },
+  "final_equity_per_pair": {
+   "SOL/USD": 992.1652687722495,
+   "SOL/BTC": 993.1680766982121,
+   "BTC/USD": 997.3648461660678
+  },
+  "errors": [],
+  "wall_s": 79.3
+ },
+ "no_bridge_2y": {
+  "status": "complete",
+  "pairs": [
+   "SOL/USD",
+   "BTC/USD"
+  ],
+  "total_return_pct": -0.52,
+  "annualized_pct": -0.28,
+  "sharpe": -0.626,
+  "max_drawdown_pct": 0.93,
+  "trades": 10,
+  "fills": 20,
+  "rejects": 17,
+  "per_pair": {
+   "SOL/USD": {
+    "ret_pct": -0.78,
+    "dd": 1.04,
+    "trades": 7
+   },
+   "BTC/USD": {
+    "ret_pct": -0.26,
+    "dd": 0.94,
+    "trades": 3
+   }
+  },
+  "final_equity_per_pair": {
+   "SOL/USD": 992.1652687722495,
+   "BTC/USD": 997.3648461660678
+  },
+  "errors": [],
+  "wall_s": 52.7
+ },
+ "bridge_only_2y": {
+  "status": "complete",
+  "pairs": [
+   "SOL/BTC"
+  ],
+  "total_return_pct": -0.68,
+  "annualized_pct": -0.36,
+  "sharpe": -1.353,
+  "max_drawdown_pct": 0.69,
+  "trades": 1,
+  "fills": 2,
+  "rejects": 2,
+  "per_pair": {
+   "SOL/BTC": {
+    "ret_pct": -0.68,
+    "dd": 0.69,
+    "trades": 1
+   }
+  },
+  "final_equity_per_pair": {
+   "SOL/BTC": 993.1680766982121
+  },
+  "errors": [],
+  "wall_s": 26.4
+ },
+ "no_bridge_no_coord_2y": {
+  "status": "complete",
+  "pairs": [
+   "SOL/USD",
+   "BTC/USD"
+  ],
+  "total_return_pct": -0.52,
+  "annualized_pct": -0.28,
+  "sharpe": -0.626,
+  "max_drawdown_pct": 0.93,
+  "trades": 10,
+  "fills": 20,
+  "rejects": 17,
+  "per_pair": {
+   "SOL/USD": {
+    "ret_pct": -0.78,
+    "dd": 1.04,
+    "trades": 7
+   },
+   "BTC/USD": {
+    "ret_pct": -0.26,
+    "dd": 0.94,
+    "trades": 3
+   }
+  },
+  "final_equity_per_pair": {
+   "SOL/USD": 992.1652687722495,
+   "BTC/USD": 997.3648461660678
+  },
+  "errors": [],
+  "wall_s": 52.8
+ }
+}

@@ -1,0 +1,186 @@
+{
+  "BTC/USD": {
+    "days": 4015,
+    "buy_and_hold": {
+      "total_pct": 33899.5,
+      "cagr_pct": 69.9,
+      "sharpe": 1.13,
+      "max_dd_pct": 83.6,
+      "years": 11.0
+    },
+    "runs": [
+      {
+        "variant": "sma200",
+        "vol_target": false,
+        "total_pct": 27275.7,
+        "cagr_pct": 66.58,
+        "sharpe": 1.24,
+        "max_dd_pct": 64.6,
+        "switches_per_year": 6.4,
+        "years": 11.0
+      },
+      {
+        "variant": "sma200",
+        "vol_target": true,
+        "total_pct": 3424.4,
+        "cagr_pct": 38.25,
+        "sharpe": 1.36,
+        "max_dd_pct": 29.2,
+        "switches_per_year": 74.3,
+        "years": 11.0
+      },
+      {
+        "variant": "sma100",
+        "vol_target": false,
+        "total_pct": 53687.1,
+        "cagr_pct": 77.14,
+        "sharpe": 1.37,
+        "max_dd_pct": 63.4,
+        "switches_per_year": 13.4,
+        "years": 11.0
+      },
+      {
+        "variant": "sma100",
+        "vol_target": true,
+        "total_pct": 5730.5,
+        "cagr_pct": 44.73,
+        "sharpe": 1.5,
+        "max_dd_pct": 30.7,
+        "switches_per_year": 78.6,
+        "years": 11.0
+      },
+      {
+        "variant": "don55",
+        "vol_target": false,
+        "total_pct": 12088.4,
+        "cagr_pct": 54.77,
+        "sharpe": 1.25,
+        "max_dd_pct": 48.8,
+        "switches_per_year": 6.5,
+        "years": 11.0
+      },
+      {
+        "variant": "don55",
+        "vol_target": true,
+        "total_pct": 2446.2,
+        "cagr_pct": 34.23,
+        "sharpe": 1.4,
+        "max_dd_pct": 33.2,
+        "switches_per_year": 50.6,
+        "years": 11.0
+      },
+      {
+        "variant": "ema20x100",
+        "vol_target": false,
+        "total_pct": 28159.1,
+        "cagr_pct": 67.07,
+        "sharpe": 1.24,
+        "max_dd_pct": 68.3,
+        "switches_per_year": 2.9,
+        "years": 11.0
+      },
+      {
+        "variant": "ema20x100",
+        "vol_target": true,
+        "total_pct": 3854.9,
+        "cagr_pct": 39.71,
+        "sharpe": 1.36,
+        "max_dd_pct": 38.9,
+        "switches_per_year": 74.4,
+        "years": 11.0
+      }
+    ]
+  },
+  "SOL/USD": {
+    "days": 1776,
+    "buy_and_hold": {
+      "total_pct": 122.2,
+      "cagr_pct": 17.85,
+      "sharpe": 0.67,
+      "max_dd_pct": 96.3,
+      "years": 4.86
+    },
+    "runs": [
+      {
+        "variant": "sma200",
+        "vol_target": false,
+        "total_pct": 99.3,
+        "cagr_pct": 15.23,
+        "sharpe": 0.53,
+        "max_dd_pct": 55.5,
+        "switches_per_year": 8.6,
+        "years": 4.86
+      },
+      {
+        "variant": "sma200",
+        "vol_target": true,
+        "total_pct": 73.0,
+        "cagr_pct": 11.93,
+        "sharpe": 0.66,
+        "max_dd_pct": 25.0,
+        "switches_per_year": 42.4,
+        "years": 4.86
+      },
+      {
+        "variant": "sma100",
+        "vol_target": false,
+        "total_pct": 20.3,
+        "cagr_pct": 3.88,
+        "sharpe": 0.36,
+        "max_dd_pct": 79.0,
+        "switches_per_year": 18.9,
+        "years": 4.86
+      },
+      {
+        "variant": "sma100",
+        "vol_target": true,
+        "total_pct": 45.1,
+        "cagr_pct": 7.95,
+        "sharpe": 0.47,
+        "max_dd_pct": 37.1,
+        "switches_per_year": 52.6,
+        "years": 4.86
+      },
+      {
+        "variant": "don55",
+        "vol_target": false,
+        "total_pct": 921.7,
+        "cagr_pct": 61.27,
+        "sharpe": 1.1,
+        "max_dd_pct": 53.3,
+        "switches_per_year": 6.2,
+        "years": 4.86
+      },
+      {
+        "variant": "don55",
+        "vol_target": true,
+        "total_pct": 154.4,
+        "cagr_pct": 21.17,
+        "sharpe": 1.15,
+        "max_dd_pct": 27.7,
+        "switches_per_year": 28.2,
+        "years": 4.86
+      },
+      {
+        "variant": "ema20x100",
+        "vol_target": false,
+        "total_pct": 211.3,
+        "cagr_pct": 26.31,
+        "sharpe": 0.69,
+        "max_dd_pct": 73.2,
+        "switches_per_year": 4.1,
+        "years": 4.86
+      },
+      {
+        "variant": "ema20x100",
+        "vol_target": true,
+        "total_pct": 105.6,
+        "cagr_pct": 15.98,
+        "sharpe": 0.81,
+        "max_dd_pct": 33.7,
+        "switches_per_year": 43.0,
+        "years": 4.86
+      }
+    ]
+  }
+}

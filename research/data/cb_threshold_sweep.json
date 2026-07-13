@@ -1,0 +1,95 @@
+{
+ "final_cb5": {
+  "ret": 0.09,
+  "sharpe": 0.074,
+  "dd": 1.05,
+  "trades": 5
+ },
+ "final_cb8": {
+  "ret": 0.09,
+  "sharpe": 0.074,
+  "dd": 1.05,
+  "trades": 5
+ },
+ "final_cb10": {
+  "ret": 0.09,
+  "sharpe": 0.074,
+  "dd": 1.05,
+  "trades": 5
+ },
+ "final_cb12": {
+  "ret": 0.09,
+  "sharpe": 0.074,
+  "dd": 1.05,
+  "trades": 5
+ },
+ "final_cb15": {
+  "ret": 0.09,
+  "sharpe": 0.074,
+  "dd": 1.05,
+  "trades": 5
+ },
+ "final_cb20": {
+  "ret": 0.09,
+  "sharpe": 0.074,
+  "dd": 1.05,
+  "trades": 5
+ },
+ "final_cb30": {
+  "ret": 0.09,
+  "sharpe": 0.074,
+  "dd": 1.05,
+  "trades": 5
+ },
+ "final_cb1000": {
+  "ret": 0.09,
+  "sharpe": 0.074,
+  "dd": 1.05,
+  "trades": 5
+ },
+ "raw_cb5": {
+  "ret": -6.19,
+  "sharpe": -1.612,
+  "dd": 6.36,
+  "trades": 9
+ },
+ "raw_cb8": {
+  "ret": -6.85,
+  "sharpe": -0.825,
+  "dd": 7.22,
+  "trades": 37
+ },
+ "raw_cb10": {
+  "ret": -9.8,
+  "sharpe": -0.849,
+  "dd": 10.01,
+  "trades": 79
+ },
+ "raw_cb12": {
+  "ret": -12.19,
+  "sharpe": -0.939,
+  "dd": 12.38,
+  "trades": 89
+ },
+ "raw_cb15": {
+  "ret": -15.25,
+  "sharpe": -1.1,
+  "dd": 15.41,
+  "trades": 99
+ },
+ "raw_cb20": {
+  "ret": -20.01,
+  "sharpe": -1.449,
+  "dd": 20.15,
+  "trades": 101
+ },
+ "_meta": {
+  "study": "CIRCUIT_BREAKER_PCT sweep, 2y real 1h tape ending 2026-07-11, SOL/USD+BTC/USD, competition, realistic fills, fees on",
+  "raw_cb30_cb1000": "not run (timeout); monotonic trend unambiguous",
+  "verdicts": [
+   "final config (rails+overlay+conviction): CB threshold IMMATERIAL \u2014 maxDD 1.05%/2y never approaches any threshold; results identical 5%..1000%",
+   "raw engine (rails off): realized loss ~= -CB threshold (loss floor, ~1:1) \u2014 tighter CB materially caps losses but NO threshold flips the cycle to profitable",
+   "profitability comes from entry/exit discipline, not the breaker; 15% default retained as dormant backstop"
+  ]
+ }
+}

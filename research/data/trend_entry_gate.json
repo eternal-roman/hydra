@@ -1,0 +1,68 @@
+{
+ "entry_ON_1y": {
+  "ret": -1.55,
+  "sharpe": -0.836,
+  "dd": 3.05,
+  "trades": 15,
+  "fills": 30,
+  "per_pair": {
+   "SOL/USD": -3.1,
+   "BTC/USD": 0.0
+  }
+ },
+ "entry_OFF_1y": {
+  "ret": 0.04,
+  "sharpe": 0.461,
+  "dd": 0.05,
+  "trades": 1,
+  "fills": 2,
+  "per_pair": {
+   "SOL/USD": 0.07,
+   "BTC/USD": 0.0
+  }
+ },
+ "entry_ON_2y": {
+  "ret": -5.37,
+  "sharpe": -0.997,
+  "dd": 7.1,
+  "trades": 60,
+  "fills": 122,
+  "per_pair": {
+   "SOL/USD": -12.61,
+   "BTC/USD": 1.88
+  }
+ },
+ "entry_OFF_2y": {
+  "ret": 0.09,
+  "sharpe": 0.074,
+  "dd": 1.05,
+  "trades": 5,
+  "fills": 10,
+  "per_pair": {
+   "SOL/USD": -0.05,
+   "BTC/USD": 0.22
+  }
+ },
+ "entry_ON_3y": {
+  "ret": -4.16,
+  "sharpe": -0.389,
+  "dd": 7.47,
+  "trades": 100,
+  "fills": 208,
+  "per_pair": {
+   "SOL/USD": -9.23,
+   "BTC/USD": 0.9
+  }
+ },
+ "entry_OFF_3y": {
+  "ret": 1.0,
+  "sharpe": 0.308,
+  "dd": 1.87,
+  "trades": 11,
+  "fills": 23,
+  "per_pair": {
+   "SOL/USD": 1.78,
+   "BTC/USD": 0.22
+  }
+ }
+}

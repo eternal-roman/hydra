@@ -136,6 +136,8 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 - `SECURITY.md` — security policy
 - `docs/BACKTEST.md` / `docs/BACKTEST_SPEC.md` — runbook + authoritative design
 - `docs/COMPANION_SPEC.md` — companion spec (authoritative)
+- `research/RETAIL_CRYPTO_EDGE_2026.md` — formal research paper (studies, gates,
+  negative results); evidence data committed in `research/data/` (regenerable)
 - Latest post-release audit report lives in `AUDIT_YYYY-MM-DD.md` at root (keep only the most recent)
 
 ## Claude Code tooling
