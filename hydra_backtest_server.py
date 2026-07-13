@@ -488,6 +488,17 @@ def mount_backtest_routes(
             cfg = BacktestConfig(**cfg_fields)
         except Exception as e:
             return {"success": False, "error": f"invalid config: {e}"}
+        # Dashboard runs share the dispatcher's QuotaTracker + audit trail
+        # so the 10/day-caller and 50/day-global caps bound this surface too.
+        caller = "dashboard"
+        if dispatcher is not None:
+            ok, reason = dispatcher.quota.acquire(caller, cost=1)
+            if not ok:
+                dispatcher._audit(caller, "backtest_start", cfg_dict,
+                                  allowed=False, reason=reason)
+                return {"success": False, "error": f"quota denied: {reason}"}
+            dispatcher._audit(caller, "backtest_start", cfg_dict,
+                              allowed=True, reason="acquired cost=1")
         try:
             eid = pool.submit_config(
                 config=cfg,
@@ -500,6 +511,9 @@ def mount_backtest_routes(
             return {"success": False, "error": "queue saturated; retry"}
         except Exception as e:
             return {"success": False, "error": f"{type(e).__name__}: {e}"}
+        finally:
+            if dispatcher is not None:
+                dispatcher.quota.release(caller)
 
     def _cancel(payload: Dict[str, Any]) -> Dict[str, Any]:
         eid = payload.get("experiment_id")

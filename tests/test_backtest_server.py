@@ -309,6 +309,33 @@ class TestMountRoutes(_PoolFixture):
         reply = self.bc.handlers["backtest_start"]({})
         self.assertFalse(reply["success"])
 
+    def test_start_handler_enforces_dispatcher_quota(self):
+        """With a dispatcher mounted, dashboard
+        backtest_start must consume QuotaTracker and be denied past the cap."""
+        from hydra_backtest_tool import BacktestToolDispatcher, QuotaTracker
+
+        bc2 = _MockBroadcaster()
+        dispatcher = BacktestToolDispatcher(
+            store=self.store,
+            quota=QuotaTracker(per_caller_daily=1, global_daily=1),
+            pool=self.pool,
+        )
+        mount_backtest_routes(bc2, self.pool, dispatcher=dispatcher)
+
+        cfg = make_quick_config(name="mhq", n_candles=60)
+        cfg = replace(cfg, coordinator_enabled=False)
+        payload = {
+            "config": {**cfg.__dict__},
+            "triggered_by": "dashboard",
+            "hypothesis": "quota pin",
+        }
+        first = bc2.handlers["backtest_start"](payload)
+        self.assertTrue(first["success"], first)
+        second = bc2.handlers["backtest_start"](payload)
+        self.assertFalse(second["success"])
+        self.assertIn("quota", second["error"].lower())
+        self._wait_status(first["experiment_id"], "complete", "failed")
+
     def test_start_handler_invalid_config(self):
         reply = self.bc.handlers["backtest_start"]({
             "config": {"not": "a valid config"},

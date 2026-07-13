@@ -163,3 +163,54 @@ def test_does_not_set_friction_kill(monkeypatch):
 def test_entry_floor_is_065():
     """Bakeoff: 0.65 entry floor (0.55 re-opened losses)."""
     assert HydraEngine.HOLD_THROUGH_BUY_MIN_CONF == 0.65
+
+
+def _uptrend_engine(hold: bool = True) -> HydraEngine:
+    """Engine with 60 rising candles so RegimeDetector reads TREND_UP."""
+    eng = HydraEngine(
+        initial_balance=10000.0, asset="SOL/USD", hold_through=hold
+    )
+    px = 100.0
+    for i in range(60):
+        px *= 1.004
+        eng.ingest_candle({
+            "open": px * 0.999, "high": px * 1.002, "low": px * 0.997,
+            "close": px, "volume": 100.0, "timestamp": 1700000000 + i * 900,
+        })
+    return eng
+
+
+def test_halted_flatten_not_suppressed_by_ride_trend():
+    """The ride-trend rail must never convert a circuit-breaker
+    HALT FLATTEN SELL into HOLD on the execute_signal path.
+
+    Repro: halted engine holding inventory in a local TREND_UP; the brain
+    path executes tick()'s flatten signal via execute_signal(). Pre-fix the
+    rail re-applied and trapped the position."""
+    eng = _uptrend_engine(True)
+    eng.position.size = 10.0
+    eng.position.avg_entry = 90.0
+    eng.halted = True
+    eng.halt_reason = "CIRCUIT BREAKER: drawdown 15.2% >= 15% limit"
+
+    state = eng.tick(generate_only=True)
+    assert state["signal"]["action"] == "SELL"  # tick emits the flatten
+
+    trade = eng.execute_signal(
+        action="SELL", confidence=1.0,
+        reason=state["signal"]["reason"], strategy="DEFENSIVE",
+    )
+    assert trade is not None and trade.action == "SELL"
+    assert eng.position.size == 0.0  # inventory freed, not trapped
+
+
+def test_halted_buy_still_blocked_with_rails_skipped():
+    """Skipping rails while halted must not re-open the BUY path —
+    _maybe_execute's halt gate is the enforcement layer."""
+    eng = _uptrend_engine(True)
+    eng.halted = True
+    eng.halt_reason = "CIRCUIT BREAKER: drawdown 15.2% >= 15% limit"
+    trade = eng.execute_signal(
+        action="BUY", confidence=0.95, reason="x", strategy="MOMENTUM"
+    )
+    assert trade is None

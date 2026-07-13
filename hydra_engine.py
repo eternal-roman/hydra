@@ -1873,7 +1873,12 @@ class HydraEngine:
             strategy=sig_strategy,
         )
         # Re-apply rails on external execute (brain/coordinator cannot bypass).
-        if self.hold_through:
+        # Halted engines skip rails entirely: _maybe_execute already refuses
+        # BUY while halted, and the ride-trend rail must never convert a
+        # circuit-breaker HALT FLATTEN SELL into HOLD — a halted engine in a
+        # local TREND_UP would trap inventory on the brain path because
+        # tick()'s flatten signal gets re-railed here.
+        if self.hold_through and not self.halted:
             if self.candles and self.prices:
                 regime = RegimeDetector.detect(
                     self.candles, self.prices,
