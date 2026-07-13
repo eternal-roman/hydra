@@ -197,7 +197,7 @@ jobs:
         run: python -m pytest tests/test_money_safety_gates.py -v
 
       - name: Run portfolio-edge tests (bridge drain policy, auto pairs, per-quote pools)
-        run: python -m pytest tests/test_bridge_policy.py tests/test_portfolio_auto.py -v
+        run: python -m pytest tests/test_bridge_policy.py tests/test_portfolio_auto.py tests/test_candle_relay.py -v
 
       - name: Run go-live plumbing gates (sqlite required; skip if absent)
         run: |

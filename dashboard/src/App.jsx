@@ -1431,6 +1431,37 @@ export function HydraDashboard({ jwtToken, onLogout }) {
             case "backtest_result":
               setBtResults((prev) => lruCapDict(prev, msg.experiment_id, msg, MAX_BACKTEST_DICT_ENTRIES));
               return;
+            case "candle_update": {
+              // Real-time chart feed: the agent relays every CandleStream
+              // push (forming + closed bars). Merge into the pair's candle
+              // array by interval timestamp — same bar updates in place,
+              // a new bar appends. Without this, charts refresh only on
+              // the per-tick state broadcast (default 300s).
+              const { pair, candle } = msg;
+              if (!pair || !candle || typeof candle.t !== "number") return;
+              setState((prev) => {
+                const ps = prev?.pairs?.[pair];
+                if (!ps || !Array.isArray(ps.candles)) return prev; // pair not on screen yet
+                const arr = ps.candles;
+                const last = arr[arr.length - 1];
+                let candles;
+                if (last && last.t === candle.t) {
+                  candles = [...arr.slice(0, -1), candle];       // forming bar updates in place
+                } else if (!last || candle.t > last.t) {
+                  candles = [...arr, candle].slice(-100);        // new bar closed the previous
+                } else {
+                  return prev;                                   // stale/out-of-order push
+                }
+                return {
+                  ...prev,
+                  pairs: {
+                    ...prev.pairs,
+                    [pair]: { ...ps, candles, price: candle.c ?? ps.price },
+                  },
+                };
+              });
+              return;
+            }
             case "backtest_start_ack":
               if (msg.experiment_id) {
                 setBtActiveExpId(msg.experiment_id);
