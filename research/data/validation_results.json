@@ -1,0 +1,68 @@
+[
+  {
+    "name": "SOLUSD_1y_competition",
+    "pairs": [
+      "SOL/USD"
+    ],
+    "mode": "competition",
+    "status": "complete",
+    "errors": [],
+    "candles": 7835,
+    "wall_clock_s": 5.1,
+    "strategy": {
+      "total_return_pct": -54.62261737225439,
+      "annualized_return_pct": -58.66424151783636,
+      "sharpe": -1.1152169105050682,
+      "max_drawdown_pct": 67.67365774152285,
+      "trades": 12,
+      "win_rate_pct": 100.0,
+      "fills": 66,
+      "rejects": 85,
+      "final_equity": 4537.738262774561,
+      "initial_equity": 10000.0
+    },
+    "buy_and_hold": {
+      "SOL/USD": {
+        "pair": "SOL/USD",
+        "total_pct": -44.533741548666924,
+        "annualized_pct": -48.26367855400451,
+        "years": 0.8943645904631531,
+        "first_close": 156.78,
+        "last_close": 86.96
+      }
+    }
+  },
+  {
+    "name": "BTCUSD_1y_competition",
+    "pairs": [
+      "BTC/USD"
+    ],
+    "mode": "competition",
+    "status": "complete",
+    "errors": [],
+    "candles": 7835,
+    "wall_clock_s": 5.7,
+    "strategy": {
+      "total_return_pct": -28.469978014604912,
+      "annualized_return_pct": -31.244213239145935,
+      "sharpe": -0.9040547634908465,
+      "max_drawdown_pct": 46.23788200835744,
+      "trades": 14,
+      "win_rate_pct": 71.42857142857143,
+      "fills": 111,
+      "rejects": 112,
+      "final_equity": 7153.002198539509,
+      "initial_equity": 10000.0
+    },
+    "buy_and_hold": {
+      "BTC/USD": {
+        "pair": "BTC/USD",
+        "total_pct": -25.477447421546973,
+        "annualized_pct": -28.02140944616055,
+        "years": 0.8943645904631531,
+        "first_close": 105509.0,
+        "last_close": 78628.0
+      }
+    }
+  }
+]
