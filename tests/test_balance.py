@@ -345,8 +345,20 @@ class TestEngineBalanceInit:
             agent.engines[pair] = engine
         return agent
 
-    def test_btc_quoted_balance_uses_real_holding_when_btc_held(self, monkeypatch):
-        monkeypatch.setenv("HYDRA_BRIDGE_TRADING", "1")  # legacy opt-in path
+    def test_btc_quoted_balance_uses_real_holding_when_btc_held(self):
+        # Legacy opt-in path; no pytest fixture — this file also runs
+        # under its own __main__ runner in CI.
+        prev = os.environ.get("HYDRA_BRIDGE_TRADING")
+        os.environ["HYDRA_BRIDGE_TRADING"] = "1"
+        try:
+            self._test_btc_quoted_balance_uses_real_holding_when_btc_held_body()
+        finally:
+            if prev is None:
+                os.environ.pop("HYDRA_BRIDGE_TRADING", None)
+            else:
+                os.environ["HYDRA_BRIDGE_TRADING"] = prev
+
+    def _test_btc_quoted_balance_uses_real_holding_when_btc_held_body(self):
         """v2.11.0: SOL/BTC engine balance = real BTC holding, not a USD
         conversion. tradable=True when the holding exceeds costmin."""
         real_btc = 0.00300
@@ -411,8 +423,20 @@ class TestEngineBalanceInit:
         assert trade is None, \
             "info-only engine must not produce a Trade for any signal strength"
 
-    def test_refresh_tradable_activates_when_btc_arrives(self, monkeypatch):
-        monkeypatch.setenv("HYDRA_BRIDGE_TRADING", "1")  # legacy opt-in path
+    def test_refresh_tradable_activates_when_btc_arrives(self):
+        # Legacy opt-in path; no pytest fixture — this file also runs
+        # under its own __main__ runner in CI.
+        prev = os.environ.get("HYDRA_BRIDGE_TRADING")
+        os.environ["HYDRA_BRIDGE_TRADING"] = "1"
+        try:
+            self._test_refresh_tradable_activates_when_btc_arrives_body()
+        finally:
+            if prev is None:
+                os.environ.pop("HYDRA_BRIDGE_TRADING", None)
+            else:
+                os.environ["HYDRA_BRIDGE_TRADING"] = prev
+
+    def _test_refresh_tradable_activates_when_btc_arrives_body(self):
         """v2.11.0: _refresh_tradable_flags re-seats the flag when real BTC
         appears mid-session (e.g., BTC/USDC fill or user deposit). The
         engine transitions False→True and the equity baseline resets."""
@@ -434,8 +458,20 @@ class TestEngineBalanceInit:
         assert sol_btc.peak_equity == sol_btc.initial_balance
         assert sol_btc.max_drawdown == 0.0
 
-    def test_refresh_tradable_deactivates_when_btc_depleted(self, monkeypatch):
-        monkeypatch.setenv("HYDRA_BRIDGE_TRADING", "1")  # legacy opt-in path
+    def test_refresh_tradable_deactivates_when_btc_depleted(self):
+        # Legacy opt-in path; no pytest fixture — this file also runs
+        # under its own __main__ runner in CI.
+        prev = os.environ.get("HYDRA_BRIDGE_TRADING")
+        os.environ["HYDRA_BRIDGE_TRADING"] = "1"
+        try:
+            self._test_refresh_tradable_deactivates_when_btc_depleted_body()
+        finally:
+            if prev is None:
+                os.environ.pop("HYDRA_BRIDGE_TRADING", None)
+            else:
+                os.environ["HYDRA_BRIDGE_TRADING"] = prev
+
+    def _test_refresh_tradable_deactivates_when_btc_depleted_body(self):
         """Symmetric: if BTC is spent down below costmin, the engine flips
         back to info-only on the next refresh."""
         agent = self._bare_agent_for_balance_tests(
@@ -474,8 +510,20 @@ class TestEngineBalanceInit:
         assert abs(pnl_pct) < 5.0, \
             f"P&L should be near 0% after balance reset, got {pnl_pct:+.2f}%"
 
-    def test_paper_mode_preserves_legacy_usd_conversion(self, monkeypatch):
-        monkeypatch.setenv("HYDRA_BRIDGE_TRADING", "1")  # legacy opt-in path
+    def test_paper_mode_preserves_legacy_usd_conversion(self):
+        # Legacy opt-in path; no pytest fixture — this file also runs
+        # under its own __main__ runner in CI.
+        prev = os.environ.get("HYDRA_BRIDGE_TRADING")
+        os.environ["HYDRA_BRIDGE_TRADING"] = "1"
+        try:
+            self._test_paper_mode_preserves_legacy_usd_conversion_body()
+        finally:
+            if prev is None:
+                os.environ.pop("HYDRA_BRIDGE_TRADING", None)
+            else:
+                os.environ["HYDRA_BRIDGE_TRADING"] = prev
+
+    def _test_paper_mode_preserves_legacy_usd_conversion_body(self):
         """Paper mode must NOT gate on real holdings — strategy simulations
         should work regardless of live-account composition. Preserves the
         pre-v2.11.0 USD→quote conversion so SOL/BTC remains tradable in paper."""
