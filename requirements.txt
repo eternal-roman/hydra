@@ -1,7 +1,7 @@
 # Runtime + CI pins for HYDRA (stdlib-first engine; these are agent/dashboard deps).
 # bcrypt<4.0 — passlib 1.7.4 reads bcrypt.__about__ which was removed in bcrypt 4.x.
 anthropic>=0.116.0,<1.0
-openai>=2.45.0,<3.0
+openai>=2.46.0,<3.0
 pytest>=8.0
 PyJWT>=2.13.0
 cryptography>=49.0.0
