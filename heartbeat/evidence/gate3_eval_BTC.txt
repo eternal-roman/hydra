@@ -1,0 +1,40 @@
+# heartbeat eval — BTC/USD 1h
+
+- events: **84** (reversal 43 / fake 41; 0 tainted excluded)
+- sufficient events (>= 60): **True**
+- promote criterion: AUC >= 0.7 by bounce+3, walk-forward
+- lead-time (earliest checkpoint AUC >= 0.70): **not reached**
+
+| checkpoint | n | AUC | Brier | separation |
+|---|---|---|---|---|
+| bounce+1 | 84 | 0.4969 | 0.4468 | -0.0048 |
+| bounce+2 | 84 | 0.515 | 0.4355 | -0.0052 |
+| bounce+3 | 84 | 0.5292 | 0.442 | -0.0039 |
+| progress_2atr | 82 | 0.4061 | 0.5508 | -0.0111 |
+
+## Calibration (bounce+3)
+
+| bin | n | mean pred | obs freq |
+|---|---|---|---|
+| 0.0-0.1 | 69 | 0.015 | 0.5072 |
+| 0.1-0.2 | 2 | 0.1175 | 0.5 |
+| 0.2-0.3 | 1 | 0.2659 | 0.0 |
+| 0.3-0.4 | 1 | 0.3802 | 0.0 |
+| 0.4-0.5 | 0 | None | None |
+| 0.5-0.6 | 0 | None | None |
+| 0.6-0.7 | 3 | 0.6164 | 0.0 |
+| 0.7-0.8 | 0 | None | None |
+| 0.8-0.9 | 0 | None | None |
+| 0.9-1.0 | 8 | 0.9629 | 0.875 |
+
+## 5 worst-classified events (bounce+3)
+
+| low ts | label | P(up) | error | tape |
+|---|---|---|---|---|
+| 2024-02-23 19:00 | reversal | 0.0003 | 0.9997 | candles [2421..2427] |
+| 2023-12-06 19:00 | reversal | 0.0007 | 0.9993 | candles [525..533] |
+| 2023-12-05 11:00 | reversal | 0.0007 | 0.9993 | candles [493..509] |
+| 2024-03-29 22:00 | reversal | 0.0008 | 0.9992 | candles [3264..3267] |
+| 2024-03-15 22:00 | reversal | 0.0009 | 0.9991 | candles [2928..2942] |
+
+wrote data/reports/eval_BTC_USD_1h.md and data/reports/eval_BTC_USD_1h.json

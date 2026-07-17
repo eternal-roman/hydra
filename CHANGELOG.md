@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- `heartbeat/` — standalone research subsystem (own package, own test
+  suite; zero coupling to the HYDRA engine): recursive Bayesian
+  order-flow posterior P(up) from Kraken trade tape, built as a
+  confirmation classifier for bounce fake-vs-reversal discrimination.
+  Kraken WS v2 + REST feed with gap backfill and taint tracking,
+  incremental candle engine, tiered feature registry (Tier 0 live,
+  Tier 1 registered, Tier 2 stubbed), log-odds recursion with
+  candle-unit memory, bounce labeler, AUC/Brier eval harness,
+  walk-forward calibration, parquet store, live status-file + TCP
+  confirmation API, deterministic synthetic-tape validation.
+  Offline gates pass (70 tests: no-lookahead, determinism,
+  hand-computed fixtures, mocked-transport reconnect/backfill);
+  real-tape gates and the promote/kill decision are pending network
+  access — see `heartbeat/HONEST_FINDINGS.md`.
+
+---
+
 ## [2.28.1] — 2026-07-13
 
 Docs-only patch: research corpus published in-repo.

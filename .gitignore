@@ -112,3 +112,6 @@ docs/superpowers/
 
 # Test runtime scratch (offline demo unit tests)
 tests/_demo_tmp/
+
+# heartbeat research subsystem: local tape/posterior store + generated reports
+heartbeat/data/
