@@ -48,7 +48,12 @@ sys.path.insert(0, str(HEARTBEAT_ROOT / "src"))
 sys.path.insert(0, str(HYDRA_ROOT))
 
 from heartbeat.config import load_config           # noqa: E402
+from heartbeat.engine.calibrate import event_vectors, fit_weights  # noqa: E402
+from heartbeat.engine.candle import candles_from_trades  # noqa: E402
 from heartbeat.engine.pipeline import run_tape     # noqa: E402
+from heartbeat.engine.posterior import PosteriorEngine, sigmoid  # noqa: E402
+from heartbeat.eval.labeler import extract_events  # noqa: E402
+from heartbeat.eval.metrics import roc_auc         # noqa: E402
 from heartbeat.store import Store                  # noqa: E402
 
 from hydra_backtest import BacktestConfig, BacktestRunner  # noqa: E402
@@ -58,23 +63,68 @@ TF = "1h"
 GRAIN = 3600
 
 
-def load_weights(pair: str, root: Path) -> dict | None:
-    p = root / "reports" / f"weights_{pair.replace('/', '_')}_{TF}.json"
-    if p.exists():
-        return json.loads(p.read_text())["weights"]
-    return None
+def replay_pair(pair: str, cfg: dict) -> tuple[list, list[dict]]:
+    """Replay stored tape once (default weights) -> (candles, rows).
 
-
-def posterior_for(pair: str, cfg: dict, weights: dict | None) -> list[dict]:
-    """Replay stored tape -> per-candle posterior rows (chronological)."""
-    cfg = json.loads(json.dumps(cfg))  # deep copy; run is config-pure
-    if weights:
-        cfg.setdefault("features", {})["weights"] = weights
+    The per-feature evidence sums S in rows[i]["features_json"] are
+    weight-independent; any weight vector's posterior is recoverable
+    exactly as sigmoid(sum_i w_i * S_i) (L = sum w·S, see posterior.py).
+    """
     store = Store(str(HEARTBEAT_ROOT / cfg["store"]["root"]))
     trades = store.read_tape(pair, TF)
     if not trades:
         raise SystemExit(f"no tape for {pair} {TF} — run backfill first")
-    return run_tape(cfg, pair, TF, trades)
+    rows = run_tape(cfg, pair, TF, trades)
+    candles = candles_from_trades(trades, TF, include_final=True)
+    if len(candles) != len(rows):
+        raise SystemExit(f"{pair}: candle/row misalignment "
+                         f"{len(candles)} vs {len(rows)}")
+    return candles, rows
+
+
+def train_weights_and_series(pair: str, cfg: dict, candles, rows,
+                             split_ts: int) -> dict:
+    """Fit gate weights on events RESOLVED strictly before split_ts and
+    rebuild the posterior series under those weights (exact, no replay).
+
+    Returns {series: {open_ts: {p_up, tainted}}, weights, n_train_events,
+    test_auc_bounce3, n_test_events} — test AUC is computed on events
+    whose LOW printed after split_ts (leak-free by construction)."""
+    names = [f.name for f in PosteriorEngine(cfg).features]
+    p_default = [r["p_up"] for r in rows]
+    events = extract_events(pair, TF, candles, p_default, cfg)
+    clean = [e for e in events if not e.tainted]
+    # train = events fully RESOLVED before the split (no label leakage)
+    train_ev = [e for e in clean if candles[e.resolve_idx].close_ts <= split_ts]
+    test_ev = [e for e in clean if e.low_ts > split_ts]
+    vecs_train = event_vectors(train_ev, rows, names)
+    weights = None
+    if len({v.label for v in vecs_train}) == 2:
+        weights = fit_weights(vecs_train, names)
+    if weights is None:
+        weights = {n: 0.5 for n in names}  # default-weight fallback
+        fitted = False
+    else:
+        fitted = True
+    series: dict[int, dict] = {}
+    for r in rows:
+        feats = json.loads(r["features_json"])
+        L = sum(weights[n] * float((feats.get(n) or {}).get("S") or 0.0)
+                for n in names)
+        series[int(r["candle_open_ts"])] = {
+            "p_up": sigmoid(L), "tainted": bool(r["tainted"])}
+    # OOS classifier check on the same weights the gate will use
+    vecs_test = event_vectors(test_ev, rows, names)
+    pos, neg = [], []
+    for v in vecs_test:
+        if "bounce+3" in v.s_at:
+            score = sigmoid(sum(weights[n] * v.s_at["bounce+3"][n]
+                                for n in names))
+            (pos if v.label == 1 else neg).append(score)
+    return {"series": series, "weights": weights, "weights_fitted": fitted,
+            "n_train_events": len(vecs_train),
+            "n_test_events": len(pos) + len(neg),
+            "test_auc_bounce3": roc_auc(pos, neg)}
 
 
 def percentile(sorted_vals: list[float], pct: float) -> float:
@@ -178,27 +228,33 @@ def main() -> int:
     args = ap.parse_args()
     pairs = [p.strip() for p in args.pairs.split(",")]
     hb_cfg = load_config(None)
-    store_root = HEARTBEAT_ROOT / hb_cfg["store"]["root"]
 
-    # 1) posterior per pair (calibrated weights if present — flagged in output)
-    pup: dict[str, dict[int, dict]] = {}
-    weights_used: dict[str, bool] = {}
-    rows_by_pair: dict[str, list[dict]] = {}
-    for pair in pairs:
-        w = load_weights(pair, store_root)
-        weights_used[pair] = w is not None
-        rows = posterior_for(pair, hb_cfg, w)
-        rows_by_pair[pair] = rows
-        pup[pair] = {int(r["candle_open_ts"]): r for r in rows}
-
-    # window = tape overlap ∩ sqlite coverage
-    tape_lo = max(min(pup[p]) for p in pairs)
-    tape_hi = min(max(pup[p]) for p in pairs)
+    # 1) one replay per pair; window from candle coverage ∩ sqlite coverage
+    replays = {pair: replay_pair(pair, hb_cfg) for pair in pairs}
+    tape_lo = max(min(int(r["candle_open_ts"]) for r in rows)
+                  for _, rows in replays.values())
+    tape_hi = min(max(int(r["candle_open_ts"]) for r in rows)
+                  for _, rows in replays.values())
     db_lo, db_hi = sqlite_window(args.db, pairs)
     lo, hi = max(tape_lo, db_lo), min(tape_hi, db_hi)
     if hi - lo < 30 * 86400:
         print(f"WARNING: window is only {(hi - lo) / 86400:.1f} days")
     split = int(lo + (hi - lo) * args.train_frac)
+
+    # 2) leak-free gate calibration: weights fit on events resolved before
+    #    the split; gating posterior rebuilt exactly under those weights
+    pup: dict[str, dict[int, dict]] = {}
+    calib: dict[str, dict] = {}
+    for pair in pairs:
+        candles, rows = replays[pair]
+        info = train_weights_and_series(pair, hb_cfg, candles, rows, split)
+        pup[pair] = info["series"]
+        calib[pair] = {k: info[k] for k in
+                       ("weights", "weights_fitted", "n_train_events",
+                        "n_test_events", "test_auc_bounce3")}
+        print(f"{pair}: {info['n_train_events']} train events, "
+              f"{info['n_test_events']} test events, "
+              f"OOS AUC(bounce+3)={info['test_auc_bounce3']}", flush=True)
 
     # thresholds from TRAIN-segment posterior distribution (per pair)
     thresholds: dict[int, dict[str, float]] = {}
@@ -213,7 +269,7 @@ def main() -> int:
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "pairs": pairs, "window": [lo, hi], "split_ts": split,
         "train_frac": args.train_frac,
-        "calibrated_weights_used": weights_used,
+        "gate_calibration": calib,
         "thresholds": {str(k): v for k, v in thresholds.items()},
         "arms": {},
     }

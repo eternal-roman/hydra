@@ -111,6 +111,7 @@ def write_report(report: dict, out_dir: str | Path) -> tuple[Path, Path]:
     stem = f"eval_{report['pair'].replace('/', '_')}_{report['tf']}"
     jpath = out / f"{stem}.json"
     mpath = out / f"{stem}.md"
-    jpath.write_text(json.dumps(report, indent=2, default=str))
-    mpath.write_text(render_markdown(report))
+    jpath.write_text(json.dumps(report, indent=2, default=str),
+                     encoding="utf-8")
+    mpath.write_text(render_markdown(report), encoding="utf-8")
     return mpath, jpath
