@@ -143,7 +143,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 
 ## Claude Code tooling
 
-- **Skills:** `/release` (release SOP), `/audit` (zero-skip review), `/review`, `/security-review`
+- **Skills:** `/release` (release SOP), `/audit` (zero-skip review), `/bakeoff` (candidate signal vs current system on real data), `/review`, `/security-review`
 - **Post-edit hook:** `.claude/hooks/post-edit.py` — path-scoped verification; advisory; silence with `HYDRA_POSTEDIT_HOOK_DISABLED=1` (wired in `.claude/settings.json`)
 - **Settings split:** per-user `.claude/settings.local.json` + runtime `.claude/scheduled_tasks.lock` gitignored; everything else under `.claude/` committed
 - **gitattributes pin:** `*.sh text eol=lf` — prevents Windows core.autocrlf CRLF-ing hook shebang
