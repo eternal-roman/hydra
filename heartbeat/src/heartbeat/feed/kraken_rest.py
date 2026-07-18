@@ -165,18 +165,24 @@ class KrakenRest:
 
     def trades_range(self, pair: str, ts_start: float, ts_end: float,
                      on_page: Optional[Callable[[list[Trade]], None]] = None,
-                     max_pages: int = 1_000_000) -> tuple[list[Trade], bool]:
+                     max_pages: int = 1_000_000,
+                     collect: bool = True) -> tuple[list[Trade], bool]:
         """All trades in [ts_start, ts_end]. Returns (trades, complete).
 
         complete=False when pagination stalled or max_pages hit before
         reaching ts_end — the caller MUST taint the uncovered range.
+
+        collect=False streams pages to `on_page` only and returns an empty
+        list — a multi-month backfill is millions of trades and must not
+        accumulate in memory when every page is already persisted.
         """
         cursor = int(ts_start * 1_000_000_000)
         collected: list[Trade] = []
         for _ in range(max_pages):
             page, next_cursor = self.trades_page(pair, since=cursor)
             in_range = [t for t in page if ts_start <= t.ts <= ts_end]
-            collected.extend(in_range)
+            if collect:
+                collected.extend(in_range)
             if on_page and in_range:
                 on_page(in_range)
             if page and page[-1].ts > ts_end:

@@ -48,6 +48,12 @@ class HeartbeatPipeline:
             float(config.get("feed", {}).get("clock_skew_alert_s", 2.0)))
         self.builder = CandleBuilder(tf)
         self.history: deque[ClosedCandle] = deque(maxlen=self.HISTORY_MAX)
+        # Immutable snapshot of `history`, rebuilt ONLY at candle close.
+        # Reusing one tuple object per candle keeps the per-heartbeat
+        # FeatureContext O(1) (a fresh tuple per trade is O(700) x millions
+        # of trades on real tape) and lets features cache per-candle stats
+        # by object identity (see tier0.vol_z).
+        self._closed_tuple: tuple[ClosedCandle, ...] = ()
         self.on_heartbeat = on_heartbeat
         self.on_candle = on_candle
 
@@ -74,6 +80,7 @@ class HeartbeatPipeline:
             self.history.append(c)
         if candles:
             self.builder.prev_close = candles[-1].close
+        self._closed_tuple = tuple(self.history)
         return pushed
 
     # -- main entry ---------------------------------------------------------------
@@ -96,7 +103,7 @@ class HeartbeatPipeline:
             return None
         forming = self.builder.forming
         tainted = self.monitor.taint.overlaps(forming.open_ts, trade.ts)
-        ctx = FeatureContext(forming=forming, closed=tuple(self.history),
+        ctx = FeatureContext(forming=forming, closed=self._closed_tuple,
                              atr=self._atr_frozen, config=self.config)
         out = self.engine.heartbeat(ctx, ts=trade.ts, tainted=tainted)
         self.last_output = out
@@ -126,6 +133,7 @@ class HeartbeatPipeline:
             candle = ClosedCandle(**{**_candle_fields(candle), "tainted": True})
         snap = self.engine.on_candle_close(candle)
         self.history.append(candle)
+        self._closed_tuple = tuple(self.history)
         row = {
             "ts": candle.close_ts,
             "candle_open_ts": candle.open_ts,

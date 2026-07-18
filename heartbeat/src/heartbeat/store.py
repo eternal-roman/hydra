@@ -124,6 +124,25 @@ class Store:
             prev = key
         return out
 
+    def last_tape_ts(self, pair: str, tf: str) -> Optional[float]:
+        """Max trade ts across the newest part files (backfill resume cursor).
+
+        Part names sort by first-trade ts, so the global max lives in one of
+        the last few parts; scanning three bounds the cost on large stores
+        while tolerating overlapping tails from interrupted runs.
+        """
+        d = self.dir_for(pair, tf, "tape")
+        parts = sorted(d.glob("part-*.parquet"))
+        if not parts:
+            return None
+        best: Optional[float] = None
+        for part in parts[-3:]:
+            col = pq.read_table(part, columns=["ts"]).column("ts").to_pylist()
+            if col:
+                m = max(col)
+                best = m if best is None else max(best, m)
+        return best
+
     def read_tape_file(self, path: str | Path) -> list[Trade]:
         t = pq.read_table(path)
         cols = {name: t.column(name).to_pylist() for name in t.schema.names}

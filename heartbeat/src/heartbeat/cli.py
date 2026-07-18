@@ -77,27 +77,40 @@ def cmd_backfill(args, cfg) -> int:
 
     NOTE: Kraken's public Trades endpoint serves ~1000 trades/request at
     ~1 req/s — 90 days of BTC/USD is millions of trades and takes hours.
-    That is a Kraken limit, not a heartbeat one. Progress is streamed and
-    every page is persisted, so the command is resumable-by-rerun."""
+    That is a Kraken limit, not a heartbeat one. Pages stream straight to
+    the parquet store (never accumulated in memory), and a rerun resumes
+    from the last stored trade instead of re-downloading the range."""
     store = Store(cfg["store"]["root"])
-    rest = KrakenRest(cfg["feed"]["rest_url"], cfg["feed"]["rest_rate_per_s"],
-                      cfg["feed"]["rest_burst"])
+    rate = args.rate or cfg["feed"]["rest_rate_per_s"]
+    rest = KrakenRest(cfg["feed"]["rest_url"], rate, cfg["feed"]["rest_burst"])
     now = time.time()
     ts_start = now - args.days * 86400
+    last = store.last_tape_ts(args.pair, args.tf)
+    if last is not None and last > ts_start:
+        print(f"resuming: store already holds tape through {last:.0f} "
+              f"({(now - last) / 86400:.1f} days behind now)", flush=True)
+        ts_start = last
     total = 0
+    pages = 0
+    t0 = time.time()
 
     def on_page(page):
-        nonlocal total
+        nonlocal total, pages
         store.append_tape(args.pair, args.tf, page)
         total += len(page)
-        print(f"backfill {args.pair}: {total} trades "
-              f"(through {page[-1].ts:.0f})", flush=True)
+        pages += 1
+        if pages % 25 == 0:
+            covered = page[-1].ts - ts_start
+            frac = max(covered / (now - ts_start), 1e-9)
+            eta_s = (time.time() - t0) * (1.0 - frac) / frac
+            print(f"backfill {args.pair}: {total} trades, tape "
+                  f"{frac * 100:.1f}% covered, ETA {eta_s / 3600:.2f}h",
+                  flush=True)
 
-    trades, complete = rest.trades_range(args.pair, ts_start, now,
-                                         on_page=on_page)
-    candles = candles_from_trades(trades, args.tf, include_final=False)
-    print(f"backfill complete={complete}: {len(trades)} trades -> "
-          f"{len(candles)} closed {args.tf} candles")
+    _, complete = rest.trades_range(args.pair, ts_start, now,
+                                    on_page=on_page, collect=False)
+    print(f"backfill complete={complete}: {total} new trades stored "
+          f"({time.time() - t0:.0f}s)")
     if not complete:
         print("WARNING: pagination did not reach the requested end — "
               "the uncovered tail must be treated as tainted", file=sys.stderr)
@@ -341,6 +354,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("backfill"); common(p)
     p.add_argument("--days", type=int, default=90)
+    p.add_argument("--rate", type=float, default=None,
+                   help="REST requests/s override (default: config "
+                        "feed.rest_rate_per_s)")
     p = sub.add_parser("run"); common(p)
     p = sub.add_parser("eval"); common(p)
     p = sub.add_parser("calibrate"); common(p, pairs=True)

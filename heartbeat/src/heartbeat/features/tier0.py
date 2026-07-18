@@ -90,6 +90,14 @@ def range_atr(ctx: FeatureContext) -> Optional[float]:
     return ctx.forming.range / ctx.atr
 
 
+# Per-candle memo for vol_z: (mean, sd) depend only on (closed, window),
+# and the pipeline reuses ONE closed-tuple object for every heartbeat of a
+# candle, so identity equality is exact (tuples are immutable — same object
+# implies same stats). Keyed by identity, holding a strong ref so the id
+# can never be recycled while cached. Single entry: replays are sequential.
+_VOLZ_MEMO: dict = {"closed": None, "window": None, "stats": None}
+
+
 @register(
     name="vol_z", tier=0,
     inputs="forming candle volume vs trailing 96 closed candles",
@@ -101,10 +109,14 @@ def vol_z(ctx: FeatureContext) -> Optional[float]:
     closed = ctx.closed
     if len(closed) < window or ctx.forming.trade_count == 0:
         return None
-    vols = [c.volume for c in closed[-window:]]
-    mean = sum(vols) / len(vols)
-    var = sum((v - mean) ** 2 for v in vols) / len(vols)
-    sd = var ** 0.5
+    if _VOLZ_MEMO["closed"] is closed and _VOLZ_MEMO["window"] == window:
+        mean, sd = _VOLZ_MEMO["stats"]
+    else:
+        vols = [c.volume for c in closed[-window:]]
+        mean = sum(vols) / len(vols)
+        var = sum((v - mean) ** 2 for v in vols) / len(vols)
+        sd = var ** 0.5
+        _VOLZ_MEMO.update(closed=closed, window=window, stats=(mean, sd))
     if sd <= 0:
         return None
     # Pro-rate the forming candle's volume to a full-candle equivalent so a

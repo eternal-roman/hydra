@@ -123,6 +123,13 @@ class KrakenWsClient:
             local_ts = self._clock()
             for item in msg.get("data", []):
                 trade = parse_ws_trade(item, self.pair)
+                # Frames queued on the socket while a reconnect gap was
+                # being REST-backfilled overlap the backfill's coverage —
+                # without this check those trades enter the pipeline twice
+                # and double-count volume/OFI. trade_id is monotone per
+                # pair on Kraken, so <= last seen means already delivered.
+                if trade.trade_id and trade.trade_id <= self.monitor.last_trade_id:
+                    continue
                 self.monitor.observe(trade, local_ts=local_ts)
                 self.last_trade_ts = trade.ts
                 await self.on_trade(trade, local_ts)
