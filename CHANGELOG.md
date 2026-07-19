@@ -6,9 +6,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [2.30.0] — 2026-07-19
+
+S3 daily bounce classifier productized: standalone `s3bounce/` package +
+read-only agent signal surface + env-gated shadow strategy (no live
+order path — live enablement remains gate-pending on the paper-shadow
+window). Research evidence: pre-registered exit-policy gate (close-fill
+stop ADOPTED; flip exits KILLED on fold consistency) and per-coin
+hold-horizon study (long-hold "always right" claim REFUTED with Wilson
+CIs; ETH K=60 shadow arm only; ZEC excluded).
 
 ### Added
+- `s3bounce/` — standalone, stdlib-only, publishable package (own
+  pyproject + 45 tests): daily-bar construction, verbatim ports of the
+  research geometry/features (golden parity fixtures pin them to the
+  heartbeat pipeline at 1e-9; `heartbeat/tools/export_s3_model.py` is
+  the yearly refit path), frozen `model_artifact.json` (BTC/ETH 2026
+  walk-forward fold; ZEC structurally absent), exit policies
+  (x0/x1/hold_k60), causal stage machine (SW-lag documented), shadow
+  ledger (JSONL events + atomic state, restart-safe dedupe).
+- `hydra_s3.py` — agent adapter: confirmation-based candle folding
+  (data clock, never wall time), registry-alias pair mapping, inert on
+  error; `quant_indicators["s3"]` block (R10-safe by whitelist);
+  Phase-2.6 shadow evaluation (`HYDRA_S3_STRATEGY`, default OFF) with
+  per-exit-arm paper positions in `.hydra-s3/` and heartbeat confirmer
+  payloads recorded (missing/stale/tainted => no_opinion, both-arm
+  decisions logged). Kill switch `HYDRA_S3_DISABLED`.
+- Harness scenario S3SH1: gated shadow proposal places ZERO orders.
+- heartbeat evidence: `evidence/bakeoffs/s3_exit_policy*` (registration
+  committed before arms ran), `evidence/s3_hold_horizon.json`,
+  `tools/bakeoff_s3_exit_policy.py`, `tools/s3_hold_horizon_study.py`.
 - `heartbeat/` — standalone research subsystem (own package, own test
   suite; zero coupling to the HYDRA engine): recursive Bayesian
   order-flow posterior P(up) from Kraken trade tape, built as a

@@ -62,7 +62,7 @@ regression bug, not a style issue.
   hurdle were calibrated on 1h tape; 15m ran them off-calibration.
   `--candle-interval` still accepts 1/5/15/30/60; snapshot resume drops
   candle history on interval mismatch (positions/journal restore).
-- **Version pin:** v2.29.0
+- **Version pin:** v2.30.0
 
 ## Defaults (inherited)
 

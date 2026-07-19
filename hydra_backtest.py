@@ -47,7 +47,7 @@ from hydra_engine import (
     SIZING_CONSERVATIVE,  # noqa: F401 — re-exported for callers
 )
 
-HYDRA_VERSION = "2.29.0"
+HYDRA_VERSION = "2.30.0"
 
 # Reasonable defaults; enforced at config construction and runtime.
 DEFAULT_MAX_TICKS = 200_000
