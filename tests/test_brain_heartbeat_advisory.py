@@ -22,9 +22,11 @@ def test_format_includes_heartbeat_ok_and_no_force_language():
     block = HydraBrain._format_quant_indicators(state)
     assert "heartbeat: status=ok p_up=0.72" in block
     assert "ADVISORY only" in block
-    assert "never force_hold from p_up alone" in block
+    assert "NEVER set force_hold" in block
+    assert "NEVER authorize or block live orders" in block
     assert "s3: active" in block
     assert "NO order path" in block
+    assert "NEVER force_hold or size=0 from S3" in block
 
 
 def test_format_heartbeat_no_opinion_not_half():

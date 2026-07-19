@@ -138,6 +138,13 @@ treat null as "data stale" and weight conviction down accordingly):
       negative = distribution (CVD leading price down). |σ| > 2 against
       the engine direction is a warning that smart money disagrees.
 
+Research surfaces (may appear nested in QUANT INDICATORS — ADVISORY ONLY):
+  - heartbeat p_up / s3 stage: display + shadow context for bounce research.
+      NEVER set force_hold=true or size_multiplier=0 from these fields.
+      NEVER authorize or block live spot orders from them. They are not
+      bakeoff-cleared live gates. Fail-open when missing/stale/tainted;
+      do not invent p_up=0.5.
+
 ────────────────────────────────────────────────────────────────────
 YOUR TASK
 ────────────────────────────────────────────────────────────────────
@@ -1205,15 +1212,18 @@ class HydraBrain:
                 lines.append(
                     f"\n  heartbeat: status=ok p_up={p_up} L={hb.get('L')}"
                     f" candle_progress={hb.get('candle_progress')}{fail}"
-                    "\n    (ADVISORY only — calibrated order-flow confirmer; "
-                    "never force_hold from p_up alone; fail-open when stale/tainted)"
+                    "\n    (ADVISORY only — confirmer display/shadow context; "
+                    "NEVER set force_hold or size_multiplier=0 from heartbeat; "
+                    "NEVER authorize or block live orders from p_up; "
+                    "fail-open when stale/tainted; do not invent p_up=0.5)"
                 )
             else:
                 lines.append(
                     f"\n  heartbeat: status={st}"
                     + (f" why={why}" if why else "")
                     + fail
-                    + "\n    (no_opinion — do not invent p_up=0.5)"
+                    + "\n    (no_opinion — do not invent p_up=0.5; never force_hold "
+                    "from heartbeat)"
                 )
         s3 = qi.get("s3") if isinstance(qi.get("s3"), dict) else None
         if s3:
@@ -1221,12 +1231,14 @@ class HydraBrain:
                 lines.append(
                     f"\n  s3: active stage={s3.get('stage')} score={s3.get('score')} "
                     f"gated={s3.get('gated')} degraded={s3.get('degraded')}"
-                    "\n    (signal/shadow only — NO order path; trend overlay must "
-                    "NOT gate S3 entries per HONEST_FINDINGS)"
+                    "\n    (shadow/signal only — NO order path; NEVER force_hold or "
+                    "size=0 from S3; paper arms only until bakeoff; do not put "
+                    "trend overlay on S3 shadow proposals)"
                 )
             else:
                 lines.append(
-                    f"\n  s3: inactive reason={s3.get('reason', 'unknown')}"
+                    f"\n  s3: inactive reason={s3.get('reason', 'unknown')} "
+                    "(still no order path / no force_hold from S3)"
                 )
         return "".join(lines)
 

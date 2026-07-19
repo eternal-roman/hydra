@@ -2271,16 +2271,16 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                                 <span style={{
                                   fontSize: 8, fontWeight: 700, letterSpacing: "0.06em",
                                   textTransform: "uppercase",
-                                  color: s3Active && s3.gated ? COLORS.buy : COLORS.textDim,
-                                }}>S3</span>
+                                  color: COLORS.purple || COLORS.textDim,
+                                }} title="Shadow/signal only — never a live order">S3</span>
                                 {s3Active ? (
                                   <span style={{
-                                    color: s3.gated ? COLORS.buy : COLORS.textDim,
+                                    color: COLORS.textDim,
                                     fontWeight: s3.gated ? 700 : 500,
-                                  }} title="Shadow/signal only — HYDRA_S3_STRATEGY for paper arms">
+                                  }} title="Shadow/signal only — HYDRA_S3_STRATEGY for paper arms; not a live buy badge">
                                     {s3.stage || "—"}
                                     {typeof s3.score === "number" ? ` ${s3.score.toFixed(2)}` : ""}
-                                    {s3.gated ? " gated" : ""}
+                                    {s3.gated ? " gated·shadow" : ""}
                                     {s3.degraded ? " degraded" : ""}
                                   </span>
                                 ) : (
@@ -2892,7 +2892,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.30.1 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.31.0 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]

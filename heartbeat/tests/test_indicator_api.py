@@ -74,6 +74,18 @@ def test_run_dataset_with_explicit_weights_dict_ok():
     assert 0.0 <= result.p_up <= 1.0
 
 
+def test_empty_weights_dict_not_calibrated():
+    """Empty or non-overlapping weights must not yield status=ok (audit HIGH)."""
+    trades = _synth_trades()
+    r_empty = run_dataset(trades, symbol="X", tf="1h", weights={})
+    assert r_empty.status == "degraded"
+    assert any("uncalibrated" in w for w in r_empty.warnings)
+    r_miss = run_dataset(
+        trades, symbol="X", tf="1h", weights={"not_a_feature": 1.0}
+    )
+    assert r_miss.status == "degraded"
+
+
 def test_run_dataset_missing_file_raises_missing():
     with pytest.raises(MissingDatasetError) as ei:
         run_dataset("/nonexistent/path/trades.csv", symbol="BTC/USD")

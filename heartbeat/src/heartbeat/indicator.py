@@ -79,6 +79,31 @@ def _resolve_config(config: ConfigLike) -> dict:
     return load_config(str(config))
 
 
+def _enabled_feature_names(cfg: dict) -> set[str]:
+    """Feature names the posterior will actually load (tier0 default path)."""
+    try:
+        from .features.registry import enabled_features
+        return {f.name for f in enabled_features(cfg)}
+    except Exception:
+        # Fallback if registry import fails — still require non-empty weights
+        return set()
+
+
+def _weights_cover_features(cfg: dict, weights: Mapping[str, float]) -> bool:
+    """True only if at least one enabled feature has an explicit weight.
+
+    Empty maps or non-overlapping keys must NOT count as calibrated (audit
+    HIGH: silent coin-flip with status=ok).
+    """
+    if not weights:
+        return False
+    names = _enabled_feature_names(cfg)
+    if not names:
+        # If we cannot resolve features, require non-empty weight map only
+        return any(isinstance(v, (int, float)) for v in weights.values())
+    return any(k in names for k in weights)
+
+
 def _apply_weights(
     cfg: dict,
     *,
@@ -89,18 +114,30 @@ def _apply_weights(
     """Mutate cfg with weights. Returns True if calibrated weights applied."""
     if weights is not None:
         if isinstance(weights, Mapping):
-            apply_weights_to_config(cfg, {str(k): float(v) for k, v in weights.items()})
+            cleaned = {str(k): float(v) for k, v in weights.items()}
+            if not _weights_cover_features(cfg, cleaned):
+                return False
+            apply_weights_to_config(cfg, cleaned)
             return True
         path = Path(weights)
+        if not path.is_file():
+            # Explicit path miss: caller may treat as hard error via warning
+            cfg.setdefault("_heartbeat_weight_issues", []).append(
+                f"weights_path_missing: {path}"
+            )
+            return False
         loaded = load_weights_file(path)
-        if not loaded:
+        if not loaded or not _weights_cover_features(cfg, loaded):
+            cfg.setdefault("_heartbeat_weight_issues", []).append(
+                f"weights_path_unusable: {path}"
+            )
             return False
         apply_weights_to_config(cfg, loaded)
         return True
 
     store_root = cfg.get("store", {}).get("root", "data")
     found = find_weights(symbol, tf, store_root=store_root)
-    if found:
+    if found and _weights_cover_features(cfg, found[0]):
         apply_weights_to_config(cfg, found[0])
         return True
     return False
@@ -171,6 +208,7 @@ def run_dataset(
     trades = load_trades(data, symbol=symbol)
     cfg = _resolve_config(config)
     calibrated = _apply_weights(cfg, symbol=symbol, tf=tf, weights=weights)
+    weight_issues = list(cfg.pop("_heartbeat_weight_issues", []) or [])
 
     n_heartbeats = 0
 
@@ -178,8 +216,17 @@ def run_dataset(
         nonlocal n_heartbeats
         n_heartbeats += 1
 
-    series = run_tape(cfg, symbol, tf, trades, on_heartbeat=_on_hb)
-    warnings: List[str] = []
+    try:
+        series = run_tape(cfg, symbol, tf, trades, on_heartbeat=_on_hb)
+    except ValueError as e:
+        # Unordered tape / bad timeframe → structured invalid dataset
+        from .errors import InvalidDatasetError
+        raise InvalidDatasetError(
+            str(e),
+            hint="check trade timestamps are non-decreasing and --tf is one of "
+                 "1m,5m,15m,30m,1h,4h,1d",
+        ) from e
+    warnings: List[str] = list(weight_issues)
     status = _status_for(calibrated, series, warnings)
     p_up, L, ts, tainted = _last_from_series(series)
 
