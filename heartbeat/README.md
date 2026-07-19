@@ -8,37 +8,54 @@ only.
 
 Distribution name: **`heartbeat-flow`** · import name: **`heartbeat`**.
 
-## Solo install
+---
 
-From a checkout of this package (or the Hydra monorepo `heartbeat/` tree):
+## FINAL PATH
+
+| What | Where |
+|---|---|
+| **Canonical package root** | `Hydra/heartbeat/` (this directory) |
+| **Import package** | `src/heartbeat/` → `import heartbeat` |
+| **PyPI / dist name** | `heartbeat-flow` (avoids name collision) |
+| **Demo fixture** | `tests/fixtures/sample_trades.csv` (synthetic AAPL tape) |
+| **Shipped config** | `src/heartbeat/resources/default.yaml` (= `config/default.yaml`) |
+
+Solo end users only need this tree (or a wheel of it). The rest of Hydra is
+optional host wiring (dashboard surface / S3 shadow), not a runtime dependency
+of the indicator.
+
+---
+
+## SOLO INSTALL
 
 ```bash
-# monorepo root
+# From the monorepo root (Hydra/)
 pip install -e ./heartbeat
 
-# or from inside the package
-cd heartbeat
+# Or from inside this package directory
+cd /path/to/Hydra/heartbeat   # or your checkout of this folder alone
 pip install -e .
 
-# with test tooling
+# With test tooling
 pip install -e ".[dev]"
 ```
 
-Later (when published): `pip install heartbeat-flow`.
-
-Verify:
+**Verify install:**
 
 ```bash
-python -c "from heartbeat import run_dataset, __version__; print(__version__)"
+python -c "from heartbeat import run_dataset, call_tool, dataset_requirements; print('ok')"
 heartbeat run-dataset --help
+heartbeat run-dataset tests/fixtures/sample_trades.csv --symbol AAPL --tf 1h --json
 ```
+
+Later (when published): `pip install heartbeat-flow`.
 
 Without an editable install, use `PYTHONPATH=src`:
 
 ```bash
 cd heartbeat
 PYTHONPATH=src python -c "from heartbeat import run_dataset"
-PYTHONPATH=src python -m heartbeat.cli run-dataset sample.csv --symbol AAPL --tf 1h
+PYTHONPATH=src python -m heartbeat.cli run-dataset tests/fixtures/sample_trades.csv --symbol AAPL --tf 1h --json
 ```
 
 ### Requirements
@@ -76,11 +93,19 @@ Required columns (aliases allowed):
 | trade_id | `trade_id`, `id` | optional |
 | ord_type | `ord_type`, `order_type` | optional |
 
-**OHLCV-only without aggressor side is not supported.**
+**OHLCV-only without aggressor side is not supported.** There is no synthetic
+mid-side / invent-side-from-OHLC policy (YAGNI). Provide real aggressor
+`side` / `aggressor` on every trade row, or the loader raises
+`InvalidDatasetError` (`code=invalid_dataset`) with an OHLCV hint.
+
+Symbol is a free-form string (stock tickers like `AAPL` are fine).
 
 ### CLI
 
 ```bash
+# demo fixture (≥20 synthetic AAPL trades)
+heartbeat run-dataset tests/fixtures/sample_trades.csv --symbol AAPL --tf 1h --json
+
 heartbeat run-dataset sample.csv --symbol AAPL --tf 1h
 heartbeat run-dataset sample.csv --symbol AAPL --tf 1h --json
 heartbeat run-dataset sample.csv --symbol BTC/USD --tf 1h --weights weights_BTC_USD_1h.json

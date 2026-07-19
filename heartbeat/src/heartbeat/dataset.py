@@ -36,6 +36,16 @@ _REQUIRED_HINT = (
     "(buy/sell/b/s/1/-1); optional: trade_id, ord_type"
 )
 
+# Explicit OHLCV rejection (YAGNI: no synthetic mid-side policy).
+_OHLCV_HINT = (
+    "OHLCV-only is not supported — provide aggressor side "
+    "(side|aggressor = buy/sell/b/s/1/-1). "
+    "Synthetic mid-side policy is not implemented (YAGNI)."
+)
+_OHLCV_COL_HINTS = frozenset({
+    "open", "high", "low", "close", "ohlc", "ohlcv", "bar", "candle",
+})
+
 PathOrRows = Union[str, Path, Iterable[Any]]
 
 
@@ -78,10 +88,20 @@ def dataset_requirements() -> dict:
             "buy": ["buy", "b", "1"],
             "sell": ["sell", "s", "-1"],
         },
+        "unsupported": {
+            "ohlcv_only": True,
+            "reason": (
+                "OHLCV-only rows without aggressor side are not supported. "
+                "Synthetic mid-side / invent-side-from-OHLC policy is not "
+                "implemented (YAGNI)."
+            ),
+            "hint": _OHLCV_HINT,
+        },
         "notes": [
             "OHLCV-only rows without aggressor side are not supported.",
+            "Synthetic mid-side policy is not implemented (YAGNI).",
             "No network I/O; path must be a local file or in-memory rows.",
-            "symbol kwarg is free-form metadata (not used for parsing).",
+            "symbol kwarg is free-form metadata (stock tickers OK; not used for parsing).",
         ],
         "hint": _REQUIRED_HINT,
     }
@@ -304,6 +324,19 @@ def _pick(norm: Mapping[str, Any], aliases: Sequence[str]) -> Any:
     return None
 
 
+def _looks_like_ohlcv(norm: Mapping[str, Any]) -> bool:
+    """True when the row has OHLCV-ish columns and no aggressor side."""
+    keys = set(norm.keys())
+    has_ohlc = bool(keys & _OHLCV_COL_HINTS) or (
+        "open" in keys and "close" in keys
+    )
+    # Common candle CSVs: open,high,low,close,volume without side.
+    candle_core = {"open", "high", "low", "close"}
+    if candle_core.issubset(keys):
+        has_ohlc = True
+    return has_ohlc and _pick(norm, _SIDE_ALIASES) is None
+
+
 def _row_to_trade(row: Mapping[str, Any], *, index: int) -> Trade:
     norm = _norm_keys(row)
 
@@ -311,6 +344,13 @@ def _row_to_trade(row: Mapping[str, Any], *, index: int) -> Trade:
     price_raw = _pick(norm, _PRICE_ALIASES)
     qty_raw = _pick(norm, _QTY_ALIASES)
     side_raw = _pick(norm, _SIDE_ALIASES)
+
+    # Fail loud on OHLCV-only (no synthetic mid-side).
+    if side_raw is None and _looks_like_ohlcv(norm):
+        raise InvalidDatasetError(
+            f"row {index}: OHLCV-only input without aggressor side",
+            hint=_OHLCV_HINT,
+        )
 
     missing = []
     if ts_raw is None:
@@ -322,9 +362,16 @@ def _row_to_trade(row: Mapping[str, Any], *, index: int) -> Trade:
     if side_raw is None:
         missing.append("side|aggressor")
     if missing:
+        # Prefer OHLCV-specific hint when side is the only/main gap and
+        # volume/close-style keys suggest candle data.
+        hint = _REQUIRED_HINT
+        if side_raw is None and any(
+            k in norm for k in ("close", "open", "high", "low", "volume")
+        ):
+            hint = _OHLCV_HINT
         raise InvalidDatasetError(
             f"row {index}: missing required column(s): {', '.join(missing)}",
-            hint=_REQUIRED_HINT,
+            hint=hint,
         )
 
     try:

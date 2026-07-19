@@ -110,6 +110,25 @@ def test_cli_run_dataset_json_ok(tmp_path: Path, capsys):
         assert 0.0 <= payload["p_up"] <= 1.0
 
 
+def test_cli_run_dataset_fixture_csv_json_ok(capsys):
+    """Fixture sample_trades.csv (AAPL demo) → exit 0 with --json."""
+    fixture = (
+        Path(__file__).resolve().parent / "fixtures" / "sample_trades.csv"
+    )
+    assert fixture.is_file()
+    code = main([
+        "run-dataset", str(fixture),
+        "--symbol", "AAPL",
+        "--tf", "1h",
+        "--json",
+    ])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["symbol"] == "AAPL"
+    assert payload["n_trades"] >= 20
+    assert payload["status"] in ("ok", "degraded", "error")
+
+
 def test_cli_default_config_loads_when_packaged():
     """load_config must find packaged resources/default.yaml (install path)."""
     from heartbeat.config import default_config_path, load_config

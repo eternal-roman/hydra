@@ -170,3 +170,39 @@ def test_dataset_requirements_keys():
     assert "csv" in blob
     assert "side" in blob
     assert "price" in blob
+    assert "ohlcv" in blob
+    assert req.get("unsupported", {}).get("ohlcv_only") is True
+    assert "not supported" in req["unsupported"]["reason"].lower()
+    assert "yagni" in req["unsupported"]["hint"].lower() or "yagni" in req[
+        "unsupported"
+    ]["reason"].lower()
+
+
+def test_ohlcv_only_raises_invalid_dataset():
+    """OHLCV-only without aggressor side → InvalidDatasetError (no invent-side)."""
+    with pytest.raises(InvalidDatasetError) as ei:
+        load_trades([
+            {
+                "ts": 1_700_000_000.0,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1000.0,
+            },
+        ])
+    assert ei.value.code == "invalid_dataset"
+    assert ei.value.hint
+    blob = (str(ei.value) + " " + (ei.value.hint or "")).lower()
+    assert "ohlcv" in blob or "aggressor" in blob or "side" in blob
+    assert "yagni" in (ei.value.hint or "").lower() or "not supported" in blob
+
+
+def test_fixture_sample_trades_csv_loads():
+    """Demo fixture for AAPL-style equity tape (≥20 rows)."""
+    path = Path(__file__).resolve().parent / "fixtures" / "sample_trades.csv"
+    assert path.is_file()
+    trades = load_trades(path, symbol="AAPL")
+    assert len(trades) >= 20
+    assert any(t.side is Side.BUY for t in trades)
+    assert any(t.side is Side.SELL for t in trades)
