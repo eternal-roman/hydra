@@ -50,6 +50,6 @@ def test_malformed_artifact_raises(tmp_path):
 def test_staleness_400_days():
     a = load_artifact()
     trained = dt.datetime.fromisoformat(a.trained_through) \
-        .replace(tzinfo=dt.UTC).timestamp()
+        .replace(tzinfo=dt.timezone.utc).timestamp()
     assert not a.stale(trained + 399 * 86400)
     assert a.stale(trained + 401 * 86400)

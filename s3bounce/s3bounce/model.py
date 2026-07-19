@@ -49,7 +49,7 @@ class Artifact:
 
     def stale(self, now_ts: float) -> bool:
         trained = _dt.datetime.fromisoformat(self.trained_through) \
-            .replace(tzinfo=_dt.UTC).timestamp()
+            .replace(tzinfo=_dt.timezone.utc).timestamp()
         return now_ts - trained > STALE_AFTER_DAYS * 86400
 
 
