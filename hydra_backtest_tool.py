@@ -97,13 +97,13 @@ BACKTEST_TOOLS: List[Dict[str, Any]] = [
                     "type": "object",
                     "description": (
                         "Per-pair param overrides merged on top of the preset: "
-                        '{"SOL/USD": {"momentum_rsi_upper": 78.0}}'
+                        '{"BTC/USD": {"momentum_rsi_upper": 78.0}}'
                     ),
                 },
                 "pairs": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Pairs to test. Defaults to ['SOL/USD'].",
+                    "description": "Pairs to test. Defaults to ['BTC/USD'].",
                 },
                 "n_candles": {
                     "type": "integer",
@@ -538,7 +538,7 @@ class BacktestToolDispatcher:
         if not hypothesis or len(hypothesis) < 8:
             return _error("hypothesis is required and must be ≥ 8 characters")
 
-        pairs = tuple(tool_input.get("pairs") or ["SOL/USD"])
+        pairs = tuple(tool_input.get("pairs") or ["BTC/USD"])
         n_candles = int(tool_input.get("n_candles") or 500)
         seed = int(tool_input.get("seed") or 42)
         overrides = tool_input.get("overrides") or None
@@ -702,7 +702,7 @@ class BacktestToolDispatcher:
             return _error("sweep values limited to 10 per call")
 
         try:
-            pairs = tuple([pair]) if pair else ("SOL/USD",)
+            pairs = tuple([pair]) if pair else ("BTC/USD",)
             cfg, _ov = build_config_from_preset(
                 preset=preset,
                 pairs=pairs,

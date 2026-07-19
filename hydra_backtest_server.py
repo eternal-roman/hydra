@@ -658,8 +658,9 @@ def mount_backtest_routes(
             run_walk_forward, WalkForwardSpec, FoldMetrics, build_quarterly_folds,
         )
         pair = payload.get("pair")
-        if pair not in ("BTC/USD", "SOL/USD", "SOL/BTC"):
-            return {"success": False, "error": "pair required (BTC/USD|SOL/USD|SOL/BTC)"}
+        if pair not in ("BTC/USD", "ETH/USD", "ZEC/USD", "SOL/USD", "SOL/BTC"):
+            return {"success": False,
+                    "error": "pair required (BTC/USD|ETH/USD|ZEC/USD|SOL/USD|SOL/BTC)"}
         baseline_params = payload.get("baseline_params") or {}
         candidate_params = payload.get("candidate_params") or {}
         if not isinstance(baseline_params, dict) or not isinstance(candidate_params, dict):

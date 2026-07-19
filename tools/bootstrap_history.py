@@ -3,7 +3,7 @@
 
 Usage:
     python -m tools.bootstrap_history --zip ~/Downloads/Kraken_Trading_History.zip \\
-        --pairs SOLUSD,XBTUSD,SOLXBT --grain 3600 --out hydra_history.sqlite
+        --pairs XBTUSD,ETHUSD,ZECUSD --grain 3600 --out hydra_history.sqlite
 
 Stdlib only. Stream-reads each CSV; never loads trades into RAM.
 """
@@ -24,6 +24,8 @@ _KRAKEN_FILE_TO_CANONICAL: Dict[str, str] = {
     "XBTUSD": "BTC/USD",
     "SOLUSD": "SOL/USD",
     "SOLXBT": "SOL/BTC",
+    "ETHUSD": "ETH/USD",
+    "ZECUSD": "ZEC/USD",
 }
 
 
@@ -128,8 +130,8 @@ def bootstrap_zip(
 def main() -> None:
     ap = argparse.ArgumentParser(description="Bootstrap Hydra history from Kraken trade archive.")
     ap.add_argument("--zip", required=True, help="Path to Kraken_Trading_History.zip")
-    ap.add_argument("--pairs", default="SOLUSD,XBTUSD,SOLXBT",
-                    help="Comma-separated Kraken pair names (e.g. SOLUSD,XBTUSD,SOLXBT)")
+    ap.add_argument("--pairs", default="XBTUSD,ETHUSD,ZECUSD",
+                    help="Comma-separated Kraken pair names (e.g. XBTUSD,ETHUSD,ZECUSD)")
     ap.add_argument("--grain", type=int, default=3600, help="Candle grain in seconds (default 3600)")
     ap.add_argument("--out", default=os.environ.get("HYDRA_HISTORY_DB", "hydra_history.sqlite"),
                     help="Output SQLite path (env: HYDRA_HISTORY_DB)")

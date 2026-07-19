@@ -442,7 +442,7 @@ def new_experiment(
 
 def build_config_from_preset(
     preset: str,
-    pairs: Tuple[str, ...] = ("SOL/USD",),
+    pairs: Tuple[str, ...] = ("BTC/USD",),
     n_candles: int = 1000,
     seed: int = 42,
     extra_overrides: Optional[Dict[str, Dict[str, float]]] = None,
@@ -1034,7 +1034,7 @@ if __name__ == "__main__":  # pragma: no cover
     store = ExperimentStore(root=Path(tmp))
 
     # Preset-driven run
-    cfg, ov = build_config_from_preset("divergent", pairs=("SOL/USD",), n_candles=300, seed=1)
+    cfg, ov = build_config_from_preset("divergent", pairs=("BTC/USD",), n_candles=300, seed=1)
     exp = new_experiment(
         name="smoke-divergent",
         config=cfg,

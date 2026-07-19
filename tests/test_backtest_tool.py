@@ -298,7 +298,7 @@ class TestDispatcherRouting(unittest.TestCase, _TempStoreMixin):
             "n_candles": 400,
         }, caller="cli")["data"]["id"]
         out = self.dispatcher.execute("get_equity_curve", {
-            "experiment_id": eid, "pair": "SOL/USD", "downsample_to": 50,
+            "experiment_id": eid, "pair": "BTC/USD", "downsample_to": 50,
         }, caller="cli")
         self.assertTrue(out["success"])
         self.assertLessEqual(len(out["data"]["values"]), 50)

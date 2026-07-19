@@ -743,6 +743,7 @@ class PositionSizer:
         "SOL": 0.02,
         "BTC": 0.00005,
         "ETH": 0.001,
+        "ZEC": 0.01,
     }
 
     # Kraken minimum order cost per quote currency (costmin)

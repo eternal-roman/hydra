@@ -9,8 +9,9 @@ description: >
   HYDRA (Hyper-adaptive Dynamic Regime-switching Universal Agent) is an autonomous
   crypto trading agent for Kraken CLI that detects market regimes and switches between
   four strategies: Momentum, Mean Reversion, Grid, and Defensive, all gated by a
-  daily trend-ensemble overlay (v2.28). Trades SOL/USD and BTC/USD by default with
-  the SOL/BTC bridge signal-only (v2.28; HYDRA_BRIDGE_TRADING=1 re-enables; USDC
+  daily trend-ensemble overlay (v2.28). Trades BTC/USD, ETH/USD, and ZEC/USD by
+  default (v2.29 — independent pairs, no triangle; explicit SOL pairs restore the
+  legacy triangle with its SOL/BTC bridge signal-only; USDC/USDT
   variants and --pairs auto portfolio discovery available)
   using limit post-only orders. Use when: (1) running a live
   trading session via Kraken CLI (WSL), (2) analyzing current market regime from OHLC
@@ -163,7 +164,7 @@ kraken closed-orders -o json
 
 ```
 INITIALIZE paper session
-SET assets = ["SOL/USD", "SOL/BTC", "BTC/USD"]
+SET assets = ["BTC/USD", "ETH/USD", "ZEC/USD"]
 SET interval = 300 seconds  # 5 minutes
 SET max_position_pct = 0.30   # 0.40 in competition mode
 SET min_confidence = 0.65     # quality filter — only ≥15% Kelly edge

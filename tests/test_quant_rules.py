@@ -243,6 +243,45 @@ def test_r10_skips_oi_fields_for_synthetic_pairs():
     )
 
 
+def test_r10_skips_basis_for_perp_only_pairs():
+    """ZEC/USD has a Kraken Futures perp (PF_ZECUSD) but NO quarterly
+    contracts, so basis_apr_pct can never populate — unavailable by
+    construction, not stale. With basis_available=False R10 tracks the
+    remaining 4 fields; a permanently-null basis must not leave the pair
+    one transient miss away from a structural blackout."""
+    qi = {
+        "funding_bps_8h": -10.0,
+        "oi_delta_1h_pct": 0.4,
+        "oi_price_regime": "balanced",
+        "cvd_divergence_sigma": 0.3,
+        "basis_apr_pct": None,
+        "basis_available": False,
+    }
+    result = apply_rules(engine_action="BUY", quant_indicators=qi)
+    assert not result.force_hold, (
+        f"R10 must skip the basis null on perp-only pairs, "
+        f"got force_hold={result.force_hold} reason={result.force_hold_reason}"
+    )
+    # One transient miss of a REAL field is still below the 2-null bar
+    qi_one_miss = dict(qi, oi_delta_1h_pct=None)
+    assert not apply_rules("BUY", quant_indicators=qi_one_miss).force_hold
+
+
+def test_r10_perp_only_with_two_real_nulls_still_trips():
+    """basis_available=False shrinks the tracked set — it must not weaken
+    the blackout for genuine data starvation on the fields that DO exist."""
+    qi = {
+        "funding_bps_8h": None,
+        "oi_delta_1h_pct": None,
+        "oi_price_regime": "balanced",
+        "cvd_divergence_sigma": 0.3,
+        "basis_apr_pct": None,
+        "basis_available": False,
+    }
+    result = apply_rules(engine_action="BUY", quant_indicators=qi)
+    assert result.force_hold, "perp-only pair with 2 real nulls must still trip R10"
+
+
 def test_r10_still_fires_for_real_perps_with_stale_oi():
     """Regression guard: real perp with 2+ null fields still trips R10."""
     qi = {
