@@ -280,3 +280,36 @@ paper positions to `.hydra-s3/` (x0/x1 both assets, hold_k60 ETH only;
 heartbeat confirmer payload recorded, both-arm decisions). NO live
 order path exists — live enablement remains gate-pending on this
 shadow window per the funnel rules.
+
+## Trail-exit gate (2026-07-19, pre-registered): NO basis flip — shadow arms only
+
+ABI funnel (`evidence/abi/s3_trail_funnel_2026-07-19.md`) found the
+winner-truncation anomaly (post-target +40d continuation +9.8% BTC /
++13.0% ETH) and the bounce-vigor loss watermark (`premium_atr`: weak
+half stops 48% / fwd60 +3.8%, strong half 20% / +20.7%). Two trail
+constructions were registered (`s3_trail_exit_REGISTRATION.md`,
+committed before the runner) and run once
+(`tools/bakeoff_s3_trail_exit.py` → `s3_trail_exit.json`):
+
+- **X4a ride-MA9** (stop close<L0 until close ≥ L0+3.3·ATR, then trail
+  close<MA9): pooled +5.79%/trade vs X1 +2.31, fold consistency 9/13,
+  BEAT its matched blind time control (T_10 +3.66) — passed C1–C4.
+  **Failed C5 LOYO:** dropping 2019 removes the ETH_2019 fold (+98.9pp
+  vs X1 +37.1pp) and the winner flips to X5; dropping 2022 or 2024
+  degrades to no-adopt. Concentration-sensitive at n=49.
+- **X5 vigor-routed** (premium> train-median → trail, else target):
+  pooled +3.68 vs T_10 +3.66 — **failed C3**: indistinguishable from
+  blind exposure once the cut is train-derived (the exploratory global
+  cut had flattered it).
+
+**Pre-committed decision rule applied: X1 close-stop remains the
+tradable basis. Both trail arms enter the shadow ledger as
+measurement-only arms (C4 clean: identical worst trade −16.5%,
+identical ≤−15% share).** The registered secondaries reproduced:
+breadth-horizon inversion (low-breadth fwd60 +23.3% vs high +1.3%),
+leg-depth stop split (0.20 vs 0.48), post-stop re-entry fwd60 +33.0%
+vs +8.9% (n=7, underpowered, monitored).
+
+The gate worked as designed: exploratory +283.8% pooled sum survived
+every expectancy test yet still refused promotion on stability — the
+live shadow window is the only remaining path to adoption.
