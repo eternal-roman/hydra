@@ -17,7 +17,7 @@ imports from or is imported by the HYDRA engine.
 ```bash
 cd heartbeat
 pip install -e .[dev]          # or: pip install requests websockets pyarrow PyYAML pytest
-python -m pytest tests/        # 70 tests: no-lookahead, determinism, fixtures, mocks
+python -m pytest tests/        # 71 tests: no-lookahead, determinism, fixtures, mocks
 ```
 
 ## CLI
@@ -112,7 +112,9 @@ Consumer rules:
 Given the same tape and config, output is bit-identical across runs
 (`heartbeat replay` prints a SHA-256 digest of the posterior series).
 No wall clock, no unseeded randomness anywhere in the math path;
-`synth` tapes derive entirely from `random.Random(seed)`.
+`synth` tapes derive entirely from `random.Random(seed)`. Digests are
+**per-platform**: `math.exp` in the sigmoid is libm-dependent, so
+Linux and Windows produce different (each internally stable) digests.
 
 ## Verification gates — status
 
@@ -124,14 +126,14 @@ No wall clock, no unseeded randomness anywhere in the math path;
 | 4 calibration | walk-forward AUC tables, printed non-overlapping train/test ranges (`evidence/gate4_walkforward.txt`) | re-run on real tape |
 | 5 live mode | API contract tests (`tests/test_api.py`) | 24 h soak on BTC |
 
-This environment has no egress to api.kraken.com (policy-denied proxy),
-so the network gates must be run once on a connected machine:
+Real-tape gates were run 2026-07-19 on 90d of SOL/BTC/ETH trades
+(verified against `hydra_history.sqlite`): the promote gate **passed on
+BTC and ETH** and failed on SOL — results, bake-off verdict, and
+recommendation in HONEST_FINDINGS. Still outstanding: the 24h live WS
+soak + socket-kill drill:
 
 ```bash
-heartbeat backfill --pair BTC/USD --tf 1h --days 90        # hours: Kraken serves ~1000 trades/req at ~1 req/s
-heartbeat eval     --pair BTC/USD --tf 1h
-heartbeat calibrate --pairs BTC/USD,ETH/USD,ZEC/USD --tf 1h --walk-forward
-heartbeat run      --pair BTC/USD --tf 1h                  # 24h soak; then `heartbeat status`
+heartbeat run --pair BTC/USD --tf 1h        # 24h soak; then `heartbeat status`
 ```
 
 Findings, caveats, and the promote/kill recommendation live in

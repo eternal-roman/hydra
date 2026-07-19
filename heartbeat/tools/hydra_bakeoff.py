@@ -223,9 +223,17 @@ def main() -> int:
     ap.add_argument("--pairs", default="SOL/USD,BTC/USD")
     ap.add_argument("--db", default=str(HYDRA_ROOT / "hydra_history.sqlite"))
     ap.add_argument("--train-frac", type=float, default=0.6)
+    ap.add_argument("--overlay", choices=["on", "off"], default="on",
+                    help="off = HYDRA_TREND_OVERLAY=0 laboratory config: the "
+                         "raw engine takes entries the production overlay "
+                         "vetoes, so the gate has something to gate. Results "
+                         "are labeled and never compare across modes.")
     ap.add_argument("--out", default=str(HEARTBEAT_ROOT / "evidence" /
                                          "hydra_bakeoff.json"))
     args = ap.parse_args()
+    if args.overlay == "off":
+        import os
+        os.environ["HYDRA_TREND_OVERLAY"] = "0"  # read at engine __init__
     pairs = [p.strip() for p in args.pairs.split(",")]
     hb_cfg = load_config(None)
 
@@ -268,7 +276,7 @@ def main() -> int:
     report: dict = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "pairs": pairs, "window": [lo, hi], "split_ts": split,
-        "train_frac": args.train_frac,
+        "train_frac": args.train_frac, "trend_overlay": args.overlay,
         "gate_calibration": calib,
         "thresholds": {str(k): v for k, v in thresholds.items()},
         "arms": {},

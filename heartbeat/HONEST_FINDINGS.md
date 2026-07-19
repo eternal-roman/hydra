@@ -1,18 +1,61 @@
-# HONEST_FINDINGS — heartbeat v0.1.0 (2026-07-17)
+# HONEST_FINDINGS — heartbeat v0.1.0 (2026-07-17; real-tape update 2026-07-19)
 
 ## The core question
 
 > Does the heartbeat separate fakes from reversals at bounce+3, and at
 > what AUC per asset?
 
-**On real Kraken tape: UNANSWERED.** This build environment has no
-network egress to api.kraken.com (the egress proxy policy-denies the
-CONNECT — verified, not assumed). Every result below is from
-deterministic **synthetic** tapes whose bounce events encode the
-hypothesis by construction. Synthetic results validate the *machinery*
-(can the pipeline separate the two archetypes when they exist in the
-flow?), not the *market hypothesis* (do they exist in Kraken's flow?).
-Do not promote to live confirmation duty on these numbers.
+**ANSWERED on real Kraken tape (2026-07-19).** 90 days of real trades
+per asset (SOL 1.84M, BTC 4.80M, ETH 2.06M), backfilled via REST at the
+project's 2s floor, cross-verified against `hydra_history.sqlite`
+(candle aggregation matched exactly; see `evidence/tape_verify_*.json`)
+and durably mirrored into that DB's `trades` table. Walk-forward
+calibration, train strictly before test, ≥60 events per asset
+(full reports: `evidence/real_tape/`):
+
+| asset | events | fold AUCs @ bounce+3 (calibrated) | verdict |
+|---|---|---|---|
+| BTC/USD | 69 (31 rev / 38 fake) | **0.90, 0.55, 0.84** | PASS (mean 0.76) |
+| ETH/USD | 77 (38 / 39) | **0.73, 0.77, 0.69** | PASS (mean 0.73) |
+| SOL/USD | 80 (31 / 49) | 0.62, 0.65, 0.40 | FAIL (mean 0.56) |
+
+**Promote gate (AUC ≥ 0.70 walk-forward on ≥2 of 3 assets): PASSED**
+— by BTC and ETH; SOL shows no exploitable flow signal. The pattern is
+liquidity-consistent: the hypothesis holds on deep majors, not on SOL.
+Uncalibrated (default-weight) AUC is ~0.55 everywhere — calibration is
+mandatory, as the synthetic study predicted. Real-tape weights rank
+`clv` and `ofi_momentum` on BTC/ETH broadly in line with the synthetic
+ranking, but SOL's fit is unstable; the synthetic negative-`ofi` tell
+did not replicate.
+
+## HYDRA integration bake-off (2026-07-19): structurally inconclusive
+
+Gating HYDRA BUY entries on the posterior was baked off on the same
+90-day window (baseline / P20-P65 train-percentile gates / inverse
+controls / OOS split — `tools/hydra_bakeoff.py`, evidence
+`evidence/hydra_bakeoff*.json`). Verdict: **no evidence either way,
+and none was obtainable** — the v2.28 production config (trend overlay
++ hold-through + friction hurdle) generated **zero** BUY entries across
+the entire window (a 90-day downtrend it correctly sat out in cash),
+and even with `HYDRA_TREND_OVERLAY=0` the raw engine attempted exactly
+one entry. A BUY-confirmation gate cannot add value where there are no
+BUYs to confirm. Do NOT interpret this as "gate is useless" or "gate is
+safe to wire in" — it is untested against actual entries. The
+data-indicated path is the one heartbeat was designed for: confirming
+counter-trend bottom-buy entries — an entry family HYDRA currently does
+not take at all in downtrends. That would be NEW strategy surface and
+needs its own evidence-gated bake-off before any live wiring.
+
+## Canonical-store defects found by the tape audit (fixed)
+
+Cross-verification exposed two `hydra_history.sqlite` defects inherited
+by every backtest: ~50% of 1h rows missing in the 90d window per pair
+(Kraken REST OHLC cannot paginate deep history), and frozen
+still-forming candles (volume ~10x low; SOL and BTC corrupt at the same
+hour). Fixed: `tools/heal_ohlc_from_trades.py` repaired the store from
+trade-level truth (post-heal: 2159/2159 hours exact on both pairs), and
+`tools/refresh_history.py` now skips the forming candle on both refresh
+paths (regression-tested).
 
 ## What was verified (with evidence)
 
@@ -96,21 +139,24 @@ Consistent across all three tapes (final fitted weights):
    consumer wanting an absolute threshold should use calibrated weights
    and compare against the event-conditional distribution, not 0.5.
 
-## Recommendation
+## Recommendation (updated 2026-07-19, real-tape)
 
-**Extend, do not promote and do not kill.** The machinery is sound
-(gates 1–5 pass offline; the pipeline provably recovers injected
-flow-persistence signal, held-out AUC 0.92 on clean archetypes). The
-hypothesis itself remains untested against reality. Next steps, in
-order:
+**Promote the classifier on BTC+ETH to the next gate (live soak);
+exclude SOL; do NOT wire into HYDRA entry gating yet.**
 
-1. Run `heartbeat backfill --days 90` for BTC/ETH/ZEC on a connected
-   machine (budget: hours per asset — Kraken rate limits).
-2. `heartbeat eval` + `heartbeat calibrate --walk-forward` on the real
-   tapes. Promote only if AUC ≥ 0.70 by bounce+3, walk-forward, ≥60
-   events, on ≥2 of the 3 assets.
-3. If Tier 0 clears on ≥2 assets: enable Tier 1
-   (`features.enabled_tiers: [0, 1]`) and re-gate.
-4. If real-tape AUC lands in the 0.55–0.65 band, the highest-leverage
-   additions per the synthetic feature ranking are flow-slope variants
-   (Tier 0 `ofi_momentum` refinements) before any Tier 2 exotica.
+1. ~~Backfill real tape~~ DONE (SOL/BTC/ETH, 90d, verified, mirrored
+   to sqlite).
+2. ~~Eval + calibrate walk-forward~~ DONE — gate PASSED on BTC+ETH
+   (see table above); SOL failed and stays out.
+3. Tier 0 cleared on 2 assets ⇒ per the original plan, enabling Tier 1
+   (`features.enabled_tiers: [0, 1]`) and re-gating on BTC/ETH is the
+   next classifier improvement step.
+4. Remaining network gate: 24h live WS soak on BTC (`heartbeat run`)
+   plus the socket-kill drill — the WS reconnect/dedup path is
+   mock-tested (`tests/test_ws.py`) but has not met the real socket.
+5. Integration with HYDRA: the bake-off proved current HYDRA takes no
+   entries heartbeat could confirm (see above). The evidence-backed
+   route is a dedicated bounce-entry strategy (trailing-stop bottom-buy
+   on BTC/ETH) using heartbeat as its confirmation layer, run through
+   `/bakeoff` as new strategy surface: paper first, pre-registered
+   criteria, its own gate JSON. No live wiring before that passes.
