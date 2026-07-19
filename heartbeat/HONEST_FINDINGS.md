@@ -189,3 +189,39 @@ exclude SOL; do NOT wire into HYDRA entry gating yet.**
    on BTC/ETH) using heartbeat as its confirmation layer, run through
    `/bakeoff` as new strategy surface: paper first, pre-registered
    criteria, its own gate JSON. No live wiring before that passes.
+
+## S3 exit-policy gate (2026-07-19, pre-registered)
+
+Registration committed before arms ran
+(`evidence/bakeoffs/s3_exit_policy_REGISTRATION.md`; bias disclosure
+inside — the exploratory pooled numbers had been seen, the deciding
+measurements had not). Runner `tools/bakeoff_s3_exit_policy.py`,
+evidence `evidence/bakeoffs/s3_exit_policy.json`. The incumbent arm
+reproduces the promoted S3 gated P&L exactly (BTC 23/+1.03, ETH
+30/+2.25 — same simulator, so arm deltas are pure exit effects).
+
+- **ADOPTED: X1 close-fill stop** (stop on close<L0, filled at that
+  close; target/horizon unchanged). Pooled BTC+ETH +2.36%/trade vs
+  incumbent +1.72 (C1 ✓ by 0.64pp ≥ 0.5), fold consistency 8/13 =
+  61.5% (C2 ✓), tails strictly better: worst −16.5% vs −36.6%, share
+  ≤−15% 2% vs 3.8% (C4 ✓). Consistent with the round-2 finding that
+  close-FILL is legitimate mechanics (touch-fills sell the wick low).
+- **KILLED: X2 flip and X3 hybrid — C2 fold consistency 5/13 =
+  38.5%.** Their +13.2%/trade pooled averages are fold-concentrated;
+  flip loses to the incumbent in 8/13 (asset,year) folds incl. a −57%
+  BTC-2021 fold sum. M-R3's compounding payoff is real (T_K controls
+  rise monotonically: +1.9 → +9.7%/trade from K=5→50) but so are the
+  time-control tails (worst −49%, share ≤−15% up to 22%): long holds
+  are regime beta with regime-beta drawdowns, and the ensemble-flip
+  signal does not time them reliably. Degenerate-construction note:
+  flip median hold = 1 bar — about half the gated entries occur with
+  the daily ensemble already < 0.6, so the "exit signal" fires
+  immediately; any future flip-style candidate must first fix its
+  entry/exit-state interaction (new anomaly required to revisit,
+  per the funnel rules).
+- S3's registered exit is now **entry b1 close / tgt 3.3·ATR /
+  close-fill stop at L0 / 200-bar horizon**. Expectancy under it:
+  BTC +1.17, ETH +3.34 %/trade net of 26 bps/side (ZEC +1.22 but
+  stays excluded — its classifier gate failed). Still provisional
+  pending the paper-shadow window, which logs all exit arms in
+  parallel.
