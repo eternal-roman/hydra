@@ -1696,6 +1696,24 @@ class HydraAgent:
                                 engine.restore_position(state["_pre_trade_snapshot"])
                                 print(f"  [ROLLBACK] {pair}: engine state rolled back after failed placement")
 
+                # Phase 2.6: S3 shadow strategy (HYDRA_S3_STRATEGY=1).
+                # Paper proposals + per-arm shadow position marking only —
+                # structurally no order path (see tests/test_s3_shadow.py
+                # grep guard). Also keeps absent breadth members fresh
+                # (one CLI daily fetch per member per UTC day).
+                s3 = getattr(self, "s3", None)
+                if s3 is not None:
+                    try:
+                        s3.refresh_absent_members(
+                            lambda a: KrakenCLI.ohlc(a, interval=1440),
+                            time.time())
+                        for pair in self.pairs:
+                            state = all_states.get(pair)
+                            mark = state.get("price", 0.0) if state else 0.0
+                            s3.shadow_step(pair, mark)
+                    except Exception as e:
+                        print(f"  [WARN] S3 shadow phase error (ignored): {e}")
+
                 # Phase 3: Execute coordinated swaps, then check regime transitions
                 if pending_swaps:
                     for swap in pending_swaps:

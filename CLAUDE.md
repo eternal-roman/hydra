@@ -159,6 +159,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | errors_log | `hydra_errors.log` | tick try/except writes here with full traceback; loop continues |
 | companion_memory | `.hydra-companions/memory/{user}_{companion}.jsonl` | per-companion distilled facts; local JSONL, authoritative, 4KB LRU budget; gitignored |
 | experiments_store | `.hydra-experiments/` | owner `experiments`; `presets.json` bootstraps from code on first init (delete to regenerate) |
+| s3_shadow | `.hydra-s3/` | owner `s3` (`s3bounce.ShadowLedger` via `hydra_s3`); `events.jsonl` append-only audit + `state.json` open shadow positions/proposal dedupe (atomic `.tmp → os.replace`; garbage state treated as empty, events remain the audit trail); survives `--resume` independently of the snapshot; gitignored |
 | flywheel_store | `.hydra-flywheel/` | owner `flywheel`; `state.json` paper ledger (atomic `.tmp → os.replace`), validation/carry/trend evidence JSONs, downloaded funding history; gitignored |
 
 ## Env flags (kill switches + opt-ins)
