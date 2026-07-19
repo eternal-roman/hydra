@@ -1,9 +1,14 @@
 # HYDRA Backtest & Experimentation Platform — Design Spec
 
-**Status:** SHIPPED (live since v2.10.0)
-**Target version:** v2.10.0
+**Status:** SHIPPED (live since v2.10.0) — **design archive + operator history**
+**Target version:** v2.10.0 (design-era); product pin is CLAUDE.md / `HYDRA_VERSION`
 **Author:** Claude Opus 4.6 (design) + eternal-roman (review)
 **Date:** 2026-04-16
+
+> **Live defaults (code is authoritative):** `BacktestConfig.pairs = ("BTC/USD",)`,
+> `candle_interval = 60`. Schema snippets below that still show SOL triangle /
+> 15m are **design-era**, not current product defaults. Runbook:
+> [`BACKTEST.md`](./BACKTEST.md). Agent index: `CLAUDE.md`.
 
 > **v2.26.0 note:** the **AI Reviewer** (Phase 7) and **Shadow Validator**
 > (Phase 11) were archived in v2.26.0 — fully built and CI-tested but never

@@ -148,14 +148,18 @@ class TestShadowPhase(unittest.TestCase):
                 importlib.reload(hydra_s3)
 
     def test_no_order_path_in_adapter(self):
-        """Structural guard: neither hydra_s3.py nor the s3bounce package
-        may reference any order-placing entry point."""
+        """Structural guard: research surfaces never place orders
+        (product thesis — S3 + heartbeat are signal/shadow/display only)."""
         forbidden = re.compile(
             r"_place_order|add_order|execute_signal|execute_s3_entry"
             r"|ExecutionStream|KrakenCLI\.(buy|sell|order)")
-        files = [ROOT / "hydra_s3.py"] + \
-            sorted((ROOT / "s3bounce" / "s3bounce").glob("*.py"))
+        files = (
+            [ROOT / "hydra_s3.py", ROOT / "hydra_heartbeat_surface.py"]
+            + sorted((ROOT / "s3bounce" / "s3bounce").glob("*.py"))
+        )
         for f in files:
+            if not f.is_file():
+                continue
             hits = forbidden.findall(f.read_text(encoding="utf-8"))
             self.assertEqual(hits, [], f"{f.name}: {hits}")
 

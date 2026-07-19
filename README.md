@@ -6,7 +6,7 @@
 
 **Regime-adaptive Kraken spot trading agent** — detects trending / ranging / volatile markets, switches among Momentum, Mean Reversion, Grid, and Defensive strategies, and places **limit post-only** orders only. Live React dashboard included.
 
-> **Not financial advice.** Experimental research software. **Strategy expectancy is not proven** on the shipped engine path; safety rails reduce some failure modes but do not guarantee profit. Crypto trading can lose money.
+> **Not financial advice.** Experimental research software. The **live engine path is capital-preservation rails** (hold-through, daily trend overlay, friction, 15% BUY-only CB) — **not a proven growth-alpha claim**. Research surfaces (S3 shadow book, heartbeat P(up)) are display/shadow only until bakeoffs clear; they never place orders. Crypto trading can lose money.
 
 ## Highlights
 
@@ -21,6 +21,8 @@
   don55 on daily closes gate entries, flatten on regime flip, vol-target conviction sizing —
   evidence-gated on real tape (`.hydra-flywheel/trend_overlay_gate.json`); 1h candles default
 - **Research stack**: backtests, walk-forward, paper flywheel (no live flywheel orders), tools under `tools/`
+- **S3 bounce surface** (read-only QI; shadow with `HYDRA_S3_STRATEGY=1`, default off — no orders)
+- **Heartbeat P(up)** (optional separate `heartbeat run`; dashboard sparkline; kill `HYDRA_HEARTBEAT_SURFACE=0` — no orders)
 - **Companions** (chat/proposals; live execution opt-in, default off)
 
 ## Safety (non-negotiable)
@@ -108,7 +110,7 @@ start_hydra.bat            # production: --mode competition --resume
 | Source | Purpose |
 |--------|---------|
 | `.env` / `.env.example` | API keys, kill switches (`HYDRA_*`) |
-| `--pairs` / `--quote` / `HYDRA_QUOTE` | Triangle + stable quote (default USD) |
+| `--pairs` / `--quote` / `HYDRA_QUOTE` | Pairs + stable quote (default USD; triangle only if SOL triple configured) |
 | `--demo` / `--paper` / `--resume` / `--mode` | Offline demo, paper, snapshot resume, Kelly mode |
 
 Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`](SKILL.md)
@@ -117,10 +119,12 @@ Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`]
 
 ```
 Candle/Ticker WS → indicators → regime → strategy signal
-        → hold-through rails (default on)
-        → (optional) AI brain + R1–R11
+        → hold-through + daily trend overlay (default on)
+        → friction (entries) → 15% CB (BUY only)
+        → (optional) AI brain + R1–R11 / QFE
         → Kelly size → limit post-only (kraken-cli / WSL)
         → ExecutionStream / journal / snapshot → dashboard WS :8765
+        ↳ parallel: S3 QI ± shadow | heartbeat P(up) surface  (never orders)
 ```
 
 **Backtests** replay `HydraEngine` (+ coordinator). Full AI brain is not on the Phase-1 backtest path.
@@ -173,11 +177,15 @@ Harness: `smoke` · `mock` (**35** scenarios in CI) · `validate` · `live` (exp
 | Doc | Contents |
 |-----|----------|
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |
-| [`CLAUDE.md`](CLAUDE.md) | Agent/dev invariants & module index |
-| [`SKILL.md`](SKILL.md) | Full trading specification |
+| [`CLAUDE.md`](CLAUDE.md) | Agent/dev invariants, env flags, module index |
+| [`SKILL.md`](SKILL.md) | Trading formulas + risk rules |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting |
 | [`docs/BACKTEST.md`](docs/BACKTEST.md) | Backtest runbook |
+| [`docs/BACKTEST_SPEC.md`](docs/BACKTEST_SPEC.md) | Backtest design archive (defaults: code wins) |
 | [`docs/COMPANION_SPEC.md`](docs/COMPANION_SPEC.md) | Companion system |
 | [`docs/HOLD_THROUGH.md`](docs/HOLD_THROUGH.md) | Hold-through rails (default on) |
+| [`heartbeat/README.md`](heartbeat/README.md) · [`HONEST_FINDINGS.md`](heartbeat/HONEST_FINDINGS.md) | Order-flow posterior + evidence ledger |
+| [`research/`](research/) | Formal papers + promoted study data |
 
 ## Troubleshooting
 

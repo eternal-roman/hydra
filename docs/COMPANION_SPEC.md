@@ -44,38 +44,21 @@ Everything else — market commentary, teaching, strategy ideation, honesty-keep
 
 ---
 
-## 3. File Manifest
+## 3. File Manifest (shipped tree — code is authoritative)
 
-### New
 ```
 hydra_companions/
-  __init__.py
-  souls/
-    athena.soul.json         ← drafted (Phase 0)
-    apex.soul.json           ← drafted (Phase 0)
-    broski.soul.json         ← drafted (Phase 0)
-  model_routing.json         ← drafted (Phase 0)
-  compiler.py                ← soul.json → system prompt (Phase 1)
-  companion.py               ← Companion class (Phase 1)
-  coordinator.py             ← session registry, WS dispatch (Phase 1)
-  router.py                  ← pick_model(companion, intent, ...) (Phase 1)
-  memory.py                  ← per-companion memory jsonl (Phase 5)
-  tools.py                   ← tool schemas (Phase 1+2)
-  executor.py                ← TradeProposal/LadderProposal + validator (Phase 2)
-  ws_handlers.py             ← mount_companion_routes(agent) (Phase 1)
-  config.py                  ← env flags, defaults
+  __init__.py, companion.py, compiler.py, config.py, coordinator.py
+  executor.py, intent_classifier.py, ladder_watcher.py, live_executor.py
+  memory.py, model_routing.json, nudge_scheduler.py, providers.py
+  router.py, tokens.py, tools_readonly.py, ws_handlers.py
+  souls/{athena,apex,broski}.soul.json
 
-docs/
-  COMPANION_SPEC.md          ← this file
-
-tests/
-  test_companion_compiler.py
-  test_companion_router.py
-  test_companion_tools.py
-  test_companion_proposals.py
-  test_companion_execution_guard.py
-  test_companion_memory.py
+tests/ (companion-related; not exhaustive)
+  test_companion_*.py, test_apex_tools.py, test_live_execution_default_off.py
 ```
+
+Hot index + kill switches: `CLAUDE.md` (module row `companions`, env flags).
 
 ### Touched additively (no edits to existing components)
 ```

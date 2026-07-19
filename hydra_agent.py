@@ -307,6 +307,17 @@ class HydraAgent:
         except Exception as e:
             print(f"  [WARN] S3 surface unavailable: {e}")
 
+        # ─── Heartbeat P(up) read-only surface (separate `heartbeat run`) ──
+        # Polls status files; NO order path. Kill: HYDRA_HEARTBEAT_SURFACE=0.
+        self.heartbeat_surface = None
+        try:
+            from hydra_heartbeat_surface import HeartbeatSurface
+            self.heartbeat_surface = HeartbeatSurface(list(pairs))
+            print(f"  [HEARTBEAT] status surface on for {list(pairs)} "
+                  f"(run `heartbeat run --pair …` for live P(up))")
+        except Exception as e:
+            print(f"  [WARN] Heartbeat surface unavailable: {e}")
+
         # Dashboard broadcaster
         self.broadcaster = DashboardBroadcaster(port=ws_port)
 
@@ -715,6 +726,18 @@ class HydraAgent:
             s3_block = s3.indicator_block(pair)
             if s3_block:
                 quant_indicators["s3"] = s3_block
+
+        # Heartbeat P(up) surface (read-only; nested → R10-safe). Present
+        # even on HOLD ticks so the dashboard can show live probabilities.
+        hb = getattr(self, "heartbeat_surface", None)
+        if hb is not None:
+            try:
+                hb_block = hb.indicator_block(pair)
+                if hb_block:
+                    quant_indicators["heartbeat"] = hb_block
+            except Exception as e:
+                import logging
+                logging.warning("heartbeat surface inert: %r", e)
 
         if quant_indicators:
             state["quant_indicators"] = quant_indicators
@@ -1524,6 +1547,19 @@ class HydraAgent:
                     self._current_portfolio_summary = self._build_portfolio_summary()
                 except Exception:
                     self._current_portfolio_summary = {}
+
+                # Phase 1.92: Quant surfaces on EVERY pair every tick (HOLD
+                # included) so dashboard shows heartbeat P(up) + S3 without
+                # requiring a brain fire. _apply_brain re-calls this later
+                # for non-HOLD pairs — idempotent. Nested blocks are R10-safe.
+                for pair in self.pairs:
+                    state = engine_states.get(pair)
+                    if state:
+                        try:
+                            self._build_quant_indicators(pair, state)
+                        except Exception as e:
+                            import logging
+                            logging.warning("quant indicators inert %s: %r", pair, e)
 
                 # v2.16.0: feed RM drawdown-velocity buffer with the
                 # already-computed total NAV. Skip when summary failed.
@@ -4265,7 +4301,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.30.1",
+            "version": "2.31.0",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

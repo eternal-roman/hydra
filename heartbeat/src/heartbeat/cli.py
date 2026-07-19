@@ -1,5 +1,6 @@
 """heartbeat CLI.
 
+    heartbeat run-dataset PATH --symbol AAPL --tf 1h [--weights PATH] [--json]
     heartbeat backfill  --pair BTC/USD --tf 1h --days 90
     heartbeat run       --pair BTC/USD --tf 1h
     heartbeat eval      --pair BTC/USD --tf 1h
@@ -7,6 +8,8 @@
     heartbeat replay    --tape data/BTC_2026-07.parquet
     heartbeat status
     heartbeat synth     --pair BTC/USD --tf 1h --days 90 --seed 7
+
+`run-dataset` exit codes: 0 ok/degraded, 2 missing dataset, 3 invalid dataset.
 
 `run` line format (machine-parseable, one line per heartbeat):
     ts pair tf candle_progress P_up L OFI CLV vol_z [TAINTED]
@@ -128,6 +131,18 @@ def cmd_run(args, cfg) -> int:
     rest = KrakenRest(cfg["feed"]["rest_url"], cfg["feed"]["rest_rate_per_s"],
                       cfg["feed"]["rest_burst"])
     monitor = TapeMonitor(cfg["feed"]["clock_skew_alert_s"])
+    # H3: uncalibrated weights ≈ coin flip. Prefer committed real-tape
+    # weights so Hydra's confirmer/surface sees a meaningful p_up.
+    from .weights_io import apply_weights_to_config, find_weights
+    found = find_weights(pair, tf, store_root=cfg["store"]["root"])
+    if found:
+        weights, wpath = found
+        apply_weights_to_config(cfg, weights)
+        print(f"loaded calibrated weights from {wpath}")
+    else:
+        print(f"WARNING: no calibrated weights for {pair} {tf} — "
+              f"p_up uses default_weight (≈ coin flip until calibrate)",
+              file=sys.stderr)
     engine = PosteriorEngine(cfg)
     scaler_state = store.load_scalers(pair, tf)
     if scaler_state:
@@ -201,8 +216,11 @@ def cmd_run(args, cfg) -> int:
 
 
 def _write_status(cfg, pair, tf, pipe, monitor) -> None:
-    write_status_file(cfg["api"]["status_file"],
-                      status_payload(pair, tf, pipe, monitor))
+    # Multi-pair path: generic status_file → heartbeat_status_BTC_USD.json
+    # so Hydra's S3 confirmer + dashboard surface can poll without clobber.
+    from .api import resolve_status_path
+    path = resolve_status_path(cfg["api"]["status_file"], pair)
+    write_status_file(path, status_payload(pair, tf, pipe, monitor))
 
 
 async def _serve_tcp(cfg, pair, tf, pipe, monitor):
@@ -313,11 +331,18 @@ def cmd_replay(args, cfg) -> int:
 
 
 def cmd_status(args, cfg) -> int:
-    path = Path(cfg["api"]["status_file"])
+    from .api import resolve_status_path
+    pair = getattr(args, "pair", None) or cfg.get("pair") or "BTC/USD"
+    path = resolve_status_path(cfg["api"]["status_file"], pair)
     if not path.exists():
-        print(f"no status file at {path} — is `heartbeat run` active?",
-              file=sys.stderr)
-        return 2
+        # Fall back to legacy single-file path for older runs
+        legacy = Path(cfg["api"]["status_file"])
+        if legacy.exists():
+            path = legacy
+        else:
+            print(f"no status file at {path} — is `heartbeat run` active?",
+                  file=sys.stderr)
+            return 2
     print(path.read_text())
     return 0
 
@@ -338,6 +363,52 @@ def cmd_synth(args, cfg) -> int:
     return 0
 
 
+def cmd_run_dataset(args, cfg) -> int:
+    """Batch indicator over a local trade dataset (CSV/JSONL/JSON).
+
+    Exit codes: 0 ok/degraded, 2 MissingDatasetError, 3 InvalidDatasetError.
+    No order path — prints IndicatorResult only.
+    """
+    from .errors import InvalidDatasetError, MissingDatasetError
+    from .indicator import run_dataset
+
+    symbol = args.symbol or cfg.get("pair") or "UNKNOWN"
+    tf = args.tf or cfg.get("timeframe") or "1h"
+    try:
+        result = run_dataset(
+            args.path,
+            symbol=symbol,
+            tf=tf,
+            config=cfg,
+            weights=args.weights,
+        )
+    except MissingDatasetError as e:
+        print(f"error [{e.code}]: {e}", file=sys.stderr)
+        if e.hint:
+            print(f"hint: {e.hint}", file=sys.stderr)
+        return 2
+    except InvalidDatasetError as e:
+        print(f"error [{e.code}]: {e}", file=sys.stderr)
+        if e.hint:
+            print(f"hint: {e.hint}", file=sys.stderr)
+        return 3
+
+    if args.json:
+        print(json.dumps(result.to_dict(), sort_keys=True))
+    else:
+        p_up = "na" if result.p_up is None else f"{result.p_up:.5f}"
+        L = "na" if result.L is None else f"{result.L:+.5f}"
+        print(
+            f"symbol={result.symbol} tf={result.tf} status={result.status} "
+            f"n_trades={result.n_trades} n_candles={result.n_candles} "
+            f"n_heartbeats={result.n_heartbeats} p_up={p_up} L={L} "
+            f"tainted={result.tainted}"
+        )
+        for w in result.warnings:
+            print(f"warning: {w}", file=sys.stderr)
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 
 def build_parser() -> argparse.ArgumentParser:
@@ -351,6 +422,33 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             p.add_argument("--pair", default=None)
         p.add_argument("--tf", default=None)
+
+    p = sub.add_parser(
+        "run-dataset",
+        help="run P(up) indicator on a local trade dataset (CSV/JSONL/JSON)",
+    )
+    p.add_argument("path", help="path to trades file (.csv / .jsonl / .json)")
+    p.add_argument(
+        "--symbol",
+        default=None,
+        help="free-form symbol label (crypto or equity ticker); "
+             "default: config pair or UNKNOWN",
+    )
+    p.add_argument(
+        "--tf",
+        default=None,
+        help="candle timeframe (default: config timeframe, usually 1h)",
+    )
+    p.add_argument(
+        "--weights",
+        default=None,
+        help="optional path to calibrated weights JSON",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="emit full IndicatorResult as JSON on stdout",
+    )
 
     p = sub.add_parser("backfill"); common(p)
     p.add_argument("--days", type=int, default=90)
@@ -382,9 +480,16 @@ def main(argv=None) -> int:
         args.pair = cfg["pair"]
     if getattr(args, "tf", None) is None and hasattr(args, "tf"):
         args.tf = cfg["timeframe"]
-    handlers = {"backfill": cmd_backfill, "run": cmd_run, "eval": cmd_eval,
-                "calibrate": cmd_calibrate, "replay": cmd_replay,
-                "status": cmd_status, "synth": cmd_synth}
+    handlers = {
+        "run-dataset": cmd_run_dataset,
+        "backfill": cmd_backfill,
+        "run": cmd_run,
+        "eval": cmd_eval,
+        "calibrate": cmd_calibrate,
+        "replay": cmd_replay,
+        "status": cmd_status,
+        "synth": cmd_synth,
+    }
     return handlers[args.cmd](args, cfg)
 
 

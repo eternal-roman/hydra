@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-07-19T22:26:33Z",
+  "registration": "engine_buy_cooccurrence_REGISTRATION.md",
+  "days": 365,
+  "pairs": {
+    "BTC/USD": {
+      "status": "complete",
+      "buy_fills": 0,
+      "buy_signals": 2,
+      "total_trades": 0,
+      "n_ticks": 3000,
+      "n_buy_days": 0,
+      "n_s3_gated_days": 2,
+      "n_cooccurrence_days": 0,
+      "cooccurrence_days": [],
+      "window": {
+        "start_ts": 1752963993,
+        "end_ts": 1784480400
+      }
+    },
+    "ETH/USD": {
+      "status": "complete",
+      "buy_fills": 0,
+      "buy_signals": 1,
+      "total_trades": 0,
+      "n_ticks": 3000,
+      "n_buy_days": 0,
+      "n_s3_gated_days": 0,
+      "n_cooccurrence_days": 0,
+      "cooccurrence_days": [],
+      "window": {
+        "start_ts": 1752963993,
+        "end_ts": 1784480400
+      }
+    }
+  },
+  "pooled": {
+    "buy_fills": 0,
+    "s3_gated_days": 2,
+    "cooccurrence_days": 0,
+    "verdict": "FORBID_ENGINE_HB_CLAIMS",
+    "n_buy_threshold": 20,
+    "thesis": "n_BUY < 20 \u2192 cannot claim heartbeat/S3 improves engine entries"
+  }
+}

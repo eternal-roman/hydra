@@ -6,6 +6,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.31.0] — 2026-07-19
+
+Publishable **heartbeat-flow** package (dataset → P(up) indicator), live
+agent research surfaces (HB + S3 display/shadow only), product thesis
+docs densify, and audit fixes. **No live order path** from heartbeat or S3.
+
+### Added
+- `heartbeat` package as installable **`heartbeat-flow`**: `run_dataset`,
+  `load_trades`, structured `MissingDatasetError` / `InvalidDatasetError`,
+  CLI `heartbeat run-dataset`, agent tools (`call_tool` / `TOOL_SCHEMAS`),
+  `AGENT.md`, packaged `default.yaml`, AAPL fixture CSV.
+- Live agent `hydra_heartbeat_surface` → `quant_indicators["heartbeat"]`
+  every tick (incl. HOLD); dashboard RESEARCH band (P(up) sparkline + S3
+  stage); kill `HYDRA_HEARTBEAT_SURFACE=0`.
+- Brain advisory text for HB/S3 (explicit never force_hold / no order
+  path); QUANT_PROMPT research-surface bullet.
+- ABI funnel + bakeoff registrations/results (engine co-occurrence FORBID
+  engine claims; confirmer INCONCLUSIVE n=1; cascade NO_BLACKOUT).
+- Multi-pair status file contract (`heartbeat_status_<PAIR>.json`);
+  auto-load calibrated weights on `heartbeat run`.
+
+### Changed
+- Docs densify: CB BUY-only wording, default pairs, BACKTEST runbook,
+  companion manifest, HOLD_THROUGH, README thesis framing.
+- S3 confirmer shares `read_status` with surface; dashboard S3 uses
+  neutral (not buy-green) gated·shadow labeling.
+- Empty / non-overlapping weight maps no longer report status=ok
+  (uncalibrated degraded).
+
+### Fixed (audit)
+- Silent coin-flip when `weights={}` or keys miss enabled features.
+- Pipeline ValueError (unordered trades / bad tf) → InvalidDatasetError.
+- Absolute never-force_hold language for research surfaces in brain.
+
 ## [2.30.1] — 2026-07-19
 
 Trail-exit research arc closed under a pre-registered gate: **no basis

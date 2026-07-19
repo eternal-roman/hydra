@@ -25,8 +25,12 @@ description: >
 ## Overview
 
 HYDRA selects a strategy from a four-regime matrix. That is a **design**, not a
-profit claim. Default **hold-through** rails (`HYDRA_HOLD_THROUGH=0` to disable)
-filter entries/exits; sqlite replays still show absolute losses on some windows.
+profit claim. Default **hold-through** + **daily trend overlay**
+(`HYDRA_HOLD_THROUGH=0` / `HYDRA_TREND_OVERLAY=0` to disable) are capital-
+preservation rails; sqlite replays still show absolute losses on some windows.
+**Research surfaces** (S3 bounce QI / optional shadow; heartbeat P(up) display)
+never place orders — see `CLAUDE.md` product thesis and
+`heartbeat/HONEST_FINDINGS.md`.
 
 Matrix:
 
@@ -59,11 +63,11 @@ kraken setup
 # Get current ticker
 kraken ticker BTC/USD -o json
 
-# Get OHLC candles (1-minute interval, for regime detection)
-kraken ohlc BTC/USD --interval 1 -o json
+# Product default: 60m OHLC (v2.28+; rails + friction calibrated on 1h)
+kraken ohlc BTC/USD --interval 60 -o json
 
-# Get OHLC candles (5-minute interval, for confirmation)
-kraken ohlc BTC/USD --interval 5 -o json
+# Research-only shorter bars (off-calibration for hold-through / friction)
+# kraken ohlc BTC/USD --interval 15 -o json
 
 # Stream live ticks via WebSocket
 kraken ws ticker BTC/USD -o json
@@ -133,12 +137,12 @@ kraken order cancel-after 60
 
 # Limit post-only orders (maker, sit on book, never cross spread):
 # BUY at bid price:
-kraken order buy SOL/USD 0.02 --type limit --price 78.50 --oflags post --yes
+kraken order buy BTC/USD 0.0001 --type limit --price 65000.0 --oflags post --yes
 # SELL at ask price:
-kraken order sell SOL/USD 0.02 --type limit --price 78.80 --oflags post --yes
+kraken order sell BTC/USD 0.0001 --type limit --price 65100.0 --oflags post --yes
 
 # Validate without executing:
-kraken order buy SOL/USD 0.02 --type limit --price 78.50 --oflags post --validate
+kraken order buy BTC/USD 0.0001 --type limit --price 65000.0 --oflags post --validate
 
 # Cancel all open orders:
 kraken order cancel-all --yes
@@ -164,26 +168,27 @@ kraken closed-orders -o json
 
 ```
 INITIALIZE paper session
-SET assets = ["BTC/USD", "ETH/USD", "ZEC/USD"]
-SET interval = 300 seconds  # 5 minutes
+SET assets = ["BTC/USD", "ETH/USD", "ZEC/USD"]   # v2.29 defaults
+SET candle_interval = 60 minutes                 # product default (v2.28+)
+SET tick_interval = 60 seconds                   # agent loop cadence
 SET max_position_pct = 0.30   # 0.40 in competition mode
 SET min_confidence = 0.65     # quality filter — only ≥15% Kelly edge
 
-LOOP every {interval}:
+LOOP every {tick_interval}:
   FOR each asset in assets:
-    1. FETCH ohlc data: kraken ohlc {asset} --interval 1 -o json
+    1. FETCH ohlc / WS candle at candle_interval (60m default)
     2. PARSE candles into arrays: opens, highs, lows, closes
-    3. COMPUTE indicators: EMA20, EMA50, RSI14, ATR14, BB(20,2), MACD(12,26,9)
+    3. COMPUTE indicators: EMA20, EMA50, RSI14 (Wilder), ATR14 (Wilder), BB(20,2), MACD(12,26,9)
     4. DETECT regime using indicator values
-    5. SELECT strategy from regime
-    6. GENERATE signal (action, confidence, reason)
+    5. SELECT strategy from regime; apply hold-through + daily trend overlay
+    6. GENERATE signal (action, confidence, reason); friction gate on BUY
     7. IF signal.action != HOLD AND signal.confidence >= min_confidence:
-         a. COMPUTE position size via quarter-Kelly
-         b. CHECK balance: kraken paper balance -o json
+         a. COMPUTE position size via excess-over-threshold Kelly
+         b. CHECK balance (per-quote pool in live)
          c. VALIDATE trade size against limits
-         d. EXECUTE: kraken paper {buy|sell} {asset} --volume {size}
+         d. EXECUTE: limit post-only (paper or live)
          e. LOG trade with timestamp, price, reason, confidence, strategy
-    8. LOG current state: regime, strategy, signal, position, equity
+    8. LOG current state: regime, strategy, signal, position, equity (+ heartbeat P(up) if status file present)
 
   COMPUTE portfolio metrics:
     - Total equity = cash + sum(position_value)
@@ -238,12 +243,13 @@ END LOOP
 
 ```
 > Install kraken-cli, then run HYDRA in paper mode on BTC/USD for 10 minutes.
-> Use 1-minute OHLC candles. Start with $10,000 paper balance.
+> Use 60-minute OHLC candles (product default). Start with $10,000 paper balance.
 > Print a status update every 60 seconds showing:
 >   - Current regime and strategy
 >   - Signal (action, confidence, reason)
 >   - Position and unrealized P&L
 >   - Total equity and drawdown
+>   - Heartbeat P(up) if status surface is live
 > At the end, print a full performance report with all metrics.
 ```
 

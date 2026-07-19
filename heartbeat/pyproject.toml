@@ -3,25 +3,56 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "heartbeat"
+name = "heartbeat-flow"
 version = "0.1.0"
-description = "Recursive Bayesian order-flow posterior P(up)/P(down) from live Kraken tape — a confirmation classifier for bounce fake-vs-reversal discrimination."
-requires-python = ">=3.11"
+description = "Asset-agnostic order-flow posterior P(up) from trade tape — confirmation classifier, no order path."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "HYDRA / eternal-roman" }]
+keywords = ["order-flow", "posterior", "crypto", "equities", "indicator"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+# Core keeps requests/websockets/pyarrow for Hydra monorepo + full CLI
+# (backfill/run/store). Documented extras mirror the modular intent for
+# slimmer installs later; installing extras is a no-op when core already
+# pulls the same pins.
 dependencies = [
+    "PyYAML>=6",
     "requests>=2.31",
     "websockets>=12",
     "pyarrow>=14",
-    "PyYAML>=6",
 ]
 
 [project.optional-dependencies]
+# Live Kraken feed (also in core for monorepo compat today)
+kraken = ["requests>=2.31", "websockets>=12"]
+# Parquet tape store (also in core for monorepo compat today)
+parquet = ["pyarrow>=14"]
 dev = ["pytest>=8"]
+all = ["requests>=2.31", "websockets>=12", "pyarrow>=14"]
+
+[project.urls]
+Homepage = "https://github.com/eternal-roman/Hydra/tree/main/heartbeat"
+Documentation = "https://github.com/eternal-roman/Hydra/blob/main/heartbeat/README.md"
+Repository = "https://github.com/eternal-roman/Hydra"
 
 [project.scripts]
 heartbeat = "heartbeat.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+heartbeat = ["resources/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

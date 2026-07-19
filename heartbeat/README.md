@@ -1,38 +1,152 @@
-# heartbeat — order-flow posterior for Kraken
+# heartbeat — order-flow posterior P(up)
 
-A recursive Bayesian posterior **P(up) / P(down)** computed per forming
-candle from live Kraken order flow, with a rolling ~30-candle evidence
-memory. It is **not** a standalone signal generator: it is a
-**confirmation classifier** for an existing trailing-stop bottom-buy
-system. When a counter-trend bounce is forming, heartbeat's job is to
-discriminate real reversals (persistent aggressive taker buying) from
-fakes (passive-fill bounces with evaporating pressure).
+A recursive Bayesian posterior **P(up) / P(down)** from trade tape (aggressor
+side + price/qty). Asset-agnostic: crypto **or** equity when trades carry
+side / aggressor. It is a **confirmation classifier**, not a standalone
+signal generator and **never** an order path — agents consume indicator JSON
+only.
 
-Primary asset BTC/USD; generalizes to ETH/USD, ZEC/USD, SOL/USD via
-config. Python 3.11+, no GPU. Self-contained package — nothing in here
-imports from or is imported by the HYDRA engine.
+Distribution name: **`heartbeat-flow`** · import name: **`heartbeat`**.
 
-## Install & test
+---
+
+## FINAL PATH
+
+| What | Where |
+|---|---|
+| **Canonical package root** | `Hydra/heartbeat/` (this directory) |
+| **Import package** | `src/heartbeat/` → `import heartbeat` |
+| **PyPI / dist name** | `heartbeat-flow` (avoids name collision) |
+| **Demo fixture** | `tests/fixtures/sample_trades.csv` (synthetic AAPL tape) |
+| **Shipped config** | `src/heartbeat/resources/default.yaml` (= `config/default.yaml`) |
+
+Solo end users only need this tree (or a wheel of it). The rest of Hydra is
+optional host wiring (dashboard surface / S3 shadow), not a runtime dependency
+of the indicator.
+
+---
+
+## SOLO INSTALL
+
+```bash
+# From the monorepo root (Hydra/)
+pip install -e ./heartbeat
+
+# Or from inside this package directory
+cd /path/to/Hydra/heartbeat   # or your checkout of this folder alone
+pip install -e .
+
+# With test tooling
+pip install -e ".[dev]"
+```
+
+**Verify install:**
+
+```bash
+python -c "from heartbeat import run_dataset, call_tool, dataset_requirements; print('ok')"
+heartbeat run-dataset --help
+heartbeat run-dataset tests/fixtures/sample_trades.csv --symbol AAPL --tf 1h --json
+```
+
+Later (when published): `pip install heartbeat-flow`.
+
+Without an editable install, use `PYTHONPATH=src`:
 
 ```bash
 cd heartbeat
-pip install -e .[dev]          # or: pip install requests websockets pyarrow PyYAML pytest
-python -m pytest tests/        # 71 tests: no-lookahead, determinism, fixtures, mocks
+PYTHONPATH=src python -c "from heartbeat import run_dataset"
+PYTHONPATH=src python -m heartbeat.cli run-dataset tests/fixtures/sample_trades.csv --symbol AAPL --tf 1h --json
 ```
 
-## CLI
+### Requirements
+
+| Component | Python | Required deps | Optional extras |
+|---|---|---|---|
+| Core indicator (`run_dataset`, dataset IO) | ≥3.10 | **PyYAML** | — |
+| Parquet tape store | ≥3.10 | pyarrow (core today) | `[parquet]` |
+| Live Kraken feed (`backfill` / `run`) | ≥3.10 | requests, websockets (core today) | `[kraken]` |
+| Tests | ≥3.10 | pytest | `[dev]` |
+
+Core currently pins PyYAML + requests + websockets + pyarrow so the full CLI
+and Hydra monorepo workflows work out of the box. Extras document the
+modular split for thinner installs later.
+
+## Quickstart — local dataset (no Kraken)
+
+Minimal CSV (`sample.csv`):
+
+```csv
+ts,price,qty,side
+1700000000,100.0,1.0,buy
+1700000090,100.1,0.5,sell
+1700000180,100.2,1.2,buy
+```
+
+Required columns (aliases allowed):
+
+| Field | Aliases | Notes |
+|---|---|---|
+| timestamp | `ts`, `timestamp`, `time` | Unix seconds (float ok) |
+| price | `price` | |
+| quantity | `qty`, `quantity`, `size`, `volume` | |
+| side | `side`, `aggressor` | `buy`/`sell`/`b`/`s`/`1`/`-1` |
+| trade_id | `trade_id`, `id` | optional |
+| ord_type | `ord_type`, `order_type` | optional |
+
+**OHLCV-only without aggressor side is not supported.** There is no synthetic
+mid-side / invent-side-from-OHLC policy (YAGNI). Provide real aggressor
+`side` / `aggressor` on every trade row, or the loader raises
+`InvalidDatasetError` (`code=invalid_dataset`) with an OHLCV hint.
+
+Symbol is a free-form string (stock tickers like `AAPL` are fine).
+
+### CLI
 
 ```bash
+# demo fixture (≥20 synthetic AAPL trades)
+heartbeat run-dataset tests/fixtures/sample_trades.csv --symbol AAPL --tf 1h --json
+
+heartbeat run-dataset sample.csv --symbol AAPL --tf 1h
+heartbeat run-dataset sample.csv --symbol AAPL --tf 1h --json
+heartbeat run-dataset sample.csv --symbol BTC/USD --tf 1h --weights weights_BTC_USD_1h.json
+```
+
+Exit codes:
+
+| code | meaning |
+|---|---|
+| 0 | ok or degraded (e.g. uncalibrated weights — see warnings) |
+| 2 | missing dataset (`MissingDatasetError`) |
+| 3 | invalid dataset (`InvalidDatasetError`) |
+
+### Python API
+
+```python
+from heartbeat import run_dataset, MissingDatasetError
+
+result = run_dataset("sample.csv", symbol="AAPL", tf="1h")
+print(result.p_up, result.status, result.warnings)
+
+# agents / structured consumers
+print(result.to_dict())
+```
+
+Uncalibrated weights set `status="degraded"` and append
+`uncalibrated_weights: p_up uses default_weight (near coin-flip)` — never a
+silent coin-flip.
+
+## CLI (full)
+
+```bash
+heartbeat run-dataset PATH --symbol AAPL --tf 1h [--weights PATH] [--json]
 heartbeat backfill --pair BTC/USD --tf 1h --days 90     # historical tape via REST Trades
 heartbeat run --pair BTC/USD --tf 1h                    # live WS stream + P(up) per heartbeat
 heartbeat eval --pair BTC/USD --tf 1h                   # labeler + metrics -> report
 heartbeat calibrate --pairs BTC/USD,ETH/USD --tf 1h --walk-forward
-heartbeat replay --tape data/BTC_USD/1h/tape/part-....parquet   # deterministic replay
+heartbeat replay --tape data/BTC_USD/1h/tape/part-....parquet
 heartbeat status                                        # feed health + current P(up)
-heartbeat synth --pair BTC/USD --tf 1h --days 150 --seed 7      # offline validation tape
+heartbeat synth --pair BTC/USD --tf 1h --days 150 --seed 7
 ```
-
-(Without an editable install, use `PYTHONPATH=src python -m heartbeat.cli ...`.)
 
 `run` prints one machine-parseable line per heartbeat:
 
@@ -75,9 +189,14 @@ Tier 1/2 stay dark until their gates pass (`features.enabled_tiers`).
 `heartbeat run` exposes the posterior two ways; both carry the same JSON
 payload (field list in `src/heartbeat/api.py`):
 
-1. **Status file** — `api.status_file` (default `data/heartbeat_status.json`),
-   atomically rewritten after every heartbeat (`tmp` + `os.replace`;
-   readers never see torn writes). Poll it.
+1. **Status file** — `api.status_file` (default `data/heartbeat_status.json`)
+   is resolved **per pair** to `data/heartbeat_status_BTC_USD.json` (etc.)
+   via `resolve_status_path` so multi-pair `heartbeat run` processes do not
+   clobber each other. Atomically rewritten after every heartbeat
+   (`tmp` + `os.replace`). Hydra polls the same paths:
+   - dashboard surface: `hydra_heartbeat_surface` → `quant_indicators["heartbeat"]`
+   - S3 shadow confirmer: `HYDRA_S3_HEARTBEAT_STATUS_DIR` (default
+     `heartbeat/data`) + `heartbeat_status_<PAIR>.json`
 2. **TCP query** — connect to `api.tcp_host:api.tcp_port` (default
    `127.0.0.1:8790`), send any line, receive one JSON line. The
    connection stays open for repeated queries.
@@ -85,16 +204,22 @@ payload (field list in `src/heartbeat/api.py`):
 ```json
 {"pair": "BTC/USD", "tf": "1h", "p_up": 0.6421, "L": 0.5843,
  "ts": 1752741032.417, "candle_progress": 0.47, "tainted": false,
- "gap_count": 0, "max_clock_skew_s": 0.213, "alerts": 0}
+ "gap_count": 0, "max_clock_skew_s": 0.213, "alerts": 0,
+ "features": {"clv": {"z": 0.4, "raw": 0.7}, "ofi": {"z": 0.1, "raw": 0.05}}}
 ```
 
 Consumer rules:
 
 * Treat `tainted: true` as **no opinion** — never as 0.5.
-* Treat a stale `ts` (older than a few heartbeat intervals) as feed loss.
-* `p_up` is calibrated per pair/timeframe only after `heartbeat
-  calibrate` has written weights and they are loaded via config; before
-  that it reflects naive default weights.
+* Treat a stale `ts` (older than a few heartbeat intervals; Hydra uses 300s)
+  as feed loss.
+* `p_up` is calibrated per pair/timeframe only after weights load.
+  `heartbeat run` **auto-loads** the first hit of
+  `weights_{PAIR}_{tf}.json` from `data/reports/`,
+  `evidence/real_tape/`, then store root (`weights_io.find_weights`).
+  Without a file it warns and uses `default_weight` (≈ coin flip).
+* **No order path** from this contract — Hydra display + S3 shadow only
+  until a pre-registered `/bakeoff` promotes a gate.
 
 ## Data integrity (fail-loud rules)
 
@@ -106,6 +231,9 @@ Consumer rules:
 * Sequence violations (backwards exchange timestamps) taint the
   inversion window.
 * Tainted events are excluded from eval/calibration.
+* Missing / invalid datasets raise structured errors
+  (`MissingDatasetError` / `InvalidDatasetError`) with `.code` and `.hint`
+  — never silent fabrications.
 
 ## Determinism
 
@@ -115,6 +243,14 @@ No wall clock, no unseeded randomness anywhere in the math path;
 `synth` tapes derive entirely from `random.Random(seed)`. Digests are
 **per-platform**: `math.exp` in the sigmoid is libm-dependent, so
 Linux and Windows produce different (each internally stable) digests.
+
+## Tests
+
+```bash
+cd heartbeat
+pip install -e ".[dev]"
+python -m pytest tests/
+```
 
 ## Verification gates — status
 
