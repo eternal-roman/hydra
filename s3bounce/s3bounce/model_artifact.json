@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "algorithm": "S3 daily bounce-leg continuation classifier",
+  "trained_through": "2026-01-01",
+  "source": {
+    "promotion": "heartbeat/evidence/bakeoffs/s3_daily_classifier.json (final_fold_model, 2026 fold)",
+    "exit_gate": "heartbeat/evidence/bakeoffs/s3_exit_policy.json (X1 adopted 2026-07-19)",
+    "hold_study": "heartbeat/evidence/s3_hold_horizon.json (per-coin K with CIs, 2026-07-19)"
+  },
+  "features": ["clv", "range_atr", "vol_z", "shock_recency", "breadth", "retest"],
+  "breadth_universe": ["BTC/USD", "ETH/USD", "ZEC/USD"],
+  "fee_per_side_assumed": 0.0026,
+  "basis": {
+    "note": "Per-coin evidence basis; provisional pending the paper-shadow window. Per-entry continuation hit rates at K>=20 are statistically coin-flip on ALL assets (Wilson 95% CIs include 0.5) - long-hold is NOT a tradable basis.",
+    "BTC/USD": "X1 exit, +1.17%/trade net of 26bps/side, win 0.696 (n=23)",
+    "ETH/USD": "X1 exit, +3.34%/trade net of 26bps/side, win 0.643 (n=28)",
+    "ETH/USD_hold_k60": "shadow-tracked arm ONLY (boot LB +4.6%/trade, hit 44%, median -4.9%)",
+    "ZEC/USD": "EXCLUDED - classifier gate FAIL; bars feed breadth only"
+  },
+  "models": {
+    "BTC/USD": {
+      "intercept": -0.0814,
+      "weights_std_space": {
+        "clv": 0.2833, "range_atr": 0.7191, "vol_z": 0.0588,
+        "shock_recency": 0.1708, "breadth": 0.1616, "retest": -0.0898
+      },
+      "feature_means": {
+        "clv": 0.2993, "range_atr": 1.2266, "vol_z": 0.1996,
+        "shock_recency": 6.3077, "breadth": 1.1183, "retest": 0.6568
+      },
+      "feature_stds": {
+        "clv": 0.523, "range_atr": 0.7367, "vol_z": 1.3885,
+        "shock_recency": 3.9178, "breadth": 1.1348, "retest": 0.4748
+      },
+      "threshold": 0.5677,
+      "exit_policy": "x1_close_stop",
+      "shadow_arms": ["x0_registered", "x1_close_stop"]
+    },
+    "ETH/USD": {
+      "intercept": -0.2004,
+      "weights_std_space": {
+        "clv": 0.223, "range_atr": 0.8134, "vol_z": -0.4619,
+        "shock_recency": 0.0467, "breadth": 0.4328, "retest": 0.3008
+      },
+      "feature_means": {
+        "clv": 0.3061, "range_atr": 1.0875, "vol_z": -0.1286,
+        "shock_recency": 6.5581, "breadth": 1.0814, "retest": 0.6453
+      },
+      "feature_stds": {
+        "clv": 0.5331, "range_atr": 0.4874, "vol_z": 0.9117,
+        "shock_recency": 3.8477, "breadth": 1.2029, "retest": 0.4784
+      },
+      "threshold": 0.5575,
+      "exit_policy": "x1_close_stop",
+      "shadow_arms": ["x0_registered", "x1_close_stop", "hold_k60_stop"]
+    }
+  }
+}
