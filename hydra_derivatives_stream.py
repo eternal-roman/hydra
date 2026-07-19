@@ -76,6 +76,16 @@ SPOT_TO_DERIVATIVES: Dict[str, Dict[str, object]] = {
     # USDT-quoted spot (PR-E / E7 — first-class stable quote in STABLE_QUOTES)
     "BTC/USDT": {"perp": "PF_XBTUSD", "quarterly_prefix": "FF_XBTUSD"},
     "SOL/USDT": {"perp": "PF_SOLUSD", "quarterly_prefix": "FF_SOLUSD"},
+    # ETH — full coverage: PF perp + FF quarterlies exist on Kraken Futures
+    "ETH/USD":  {"perp": "PF_ETHUSD", "quarterly_prefix": "FF_ETHUSD"},
+    "ETH/USDC": {"perp": "PF_ETHUSD", "quarterly_prefix": "FF_ETHUSD"},
+    "ETH/USDT": {"perp": "PF_ETHUSD", "quarterly_prefix": "FF_ETHUSD"},
+    # ZEC — perp-only: PF_ZECUSD exists but Kraken lists NO quarterlies, so
+    # basis_apr_pct is unavailable by construction (not stale). The derived
+    # basis_available=False flag tells R10 to track 4 fields instead of 5;
+    # without it ZEC would sit permanently at 1 stale field and any transient
+    # miss would trip the R10 blackout.
+    "ZEC/USD":  {"perp": "PF_ZECUSD", "quarterly_prefix": None},
     # Bridge — no direct perp, synthetic from SOL/USD ÷ BTC/USD
     "SOL/BTC":  {"perp": None, "quarterly_prefix": None, "synthetic": True},
 }
@@ -144,6 +154,12 @@ class DerivativesSnapshot:
     last_updated_ts: float = 0.0
     staleness_s: float = 0.0
     synthetic: bool = False
+    # v2.29.0: structural flag — False when the pair's Kraken Futures listing
+    # has no quarterly contracts (perp-only, e.g. PF_ZECUSD), so basis_apr_pct
+    # can never populate. Derived from the SPOT_TO_DERIVATIVES map at
+    # construction (quarterly_prefix is None), never from data presence.
+    # R10 (_count_stale_fields) drops basis from the tracked set when False.
+    basis_available: bool = True
     # v2.14.1: consecutive-error streak (resets to 0 on successful populate).
     # Distinguishes "a transient blip at offset 17" from "this pair has been
     # dark for 4 polling cycles." R10 staleness already catches the latter,
@@ -203,6 +219,8 @@ class DerivativesStream:
                 pair=pair,
                 perp_symbol=info.get("perp"),  # type: ignore[arg-type]
                 synthetic=bool(info.get("synthetic", False)),
+                basis_available=info.get("quarterly_prefix") is not None
+                or bool(info.get("synthetic", False)),
             )
 
     # ─── Lifecycle ───────────────────────────────────────────────

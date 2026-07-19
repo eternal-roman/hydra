@@ -116,14 +116,27 @@ def test_classify_oi_price_regime(stream, oi_delta, px_delta, expected):
 
 
 def test_stream_instantiates_only_configured_pairs():
-    s = DerivativesStream(pairs=["BTC/USDC", "SOL/USDC", "SOL/BTC", "ETH/USDC"])
-    # ETH/USDC is not in SPOT_TO_DERIVATIVES and must be dropped
+    s = DerivativesStream(pairs=["BTC/USDC", "SOL/USDC", "SOL/BTC", "NIGHT/USD"])
+    # NIGHT/USD is not in SPOT_TO_DERIVATIVES and must be dropped
     assert set(s.pairs) == {"BTC/USDC", "SOL/USDC", "SOL/BTC"}
 
 
 def test_latest_returns_none_for_unknown_pair():
     s = DerivativesStream(pairs=["BTC/USDC"])
-    assert s.latest("ETH/USDC") is None
+    assert s.latest("NIGHT/USD") is None
+
+
+def test_basis_available_flag_derived_from_quarterly_prefix():
+    """Structural, map-driven: ZEC/USD has a perp but no quarterlies →
+    basis_available=False; ETH/USD has FF quarterlies → True. Synthetic
+    keeps True (its unavailability is expressed by the synthetic flag,
+    which takes precedence in R10's tracked-field selection)."""
+    s = DerivativesStream(pairs=["ZEC/USD", "ETH/USD", "SOL/BTC"])
+    assert s.latest("ZEC/USD").basis_available is False
+    assert s.latest("ZEC/USD").perp_symbol == "PF_ZECUSD"
+    assert s.latest("ETH/USD").basis_available is True
+    assert s.latest("ETH/USD").perp_symbol == "PF_ETHUSD"
+    assert s.latest("SOL/BTC").basis_available is True
 
 
 def test_latest_returns_initial_snapshot_with_nones(stream):

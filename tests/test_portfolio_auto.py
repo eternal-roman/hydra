@@ -15,7 +15,9 @@ from hydra_kraken_cli import KrakenCLI
 from hydra_quant_rules import apply_rules
 
 
-TRIANGLE = ["SOL/USD", "SOL/BTC", "BTC/USD"]
+# v2.29: three independent stable-quoted cores — the SOL triangle is no
+# longer the default universe (90d real-tape studies found no SOL edge).
+CORES = ["BTC/USD", "ETH/USD", "ZEC/USD"]
 
 
 def _stub_kraken(monkeypatch, balance, constants):
@@ -32,20 +34,58 @@ NIGHT_USD = {"price_decimals": 6, "ordermin": 25.0, "costmin": 0.5,
              "base": "NIGHT", "quote": "USD", "lot_decimals": 8}
 NIGHT_USDC = {"price_decimals": 6, "ordermin": 25.0, "costmin": 0.5,
               "base": "NIGHT", "quote": "USDC", "lot_decimals": 8}
-ETH_USDC = {"price_decimals": 2, "ordermin": 0.002, "costmin": 0.5,
-            "base": "ETH", "quote": "USDC", "lot_decimals": 8}
+SOL_USDC = {"price_decimals": 2, "ordermin": 0.02, "costmin": 0.5,
+            "base": "SOL", "quote": "USDC", "lot_decimals": 8}
 
 
-def test_triangle_only_when_nothing_extra_held(monkeypatch):
+def test_cores_only_when_nothing_extra_held(monkeypatch):
     monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
     _stub_kraken(monkeypatch, {"ZUSD": 500.0}, {})
-    assert discover_portfolio_pairs("USD") == TRIANGLE
+    assert discover_portfolio_pairs("USD") == CORES
 
 
-def test_balance_error_falls_back_to_triangle(monkeypatch):
+def test_no_sol_pair_in_default_universe(monkeypatch):
+    """Regression guard for the v2.29 default flip: with no SOL held,
+    the discovered universe must contain no SOL pair at all."""
+    monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
+    _stub_kraken(monkeypatch, {"ZUSD": 500.0, "XXBT": 0.1, "XETH": 2.0}, {})
+    pairs = discover_portfolio_pairs("USD")
+    assert not any(p.startswith("SOL/") or p.endswith("/SOL") for p in pairs)
+    assert pairs == CORES
+
+
+def test_held_sol_becomes_tradable_satellite(monkeypatch):
+    """SOL is no longer a core, but held SOL is operational balance like
+    any other asset — it spawns a satellite engine and rotates freely."""
+    monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
+    _stub_kraken(
+        monkeypatch,
+        {"ZUSD": 100.0, "SOL": 5.0},
+        {"SOL/USD": {**SOL_USDC, "quote": "USD"}},
+    )
+    assert discover_portfolio_pairs("USD") == CORES + ["SOL/USD"]
+
+
+def test_non_usd_quote_core_falls_back_when_unlisted(monkeypatch):
+    """ZEC/USDC does not exist on Kraken — a USDC-quoted core set must
+    swap the unlisted core to BASE/USD instead of seeding a dead pair."""
+    monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
+    _stub_kraken(
+        monkeypatch,
+        {"USDC": 500.0},
+        {"BTC/USDC": {"price_decimals": 1, "ordermin": 0.0001, "costmin": 0.5,
+                      "base": "BTC", "quote": "USDC", "lot_decimals": 8},
+         "ETH/USDC": {"price_decimals": 2, "ordermin": 0.001, "costmin": 0.5,
+                      "base": "ETH", "quote": "USDC", "lot_decimals": 8}},
+    )
+    assert discover_portfolio_pairs("USDC") == [
+        "BTC/USDC", "ETH/USDC", "ZEC/USD"]
+
+
+def test_balance_error_falls_back_to_cores(monkeypatch):
     monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
     _stub_kraken(monkeypatch, {"error": "EAPI:Rate limit"}, {})
-    assert discover_portfolio_pairs("USD") == TRIANGLE
+    assert discover_portfolio_pairs("USD") == CORES
 
 
 def test_usd_only_listing_resolves_to_usd(monkeypatch):
@@ -56,7 +96,7 @@ def test_usd_only_listing_resolves_to_usd(monkeypatch):
         {"ZUSD": 100.0, "USDC": 100.0, "NIGHT": 500.0},
         {"NIGHT/USD": NIGHT_USD},
     )
-    assert discover_portfolio_pairs("USD") == TRIANGLE + ["NIGHT/USD"]
+    assert discover_portfolio_pairs("USD") == CORES + ["NIGHT/USD"]
 
 
 def test_usdc_preferred_when_funded(monkeypatch):
@@ -64,11 +104,11 @@ def test_usdc_preferred_when_funded(monkeypatch):
     monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
     _stub_kraken(
         monkeypatch,
-        {"USDC": 100.0, "ETH": 1.0},
-        {"ETH/USDC": ETH_USDC,
-         "ETH/USD": {**ETH_USDC, "quote": "USD"}},
+        {"USDC": 100.0, "SOL": 1.0},
+        {"SOL/USDC": SOL_USDC,
+         "SOL/USD": {**SOL_USDC, "quote": "USD"}},
     )
-    assert discover_portfolio_pairs("USD") == TRIANGLE + ["ETH/USDC"]
+    assert discover_portfolio_pairs("USD") == CORES + ["SOL/USDC"]
 
 
 def test_usd_preferred_when_usdc_unfunded(monkeypatch):
@@ -77,22 +117,22 @@ def test_usd_preferred_when_usdc_unfunded(monkeypatch):
     monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
     _stub_kraken(
         monkeypatch,
-        {"ZUSD": 100.0, "ETH": 1.0},
-        {"ETH/USDC": ETH_USDC,
-         "ETH/USD": {**ETH_USDC, "quote": "USD"}},
+        {"ZUSD": 100.0, "SOL": 1.0},
+        {"SOL/USDC": SOL_USDC,
+         "SOL/USD": {**SOL_USDC, "quote": "USD"}},
     )
-    assert discover_portfolio_pairs("USD") == TRIANGLE + ["ETH/USD"]
+    assert discover_portfolio_pairs("USD") == CORES + ["SOL/USD"]
 
 
 def test_auto_quote_env_forces(monkeypatch):
     monkeypatch.setenv("HYDRA_AUTO_QUOTE", "USD")
     _stub_kraken(
         monkeypatch,
-        {"USDC": 100.0, "ETH": 1.0},
-        {"ETH/USDC": ETH_USDC,
-         "ETH/USD": {**ETH_USDC, "quote": "USD"}},
+        {"USDC": 100.0, "SOL": 1.0},
+        {"SOL/USDC": SOL_USDC,
+         "SOL/USD": {**SOL_USDC, "quote": "USD"}},
     )
-    assert discover_portfolio_pairs("USD") == TRIANGLE + ["ETH/USD"]
+    assert discover_portfolio_pairs("USD") == CORES + ["SOL/USD"]
 
 
 def test_staked_and_dust_excluded(monkeypatch):
@@ -104,13 +144,13 @@ def test_staked_and_dust_excluded(monkeypatch):
         {"ZUSD": 100.0, "NIGHT.S": 900.0, "NIGHT": 10.0},  # ordermin 25
         {"NIGHT/USD": NIGHT_USD},
     )
-    assert discover_portfolio_pairs("USD") == TRIANGLE
+    assert discover_portfolio_pairs("USD") == CORES
 
 
 def test_unlisted_asset_skipped(monkeypatch):
     monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
     _stub_kraken(monkeypatch, {"ZUSD": 100.0, "WEIRDCOIN": 5.0}, {})
-    assert discover_portfolio_pairs("USD") == TRIANGLE
+    assert discover_portfolio_pairs("USD") == CORES
 
 
 # ─── R10 derivatives-coverage contract ─────────────────────────

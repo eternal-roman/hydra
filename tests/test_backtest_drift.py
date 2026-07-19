@@ -81,7 +81,7 @@ class TestZeroDrift(unittest.TestCase):
         """
         engine = HydraEngine(
             initial_balance=100.0,
-            asset="SOL/USD",
+            asset=self.DRIFT_PAIR,
             sizing=SIZING_CONSERVATIVE,
             candle_interval=candle_interval,
             hold_through=False,
@@ -101,15 +101,21 @@ class TestZeroDrift(unittest.TestCase):
             })
         return states
 
+    # Pinned explicitly on BOTH the direct path and the config so the test
+    # cannot silently compare two different synthetic tapes if the product
+    # default pair list changes (it did in v2.19 and again in v2.29).
+    DRIFT_PAIR = "BTC/USD"
+
     def test_signal_layer_matches_direct_engine_single_pair(self):
         source = SyntheticSource(kind="gbm", n_candles=250, seed=17)
-        candles = list(source.iter_candles("SOL/USD"))
+        candles = list(source.iter_candles(self.DRIFT_PAIR))
 
         direct_states = self._collect_direct(candles)
 
         # Same candles through the backtester — single-pair, coordinator disabled to
         # isolate pure engine behavior (coordinator requires ≥2 pairs to issue overrides)
-        cfg = make_quick_config(name="drift", n_candles=250, seed=17)
+        cfg = make_quick_config(name="drift", pairs=(self.DRIFT_PAIR,),
+                                n_candles=250, seed=17)
         # Disable coordinator explicitly
         from dataclasses import replace
         cfg = replace(cfg, coordinator_enabled=False)
@@ -175,10 +181,11 @@ class TestZeroDrift(unittest.TestCase):
         from dataclasses import replace
         for seed in (1, 7, 123):
             source = SyntheticSource(kind="gbm", n_candles=150, seed=seed)
-            candles = list(source.iter_candles("SOL/USD"))
+            candles = list(source.iter_candles(self.DRIFT_PAIR))
             direct = self._collect_direct(candles)
 
-            cfg = make_quick_config(name=f"drift_{seed}", n_candles=150, seed=seed)
+            cfg = make_quick_config(name=f"drift_{seed}", pairs=(self.DRIFT_PAIR,),
+                                    n_candles=150, seed=seed)
             cfg = replace(cfg, coordinator_enabled=False)
             runner = BacktestRunner(cfg)
             captured = []

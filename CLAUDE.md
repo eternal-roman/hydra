@@ -39,19 +39,25 @@ regression bug, not a style issue.
 - **HYDRA** — regime-adaptive crypto trading agent for Kraken. Detects
   regime (trending/ranging/volatile), switches between 4 strategies
   (Momentum, MeanReversion, Grid, Defensive), executes limit post-only.
-- **Pairs (default v2.19+):** SOL/USD, SOL/BTC, BTC/USD. The active
-  triangle's stable quote is selected by the agent's `--pairs` flag;
-  `STABLE_QUOTES = {USD, USDC, USDT}` are first-class. v2.19 flipped
-  the default from USDC → USD; opt back into USDC by passing
-  `--pairs SOL/USDC,SOL/BTC,BTC/USDC`. **`--pairs auto`** discovers every
-  held Kraken asset and adds one satellite pair each (USDC-quoted when
+- **Pairs (default v2.29+):** BTC/USD, ETH/USD, ZEC/USD — three
+  independent stable-quoted cores, NO triangle/coordinator (both
+  `_derive_triangle`s return None; coordinator is a no-op). The SOL
+  triangle was dropped as default after 90d real-tape studies found no
+  SOL edge (`heartbeat/evidence/real_tape/calibrate_SOL_USD.txt` AUC
+  0.56 FAIL) and the bridge was already proven dead. Explicit SOL pairs
+  remain fully supported: `--pairs SOL/USD,SOL/BTC,BTC/USD` re-activates
+  the TradingTriangle + CrossPairCoordinator unchanged.
+  `STABLE_QUOTES = {USD, USDC, USDT}` are first-class. **`--pairs auto`**
+  seeds the three cores and adds one satellite pair per additional held
+  asset — held SOL becomes a normal tradable satellite (USDC-quoted when
   USDC is funded, else USD; `HYDRA_AUTO_QUOTE` forces) —
   `hydra_agent.discover_portfolio_pairs`.
-- **Bridge is signal-only by default (v2.28):** SOL/BTC engines run
-  `exit_only` drain mode (SELLs flow until flat, BUYs refused) —
-  isolation study on real 1h tape showed zero 1y trades and a Sharpe
-  drag when included (`.hydra-flywheel/bridge_isolation.json`).
-  `HYDRA_BRIDGE_TRADING=1` opts back in.
+- **Bridge is signal-only by default (v2.28):** when a SOL triangle is
+  explicitly configured, SOL/BTC engines run `exit_only` drain mode
+  (SELLs flow until flat, BUYs refused) — isolation study on real 1h
+  tape showed zero 1y trades and a Sharpe drag when included
+  (`.hydra-flywheel/bridge_isolation.json`). `HYDRA_BRIDGE_TRADING=1`
+  opts back in.
 - **Candles default 60m (v2.28):** the hold-through rails and friction
   hurdle were calibrated on 1h tape; 15m ran them off-calibration.
   `--candle-interval` still accepts 1/5/15/30/60; snapshot resume drops
@@ -74,7 +80,7 @@ regression bug, not a style issue.
 
 ## Cross-cutting invariants (HIGH severity if violated)
 
-- **SPOT-ONLY execution** — Hydra places orders ONLY on Kraken spot pairs (the active triangle: stable-quoted SOL, stable-quoted BTC, and SOL/BTC; default v2.19+ is SOL/USD, SOL/BTC, BTC/USD). Derivatives data (Kraken Futures funding/OI via `kraken futures tickers` CLI) is SIGNAL INPUT ONLY. No futures, no options, no margin orders placed. `hydra_derivatives_stream.py` is read-only by construction; its test suite greps for authenticated subcommand names and fails if any appear.
+- **SPOT-ONLY execution** — Hydra places orders ONLY on Kraken spot pairs (default v2.29+: BTC/USD, ETH/USD, ZEC/USD; a SOL triangle when explicitly configured). Derivatives data (Kraken Futures funding/OI via `kraken futures tickers` CLI) is SIGNAL INPUT ONLY. No futures, no options, no margin orders placed. `hydra_derivatives_stream.py` is read-only by construction; its test suite greps for authenticated subcommand names and fails if any appear.
 - **Limit post-only, never market** — deliberate design choice
 - **No REST for market data** — all Kraken market data flows through the WebSocket streams or the `kraken` CLI (WSL Ubuntu). New data sources must use CLI or WS.
 - **2s REST floor** — Kraken throttles or bans below this
@@ -84,6 +90,7 @@ regression bug, not a style issue.
 - **`HYDRA_COMPANION_LIVE_EXECUTION` default OFF** — proposals are paper until opted in
 - **Funding is markPrice-relative, never absolute** — Kraken Futures `PF_*` `fundingRate` is absolute USD-per-contract-per-period. Convert to bps via `(fundingRate / markPrice) * 10000`, never `fundingRate * 10000`. The `_absolute_to_relative_bps` helper in `hydra_derivatives_stream.py` enforces this (±500 bps clamp vs API drift). Pre-v2.15.2 fires used the wrong absolute conversion — not authoritative.
 - **Synthetic pairs declare themselves to R10** — `DerivativesSnapshot.synthetic=True` propagates to `quant_indicators["synthetic_pair"]`; R10 then tracks only funding/cvd/regime (the fields the synthetic path actually populates). Adding a new pair without a direct Kraken Futures perp requires this flag, otherwise R10 will structurally force-hold every tick.
+- **Perp-only pairs declare themselves to R10 (v2.29)** — pairs whose Kraken Futures listing has a perp but NO quarterly contracts (ZEC: `PF_ZECUSD`) get `DerivativesSnapshot.basis_available=False`, derived from `SPOT_TO_DERIVATIVES.quarterly_prefix is None` at construction — map-driven, never from data presence. It propagates to `quant_indicators["basis_available"]`; R10 then tracks 4 fields (drops `basis_apr_pct`). Without it a perp-only pair sits permanently at 1 stale field and any transient miss trips a structural force-hold.
 - **Uncovered pairs declare themselves to R10** — pairs with no `SPOT_TO_DERIVATIVES` entry at all (portfolio satellites, e.g. NIGHT/USD) get `quant_indicators["derivatives_covered"]=False` from `_build_quant_indicators`; R10 then tracks only CVD. Coverage is structural (pair in the futures map), never "snapshot present" — a covered pair with a warming/stale stream must still hit the R10 blackout.
 - **Per-quote balance pools (v2.28)** — live stable-quoted engines are funded from the REAL holding of their own quote currency split across pairs sharing that quote (`_set_engine_balances`); a USDC engine never sizes against USD it cannot spend. Zero pool ⇒ balance 0 (sizer refuses entries) but `tradable` stays True so inventory can exit. Paper keeps the uniform split.
 - **Trend overlay is evidence-gated and fails open** — every consumer of `daily_trend_long()` must treat `None` (warmup / disabled) as "behave exactly as pre-overlay". The daily-entry path (enter on ensemble alone) was tested and REJECTED (whipsawed against 1h flattens, −5.4% vs +0.1% 2y — `.hydra-flywheel/trend_entry_gate.json`); do not re-add without a passing gate. Daily closes are seeded at boot (agent: Kraken 1440m OHLC; backtest: pre-window sqlite) and persist in the snapshot.
@@ -190,8 +197,8 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 ## Build / run
 
 - Dashboard dev: `cd dashboard && npm install && npm run dev`
-- Agent default: `python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD --balance 100`
-- Agent USDC opt-in: `python hydra_agent.py --pairs SOL/USDC,SOL/BTC,BTC/USDC` (registry handles both transparently; engine/coordinator/agent quote-agnostic)
+- Agent default: `python hydra_agent.py --balance 100` (BTC/USD, ETH/USD, ZEC/USD)
+- Agent SOL triangle (legacy): `python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD` (re-activates TradingTriangle + coordinator; registry quote-agnostic, USDC/USDT variants work)
 - Agent competition: `python hydra_agent.py --mode competition`
 - Agent paper: `python hydra_agent.py --mode competition --paper`
 - Agent resume: `python hydra_agent.py --mode competition --resume`

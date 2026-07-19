@@ -14,8 +14,8 @@ Public API:
 
     config = BacktestConfig(
         name="tight-rsi-in-vol",
-        pairs=("SOL/USD",),
-        param_overrides={"SOL/USD": {"momentum_rsi_upper": 75}},
+        pairs=("BTC/USD",),
+        param_overrides={"BTC/USD": {"momentum_rsi_upper": 75}},
         data_source="synthetic",
         data_source_params={"kind": "mean_reverting", "n_candles": 2000},
     )
@@ -70,7 +70,7 @@ class BacktestConfig:
     description: str = ""
     hypothesis: str = ""
 
-    pairs: Tuple[str, ...] = ("SOL/USD",)
+    pairs: Tuple[str, ...] = ("BTC/USD",)
     initial_balance_per_pair: float = 100.0
     candle_interval: int = 60  # minutes (matches live default; rails calibrated at 1h)
 
@@ -1178,7 +1178,7 @@ def new_experiment_id() -> str:
 def make_quick_config(
     *,
     name: str = "quick",
-    pairs: Tuple[str, ...] = ("SOL/USD",),
+    pairs: Tuple[str, ...] = ("BTC/USD",),
     n_candles: int = 500,
     kind: str = "gbm",
     seed: int = 42,
