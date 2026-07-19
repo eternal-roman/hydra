@@ -139,6 +139,35 @@ Consistent across all three tapes (final fitted weights):
    consumer wanting an absolute threshold should use calibrated weights
    and compare against the event-conditional distribution, not 0.5.
 
+## ZEC/USD (added 2026-07-18, after the full ZEC pipeline)
+
+Archive imported (7.03M trades 2016→2025-12-31 → sqlite `kraken_archive`),
+90d sided tape backfilled (1.49M trades), healed, verified
+(`evidence/tape_verify_ZEC_USD.json`: 2159/2159 hours, 0 bad).
+
+- **Classifier: FAIL.** 75 events (33 rev / 42 fake); walk-forward
+  calibrated bounce+3 AUC 0.61/0.76/0.46 (mean **0.61** < 0.70 bar) —
+  `evidence/real_tape/calibrate_ZEC_USD.txt`. The final fold (the
+  late-June/July selloff) collapses to 0.46, same failure shape as SOL.
+  CLV is again the top weight (+0.32).
+- **Paper sim: first positive OOS arm, but it is regime beta, not
+  classifier alpha.** `evidence/paper_bounce_sim_ZEC.json`: B&H in the
+  ~36-day OOS slice is **+33.2%**; the mechanically train-selected arm
+  (`b1.gate_p50.exitA_flow`) makes **+6.2%** OOS (n=12, PF 1.39) —
+  positive but far under B&H. The unselected `b3.all.exitA_flow` arm
+  makes +30.2% (PF 2.43) and the **inverse control makes +24.6%** —
+  everything long ZEC made money in that window. Flow-exit (trailing)
+  arms are positive across all/gated/inverse pools while target/stop
+  arms all lose, consistent with the geometry study: ZEC's returns come
+  from riding its regime, not from picking bounces.
+- Net: ZEC joins SOL on the classifier exclusion list; its trading case
+  is the **daily-bar trend/bounce construction** (ZEC-2025 daily target
+  arm +94% in `bounce_geometry_1d.json`), not 1h flow confirmation.
+
+A stale early-run eval artifact (`gate3_eval_ZEC.txt`, written hours
+before the backfill finished, 107 events with garbage timestamps) was
+deleted; `evidence/real_tape/eval_ZEC_USD_1h.*` is authoritative.
+
 ## Recommendation (updated 2026-07-19, real-tape)
 
 **Promote the classifier on BTC+ETH to the next gate (live soak);
