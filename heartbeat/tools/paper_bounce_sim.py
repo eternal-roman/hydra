@@ -130,10 +130,13 @@ def entry_index(candles, s, offset: int):
 
 
 def simulate(candles, p_series, setups, entry_offset, thr_entry, thr_exit,
-             use_target, inverse=False, lo_ts=None, hi_ts=None) -> list[dict]:
+             use_target, inverse=False, lo_ts=None, hi_ts=None,
+             trail_mult=None) -> list[dict]:
     """Run the paper book over one time segment. Returns closed trades.
 
-    thr_exit=None disables the flow exit (stop/target/time only)."""
+    thr_exit=None disables the flow exit; thr_entry=None takes every setup
+    (posterior then optional — supports candle-only geometry studies);
+    trail_mult=x adds a trailing stop at max(high since entry) - x*ATR."""
     trades = []
     in_pos_until = -1
     for s in setups:
@@ -148,9 +151,9 @@ def simulate(candles, p_series, setups, entry_offset, thr_entry, thr_exit,
         if e <= in_pos_until:
             continue
         p = p_series.get(int(candles[e].open_ts))
-        if p is None:
-            continue
         if thr_entry is not None:
+            if p is None:
+                continue
             take = (p < thr_entry) if inverse else (p >= thr_entry)
             if not take:
                 continue
@@ -158,10 +161,14 @@ def simulate(candles, p_series, setups, entry_offset, thr_entry, thr_exit,
         exit_px = None
         reason = None
         k_exit = None
+        max_high = candles[e].high
         for k in range(e + 1, len(candles)):
             c = candles[k]
+            trail = (max_high - trail_mult * s["atr"]) if trail_mult else None
             if c.low < s["low_px"]:
                 exit_px, reason = min(c.close, s["low_px"]), "stop"
+            elif trail is not None and c.low < trail:
+                exit_px, reason = min(c.close, trail), "trail"
             elif use_target and c.high >= s["low_px"] + TARGET_ATR * s["atr"]:
                 exit_px, reason = s["low_px"] + TARGET_ATR * s["atr"], "target"
             else:
@@ -173,13 +180,15 @@ def simulate(candles, p_series, setups, entry_offset, thr_entry, thr_exit,
             if exit_px is not None:
                 k_exit = k
                 break
+            max_high = max(max_high, c.high)
         if exit_px is None:      # tape ended in-position: mark at last close
             k_exit = len(candles) - 1
             exit_px, reason = candles[-1].close, "eod"
         ret = exit_px / entry_px - 1.0 - 2 * FEE
         trades.append({"entry_ts": ts_entry, "entry": entry_px,
                        "exit": exit_px, "ret": ret, "reason": reason,
-                       "hold": k_exit - e, "p_entry": round(p, 4)})
+                       "hold": k_exit - e,
+                       "p_entry": round(p, 4) if p is not None else None})
         in_pos_until = k_exit
     return trades
 
