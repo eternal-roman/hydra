@@ -268,3 +268,15 @@ evidence `evidence/s3_hold_horizon.json`. Per-entry forward curves
 
 No blind K is adopted anywhere. Long-hold continuation is NOT part of
 the tradable basis; it survives only as a parallel shadow arm on ETH.
+
+## Shipped (2026-07-19): s3bounce package + HYDRA shadow integration
+
+The S3 basis above is now productized: standalone stdlib-only package
+`s3bounce/` (own pyproject/tests; golden parity fixtures pin it to this
+pipeline at 1e-9 — regenerate via `tools/export_s3_model.py`), plus
+agent integration `hydra_s3.py`: read-only `quant_indicators["s3"]`
+signal surface + `HYDRA_S3_STRATEGY` shadow phase logging per-exit-arm
+paper positions to `.hydra-s3/` (x0/x1 both assets, hold_k60 ETH only;
+heartbeat confirmer payload recorded, both-arm decisions). NO live
+order path exists — live enablement remains gate-pending on this
+shadow window per the funnel rules.
