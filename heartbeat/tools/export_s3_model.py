@@ -43,6 +43,7 @@ HOURLY_DAYS = 30
 FIXTURE_DIR = HYDRA_ROOT / "s3bounce" / "tests" / "fixtures"
 ARTIFACT = HYDRA_ROOT / "s3bounce" / "s3bounce" / "model_artifact.json"
 EVIDENCE = HEARTBEAT_ROOT / "evidence" / "bakeoffs" / "s3_daily_classifier.json"
+TRAIL_EVIDENCE = HEARTBEAT_ROOT / "evidence" / "bakeoffs" / "s3_trail_exit.json"
 
 
 def bar_dict(c) -> dict:
@@ -81,6 +82,28 @@ def verify_artifact() -> dict:
         for name, a, b in checks:
             if abs(a - b) > 1e-9:
                 errors.append(f"{asset} {name}: artifact {a} != evidence {b}")
+    # trail gate (2026-07-19): shadow-arm-only decision + premium cuts
+    trail = json.loads(TRAIL_EVIDENCE.read_text(encoding="utf-8"))
+    for arm, want in trail["verdict"]["decision"].items():
+        if want == "ADOPT_BASIS":
+            continue                      # a future passing gate re-freezes
+        pkg_arm = {"X4a_trail": "x4a_trail_ma9",
+                   "X5_routed": "x5_vigor_routed"}[arm]
+        for asset, m in art["models"].items():
+            if want == "SHADOW_ARM_ONLY" and pkg_arm not in m["shadow_arms"]:
+                errors.append(f"{asset}: {pkg_arm} missing from shadow_arms "
+                              f"(trail gate decision {want})")
+            if want == "SHADOW_ARM_ONLY" and m["exit_policy"] == pkg_arm:
+                errors.append(f"{asset}: {pkg_arm} is exit_policy but the "
+                              f"trail gate decided {want}")
+            if want == "DROP" and pkg_arm in m["shadow_arms"]:
+                errors.append(f"{asset}: {pkg_arm} present but trail gate "
+                              f"decided DROP")
+    for asset, m in art["models"].items():
+        cut = trail["assets"][asset]["folds_run"][-1]["prem_cut"]
+        if abs(m.get("premium_cut", -1) - cut) > 1e-9:
+            errors.append(f"{asset} premium_cut: artifact "
+                          f"{m.get('premium_cut')} != evidence {cut}")
     if errors:
         raise SystemExit("ARTIFACT MISMATCH:\n  " + "\n  ".join(errors))
     return art

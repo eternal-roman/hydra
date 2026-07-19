@@ -308,7 +308,7 @@ def main() -> int:
     promote = c1 and c2 and c3 and c4 and c5
     report["verdict"] = "PROMOTE" if promote else "FAIL"
 
-    out = HEARTBEAT_ROOT / "evidence" / "bakeoffs" / "envelope_1h.json"
+    out = HEARTBEAT_ROOT.parent / "research" / "data" / "s3" / "killed" / "envelope_1h.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2))
     print(json.dumps(report["criteria"], indent=2))

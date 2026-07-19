@@ -52,7 +52,7 @@ PRIMARY = ["BTC/USD", "ZEC/USD"]
 CONTROL = "ETH/USD"
 YEARS = list(range(2016, 2026))
 FRESH_MAX = 2                                # frozen, no sweeps
-OUT = HEARTBEAT_ROOT / "evidence" / "bakeoffs" / "freshness_gate.json"
+OUT = HEARTBEAT_ROOT.parent / "research" / "data" / "s3" / "killed" / "freshness_gate.json"
 
 
 def run_asset(pair: str, cfg) -> dict:

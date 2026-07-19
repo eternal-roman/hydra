@@ -1,282 +1,97 @@
-# HONEST_FINDINGS — heartbeat v0.1.0 (2026-07-17; real-tape update 2026-07-19)
+# HONEST_FINDINGS — heartbeat + S3 verdict ledger (compacted 2026-07-19)
 
-## The core question
+Every claim here is backed by a committed evidence file; every gate was
+pre-registered before its runner executed. The full research narrative
+(methods, per-trade ledger, lessons) now lives in
+`research/S3_BOUNCE_EDGE_2026.md` with study data promoted to
+`research/data/s3/`. This file is the compact ledger of what was
+decided, on what evidence, and what may not be revisited without new
+anomalies.
 
-> Does the heartbeat separate fakes from reversals at bounce+3, and at
-> what AUC per asset?
+## The core question — ANSWERED (real tape, 2026-07-19)
 
-**ANSWERED on real Kraken tape (2026-07-19).** 90 days of real trades
-per asset (SOL 1.84M, BTC 4.80M, ETH 2.06M), backfilled via REST at the
-project's 2s floor, cross-verified against `hydra_history.sqlite`
-(candle aggregation matched exactly; see `evidence/tape_verify_*.json`)
-and durably mirrored into that DB's `trades` table. Walk-forward
-calibration, train strictly before test, ≥60 events per asset
-(full reports: `evidence/real_tape/`):
+> Does the heartbeat separate fakes from reversals at bounce+3?
+
+90d of real Kraken trades per asset, REST-backfilled at the 2s floor,
+cross-verified against `hydra_history.sqlite` (`evidence/tape_verify_*`)
+and mirrored into its `trades` table. Walk-forward, train strictly
+before test (`evidence/real_tape/`):
 
 | asset | events | fold AUCs @ bounce+3 (calibrated) | verdict |
 |---|---|---|---|
-| BTC/USD | 69 (31 rev / 38 fake) | **0.90, 0.55, 0.84** | PASS (mean 0.76) |
-| ETH/USD | 77 (38 / 39) | **0.73, 0.77, 0.69** | PASS (mean 0.73) |
-| SOL/USD | 80 (31 / 49) | 0.62, 0.65, 0.40 | FAIL (mean 0.56) |
+| BTC/USD | 69 | 0.90, 0.55, 0.84 (mean 0.76) | **PASS** |
+| ETH/USD | 77 | 0.73, 0.77, 0.69 (mean 0.73) | **PASS** |
+| SOL/USD | 80 | 0.62, 0.65, 0.40 (mean 0.56) | FAIL |
+| ZEC/USD | 75 | 0.61, 0.76, 0.46 (mean 0.61) | FAIL |
 
-**Promote gate (AUC ≥ 0.70 walk-forward on ≥2 of 3 assets): PASSED**
-— by BTC and ETH; SOL shows no exploitable flow signal. The pattern is
-liquidity-consistent: the hypothesis holds on deep majors, not on SOL.
-Uncalibrated (default-weight) AUC is ~0.55 everywhere — calibration is
-mandatory, as the synthetic study predicted. Real-tape weights rank
-`clv` and `ofi_momentum` on BTC/ETH broadly in line with the synthetic
-ranking, but SOL's fit is unstable; the synthetic negative-`ofi` tell
-did not replicate.
+Liquidity-consistent: flow signal exists on deep majors only.
+Calibration is mandatory (uncalibrated AUC ≈ 0.55 everywhere). ZEC's
+paper-sim "edge" was regime beta (inverse control +24.6% — everything
+long ZEC won that window; `evidence/paper_bounce_sim_ZEC.json`).
 
-## HYDRA integration bake-off (2026-07-19): structurally inconclusive
+## Engineering guarantees (each regression-tested, evidence committed)
 
-Gating HYDRA BUY entries on the posterior was baked off on the same
-90-day window (baseline / P20-P65 train-percentile gates / inverse
-controls / OOS split — `tools/hydra_bakeoff.py`, evidence
-`evidence/hydra_bakeoff*.json`). Verdict: **no evidence either way,
-and none was obtainable** — the v2.28 production config (trend overlay
-+ hold-through + friction hurdle) generated **zero** BUY entries across
-the entire window (a 90-day downtrend it correctly sat out in cash),
-and even with `HYDRA_TREND_OVERLAY=0` the raw engine attempted exactly
-one entry. A BUY-confirmation gate cannot add value where there are no
-BUYs to confirm. Do NOT interpret this as "gate is useless" or "gate is
-safe to wire in" — it is untested against actual entries. The
-data-indicated path is the one heartbeat was designed for: confirming
-counter-trend bottom-buy entries — an entry family HYDRA currently does
-not take at all in downtrends. That would be NEW strategy surface and
-needs its own evidence-gated bake-off before any live wiring.
+- No lookahead: incremental state bit-identical to prefix replay.
+- Determinism: identical SHA-256 across replays (`gate2_*.txt`).
+- Exact calibration transfer: `L = Σ wᵢSᵢ` — fitted weights ARE the
+  live posterior's weights.
+- Feed integrity: reconnect/backfill order-preserving; incomplete
+  backfill, clock skew >2s, sequence violations ⇒ taint; tainted
+  events excluded from eval.
+- Canonical-store audit (fixed): ~50% missing 1h rows + frozen
+  forming candles found and healed from trade-level truth
+  (2159/2159 hours exact post-heal); refresh now skips the forming
+  candle on both paths.
 
-## Canonical-store defects found by the tape audit (fixed)
+## S3 verdict ledger (all gates pre-registered; chronological)
 
-Cross-verification exposed two `hydra_history.sqlite` defects inherited
-by every backtest: ~50% of 1h rows missing in the 90d window per pair
-(Kraken REST OHLC cannot paginate deep history), and frozen
-still-forming candles (volume ~10x low; SOL and BTC corrupt at the same
-hour). Fixed: `tools/heal_ohlc_from_trades.py` repaired the store from
-trade-level truth (post-heal: 2159/2159 hours exact on both pairs), and
-`tools/refresh_history.py` now skips the forming candle on both refresh
-paths (regression-tested).
-
-## What was verified (with evidence)
-
-* **No lookahead** — incremental heartbeat state at every cut point is
-  bit-identical to a from-scratch replay of the prefix tape
-  (`tests/test_no_lookahead.py`, 5 cut points + prefix-invariance test).
-* **Determinism** — two replays of the 150-day BTC synth tape produce
-  identical SHA-256 digests
-  (`evidence/gate2_replay_determinism.txt`:
-  `3dd5600ed9d4e152...` twice); also asserted through a parquet-store
-  round-trip with deliberately overlapping part files.
-* **Candle-unit memory** — with constant evidence, the recursion sampled
-  at candle closes matches the candle-level recursion `L ← λL + wz`
-  within 5% for 1, 10, and 60 heartbeats/candle, and converges to the
-  same fixed point (`test_candle_unit_memory`). Memory really is defined
-  in candle units.
-* **Exact calibration transfer** — `L = Σ wᵢSᵢ` exactly, so logistic
-  weights fit on snapshot S-vectors are the live posterior's weights
-  with zero approximation gap (`test_L_equals_weighted_S`).
-* **Feed integrity** — reconnect + REST gap backfill emits trades in
-  order and taints only when backfill is incomplete (mock-transport
-  tests); clock skew >2s and sequence violations taint; tainted events
-  are excluded from eval.
-* **Every Tier 0/1 feature** against hand-computed fixtures.
-* **Labeler** — 84–131 events per synthetic asset over 150 days
-  (≥60 required); crash-regime and chop exclusions behave as specified.
-
-## Synthetic-tape results (150 days, 1h, three seeds as BTC/ETH/ZEC)
-
-Walk-forward, expanding window, train strictly before test
-(`evidence/gate4_walkforward.txt`):
-
-| asset (seed) | events | fold AUCs @ bounce+3 |
+| gate / study | verdict | evidence |
 |---|---|---|
-| BTC (7)  | 84 (43 rev / 41 fake) | 0.52, **0.78, 0.79** |
-| ETH (21) | 131 (51 / 80) | 0.58, 0.54, 0.50, 0.64 |
-| ZEC (99) | 107 (47 / 60) | 0.58, 0.68, 0.65, 0.62 |
+| Classifier promotion (daily 6-feature logistic, train-p75 gate) | PASS BTC/ETH; FAIL ZEC | `evidence/bakeoffs/s3_daily_classifier.json` |
+| HYDRA entry-gating bakeoff | structurally inconclusive — v2.28 config took ZERO BUYs in the window; a confirmation gate cannot be tested against no entries. Not "safe", not "useless": untested | `evidence/hydra_bakeoff*.json` |
+| Exit-policy gate (X0/X1/X2/X3/T_K) | **ADOPT X1 close-fill stop** (+2.36 vs +1.72 %/trade pooled, C2 8/13, tails strictly better). **KILL flip/hybrid** (C2 5/13; +13.2%/trade was fold-concentrated regime beta; flip median hold = 1 bar — degenerate entry/exit-state interaction) | `evidence/bakeoffs/s3_exit_policy.json` + REGISTRATION |
+| Hold-horizon study (k=1..60, Wilson CIs, bootstrap LB, LOYO) | **"right every time at K=20/50" REFUTED** — per-entry hit rates coin-flip on ALL assets (every CI includes 0.5); large-K averages lottery-shaped (ETH K=50 mean +13.1%, median −4.1%); optimal holds bimodal (1–5 vs 46–60 bars). Only ETH K=60 has positive boot-LB (+4.6%) and LOYO stability → shadow arm ONLY | `research/data/s3/s3_hold_horizon.json` |
+| ABI funnel (loss watermarks + winner truncation) | mechanisms: post-target +40d continuation +9.8/+13.0% (BTC/ETH); `premium_atr` vigor watermark (weak: 48% stop / +3.8% fwd60; strong: 20% / +20.7%); ensemble<0.6 does NOT watermark losses (counter-trend entries continue harder) | `evidence/abi/s3_trail_funnel_2026-07-19.md` |
+| Trail-exit gate (X4a ride-MA9, X5 vigor-routed, T_K) | **NO basis flip.** X4a passed C1–C4 (+5.79 vs +2.31; beat T_10 control) but failed C5 LOYO (winner flips on drop-2019 — ETH_2019 fold +98.9pp carries it); X5 failed C3 (+3.68 vs T_10 +3.66 with train-derived cuts). Pre-committed rule → both **SHADOW_ARM_ONLY** | `evidence/bakeoffs/s3_trail_exit.json` + REGISTRATION |
 
-The e2e suite's cleaner 40-day tape reaches held-out **0.92** at
-bounce+3. Why the spread? The labeler also finds *organic* bounces in
-the random-walk down-legs — events whose flow is genuinely
-uninformative but whose labels are decided by future noise. They dilute
-AUC toward 0.5 exactly as ambiguous real-market events would. This is
-the honest behavior you want from the harness: it does not manufacture
-separation that is not in the tape.
-
-## What discriminates (on synthetic flow)
-
-Consistent across all three tapes (final fitted weights):
-
-* **`ofi_momentum` dominates with a positive weight** (+0.50…+0.96) —
-  supporting the spec's hypothesis that *sign and slope of flow, not
-  level*, separates fake from reversal.
-* **`clv` is second** (+0.24…+0.59): reversal candles close upper-third.
-* **Decayed `ofi` level fits NEGATIVE** (−0.13…−0.52): after a long
-  down-leg, a *less* negative 30-candle flow memory going into the
-  bounce was, on these tapes, a fake tell. Worth re-testing on real
-  tape before believing.
-* `range_atr` ≈ 0 and `vol_z` small positive — non-directional alone;
-  naive equal weights are near chance (bounce+3 AUC 0.53 on BTC synth),
-  which is precisely why calibration is not optional.
-
-## Known limitations / deviations
-
-1. **Network gates not run**: real 90-day backfill, live WS soak (24h),
-   and the live socket-kill drill require a machine with Kraken egress.
-   Exact commands are in README "Verification gates". The WS/REST code
-   paths are tested against mocked transports that mimic Kraken's
-   documented v2/REST shapes — first contact with the real endpoints may
-   still surface schema drift; the parsers fail loudly if so.
-2. **Micro-bucketing rarely triggered on synth tapes** (~40 trades/h ≪
-   20/s threshold), so the >20/s bucketing path is covered by unit
-   logic, not by a realistic firehose.
-3. **Tier 2 features are stubs** by design (book channel, cancel rates,
-   BTC-lead, funding) — they return None until their data sources are
-   wired and individually evidenced. BOCD λ-modulation is an engine hook
-   (`lambda_modulator`), not yet implemented.
-4. **P(up) absolute level is regime-dominated**: after a 20-candle
-   down-leg the 30-candle memory pins P(up) near 0 for both classes;
-   discrimination lives in the *relative* posterior at checkpoints. A
-   consumer wanting an absolute threshold should use calibrated weights
-   and compare against the event-conditional distribution, not 0.5.
-
-## ZEC/USD (added 2026-07-18, after the full ZEC pipeline)
-
-Archive imported (7.03M trades 2016→2025-12-31 → sqlite `kraken_archive`),
-90d sided tape backfilled (1.49M trades), healed, verified
-(`evidence/tape_verify_ZEC_USD.json`: 2159/2159 hours, 0 bad).
-
-- **Classifier: FAIL.** 75 events (33 rev / 42 fake); walk-forward
-  calibrated bounce+3 AUC 0.61/0.76/0.46 (mean **0.61** < 0.70 bar) —
-  `evidence/real_tape/calibrate_ZEC_USD.txt`. The final fold (the
-  late-June/July selloff) collapses to 0.46, same failure shape as SOL.
-  CLV is again the top weight (+0.32).
-- **Paper sim: first positive OOS arm, but it is regime beta, not
-  classifier alpha.** `evidence/paper_bounce_sim_ZEC.json`: B&H in the
-  ~36-day OOS slice is **+33.2%**; the mechanically train-selected arm
-  (`b1.gate_p50.exitA_flow`) makes **+6.2%** OOS (n=12, PF 1.39) —
-  positive but far under B&H. The unselected `b3.all.exitA_flow` arm
-  makes +30.2% (PF 2.43) and the **inverse control makes +24.6%** —
-  everything long ZEC made money in that window. Flow-exit (trailing)
-  arms are positive across all/gated/inverse pools while target/stop
-  arms all lose, consistent with the geometry study: ZEC's returns come
-  from riding its regime, not from picking bounces.
-- Net: ZEC joins SOL on the classifier exclusion list; its trading case
-  is the **daily-bar trend/bounce construction** (ZEC-2025 daily target
-  arm +94% in `bounce_geometry_1d.json`), not 1h flow confirmation.
-
-A stale early-run eval artifact (`gate3_eval_ZEC.txt`, written hours
-before the backfill finished, 107 events with garbage timestamps) was
-deleted; `evidence/real_tape/eval_ZEC_USD_1h.*` is authoritative.
-
-## Recommendation (updated 2026-07-19, real-tape)
-
-**Promote the classifier on BTC+ETH to the next gate (live soak);
-exclude SOL; do NOT wire into HYDRA entry gating yet.**
-
-1. ~~Backfill real tape~~ DONE (SOL/BTC/ETH, 90d, verified, mirrored
-   to sqlite).
-2. ~~Eval + calibrate walk-forward~~ DONE — gate PASSED on BTC+ETH
-   (see table above); SOL failed and stays out.
-3. Tier 0 cleared on 2 assets ⇒ per the original plan, enabling Tier 1
-   (`features.enabled_tiers: [0, 1]`) and re-gating on BTC/ETH is the
-   next classifier improvement step.
-4. Remaining network gate: 24h live WS soak on BTC (`heartbeat run`)
-   plus the socket-kill drill — the WS reconnect/dedup path is
-   mock-tested (`tests/test_ws.py`) but has not met the real socket.
-5. Integration with HYDRA: the bake-off proved current HYDRA takes no
-   entries heartbeat could confirm (see above). The evidence-backed
-   route is a dedicated bounce-entry strategy (trailing-stop bottom-buy
-   on BTC/ETH) using heartbeat as its confirmation layer, run through
-   `/bakeoff` as new strategy surface: paper first, pre-registered
-   criteria, its own gate JSON. No live wiring before that passes.
-
-## S3 exit-policy gate (2026-07-19, pre-registered)
-
-Registration committed before arms ran
-(`evidence/bakeoffs/s3_exit_policy_REGISTRATION.md`; bias disclosure
-inside — the exploratory pooled numbers had been seen, the deciding
-measurements had not). Runner `tools/bakeoff_s3_exit_policy.py`,
-evidence `evidence/bakeoffs/s3_exit_policy.json`. The incumbent arm
-reproduces the promoted S3 gated P&L exactly (BTC 23/+1.03, ETH
-30/+2.25 — same simulator, so arm deltas are pure exit effects).
-
-- **ADOPTED: X1 close-fill stop** (stop on close<L0, filled at that
-  close; target/horizon unchanged). Pooled BTC+ETH +2.36%/trade vs
-  incumbent +1.72 (C1 ✓ by 0.64pp ≥ 0.5), fold consistency 8/13 =
-  61.5% (C2 ✓), tails strictly better: worst −16.5% vs −36.6%, share
-  ≤−15% 2% vs 3.8% (C4 ✓). Consistent with the round-2 finding that
-  close-FILL is legitimate mechanics (touch-fills sell the wick low).
-- **KILLED: X2 flip and X3 hybrid — C2 fold consistency 5/13 =
-  38.5%.** Their +13.2%/trade pooled averages are fold-concentrated;
-  flip loses to the incumbent in 8/13 (asset,year) folds incl. a −57%
-  BTC-2021 fold sum. M-R3's compounding payoff is real (T_K controls
-  rise monotonically: +1.9 → +9.7%/trade from K=5→50) but so are the
-  time-control tails (worst −49%, share ≤−15% up to 22%): long holds
-  are regime beta with regime-beta drawdowns, and the ensemble-flip
-  signal does not time them reliably. Degenerate-construction note:
-  flip median hold = 1 bar — about half the gated entries occur with
-  the daily ensemble already < 0.6, so the "exit signal" fires
-  immediately; any future flip-style candidate must first fix its
-  entry/exit-state interaction (new anomaly required to revisit,
-  per the funnel rules).
-- S3's registered exit is now **entry b1 close / tgt 3.3·ATR /
-  close-fill stop at L0 / 200-bar horizon**. Expectancy under it:
-  BTC +1.17, ETH +3.34 %/trade net of 26 bps/side (ZEC +1.22 but
-  stays excluded — its classifier gate failed). Still provisional
-  pending the paper-shadow window, which logs all exit arms in
-  parallel.
-
-## S3 hold-horizon study — per-coin, confidence-bounded (2026-07-19)
-
-User-directed precision pass before any live wiring: is the classifier
-"right every time" at K=20/50 continuation holds? **No — and the claim
-dies on per-entry data.** Tool `tools/s3_hold_horizon_study.py`,
-evidence `evidence/s3_hold_horizon.json`. Per-entry forward curves
-(k=1..60, close-fill L0 stop composed, 26 bps/side), Wilson 95% CIs,
-10k-draw bootstrap LB on the mean, LOYO stability of the K* choice:
-
-- **Per-entry hit rates at K≥20 are coin-flip on every asset.** BTC
-  K=20: 14/24 = 58.3% [CI 38.8–75.5]; K=50: 12/23 = 52.2% [33.0–70.8].
-  ETH K=20: 16/32 = 50.0% [33.6–66.4]; K=50: 15/32 = 46.9%. ZEC K=50:
-  5/21 = 23.8%. Every CI includes 0.5. The earlier T_K sequenced win
-  rates (0.61–0.72) were flattered by one-position sequencing dropping
-  clustered entries.
-- **Large-K averages are lottery-shaped.** ETH K=50: avg +13.1% but
-  MEDIAN −4.1%; top-3 trades carry +252pp of the +519pp K=60 total.
-  BTC K=40: top-3 carry +141pp of +183pp. Optimal-hold distributions
-  are bimodal (peaks at 1–5 and 46–60 bars): a leg either fails fast
-  or rides a regime for months — there is no single "right" K.
-- **Fold-level the long-hold construction is still coherent:** BTC
-  K=40 positive fold sums 7/7 years, ETH K=60 5/6 — but BTC's
-  bootstrap 2.5% LB is NEGATIVE (−0.2%/trade) and its LOYO K* flips
-  3↔40 (unstable). **ETH K=60 is the one significant long-hold:**
-  boot LB +4.6%/trade, LOYO-stable at 60 across all folds.
-- **Stop frequency:** 11/24 BTC, 17/32 ETH, 15/21 ZEC gated entries
-  hit the L0 close-stop within 60 bars — the classifier picks legs
-  whose low holds only about half the time; its real, CI-supported
-  edge is short-horizon bounce quality under the X1 target/stop
-  construction (win rates 0.64–0.70, bounded tails).
-
-**Registered per-coin algorithm basis (what real money may use):**
+## Registered per-coin basis (what real money may use)
 
 | asset | basis | status |
 |---|---|---|
-| BTC/USD | X1 exit (close-fill stop L0 / tgt 3.3·ATR / 200-bar horizon), +1.17%/trade | tradable basis, provisional pending shadow |
-| ETH/USD | X1 exit, +3.34%/trade | tradable basis, provisional pending shadow |
-| ETH/USD K=60 long-hold | boot-LB +4.6%/trade but 44% hit rate, median −4.9%, top-3 = half of P&L | shadow-tracked candidate arm ONLY — not a live basis |
-| ZEC/USD | none — classifier FAIL + no K with positive LB | excluded |
+| BTC/USD | X1 exit (close-fill stop L0 / tgt 3.3·ATR / 200-bar horizon), +1.17%/trade, win 0.696 | tradable basis, provisional pending shadow |
+| ETH/USD | X1 exit, +3.34%/trade, win 0.643 | tradable basis, provisional pending shadow |
+| shadow arms (both assets) | x0_registered, x4a_trail_ma9, x5_vigor_routed (+ hold_k60_stop ETH only) | measurement ONLY — exporter hard-fails if promoted past gate decision |
+| ZEC/USD | none — classifier FAIL, worst loss-geometry (−13.9% avg loss), trail FAILS there | excluded; bars feed breadth only |
 
-No blind K is adopted anywhere. Long-hold continuation is NOT part of
-the tradable basis; it survives only as a parallel shadow arm on ETH.
+Structural facts: all 23/23 stop exits are losses (stop = insurance
+premium, never alpha); ~40% of stops are whipsaws whose save-value no
+tested entry-time state predicts; the CI-supported edge is
+short-horizon bounce quality (win 0.64–0.70, bounded tails), NOT
+continuation holding.
 
-## Shipped (2026-07-19): s3bounce package + HYDRA shadow integration
+## Killed lines — do not revisit without new anomalies
 
-The S3 basis above is now productized: standalone stdlib-only package
-`s3bounce/` (own pyproject/tests; golden parity fixtures pin it to this
-pipeline at 1e-9 — regenerate via `tools/export_s3_model.py`), plus
-agent integration `hydra_s3.py`: read-only `quant_indicators["s3"]`
-signal surface + `HYDRA_S3_STRATEGY` shadow phase logging per-exit-arm
-paper positions to `.hydra-s3/` (x0/x1 both assets, hold_k60 ETH only;
-heartbeat confirmer payload recorded, both-arm decisions). NO live
-order path exists — live enablement remains gate-pending on this
-shadow window per the funnel rules.
+Freshness gate, close-confirm exits, envelope-1h (evidence:
+`research/data/s3/killed/`); flip/hybrid exits; blind K-holds; 1h
+bounce family; regime-priced stops; winner's-curse margin; shock
+annealing; MA200-front gating; time-stops (funnel kill-table has the
+numbers). Monitored, underpowered: post-stop re-entry (n=7, fwd60
++33.0% vs +8.9%); breadth-horizon inversion (low-breadth fwd60 +23.3%
+vs +1.3%) — both registered as shadow-window secondaries.
+
+## Shipped state + outstanding gates
+
+Shipped v2.30.0+: `s3bounce/` package (parity-pinned 1e-9, yearly refit
+`tools/export_s3_model.py`) + `hydra_s3.py` signal surface and
+`HYDRA_S3_STRATEGY` shadow phase (all arms logged in parallel to
+`.hydra-s3/`; NO order path exists).
+
+1. **Shadow window** is the final authority on every provisional
+   verdict above — start it by setting `HYDRA_S3_STRATEGY=1`.
+2. **Heartbeat network gates still unrun**: 24h live WS soak +
+   socket-kill drill (mock-tested only); Tier 1 features enabled +
+   re-gate on BTC/ETH is the next classifier step.
+3. **Live wiring** (`HYDRA_S3_LIVE`) requires the shadow gate + its own
+   `/bakeoff` — dedicated bounce-entry surface with heartbeat as
+   confirmation layer; the trend overlay must NOT gate S3 entries
+   (evidence above). No live wiring before that passes.

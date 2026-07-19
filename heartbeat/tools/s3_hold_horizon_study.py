@@ -65,7 +65,7 @@ from bakeoff_s3_daily_classifier import (               # noqa: E402
 K_MAX = 60
 K_GRID = [3, 5, 7, 10, 15, 20, 25, 30, 40, 50, 60]
 BOOT_N, BOOT_SEED = 10_000, 7
-OUT = HEARTBEAT_ROOT / "evidence" / "s3_hold_horizon.json"
+OUT = HEARTBEAT_ROOT.parent / "research" / "data" / "s3" / "s3_hold_horizon.json"
 
 
 def wilson95(x: int, n: int) -> tuple[float, float]:

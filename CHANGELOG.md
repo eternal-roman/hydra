@@ -6,6 +6,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.30.1] — 2026-07-19
+
+Trail-exit research arc closed under a pre-registered gate: **no basis
+flip** — X1 close-stop remains the tradable basis; two trailing-exit
+constructions enter the shadow ledger as measurement-only arms. Research
+corpus consolidated into `research/`.
+
+### Added
+- Pre-registered trail-exit gate (`heartbeat/evidence/bakeoffs/
+  s3_trail_exit_REGISTRATION.md` committed before the runner;
+  `heartbeat/tools/bakeoff_s3_trail_exit.py` →
+  `s3_trail_exit.json`): X4a ride-MA9 passed expectancy, fold
+  consistency, and the matched blind-time exposure control but FAILED
+  LOYO verdict stability; X5 vigor-routed failed the exposure control
+  with train-derived premium cuts. Pre-committed decision rule →
+  both SHADOW_ARM_ONLY.
+- `s3bounce` exit arms `x4a_trail_ma9` + `x5_vigor_routed` (shadow
+  ledger only): `evaluate(..., ma9=)` keeps research parity via the
+  caller-owned bar series; `OpenPosition.armed`/`premium_cut`
+  persisted across restarts; artifact carries per-asset
+  `premium_cut` (BTC 1.449 / ETH 1.585, final-fold train medians);
+  `hydra_s3.py` computes MA9 from its series and flows the cut.
+  New tests: 8 package (exits/shadow/model), s3bounce total 53.
+- ABI discovery funnel committed (`heartbeat/evidence/abi/
+  s3_trail_funnel_2026-07-19.md` + `heartbeat/tools/
+  abi_s3_watermarks.py`): winner-truncation (+9.8/+13.0% post-target
+  40d continuation) and bounce-vigor loss watermark (premium_atr)
+  mechanisms, 15 frames, kill-tests recorded.
+- `research/S3_BOUNCE_EDGE_2026.md` — formal research paper for the
+  full S3 arc (gates, per-trade ledger, refutations, lessons);
+  promoted study data in `research/data/s3/` (hold-horizon JSON,
+  X1 per-trade watermark ledger, killed-line evidence under
+  `killed/`).
+
+### Changed
+- `heartbeat/tools/export_s3_model.py` cross-check extended: hard-fails
+  if the artifact ever promotes a trail arm past its gate decision or
+  drifts a premium cut.
+- `heartbeat/HONEST_FINDINGS.md` compacted into a verdict ledger
+  (narratives moved to the research paper); killed-line bakeoff JSONs
+  and the hold-horizon study relocated to `research/data/s3/` with all
+  tool/artifact pointers updated.
+
 ## [2.30.0] — 2026-07-19
 
 S3 daily bounce classifier productized: standalone `s3bounce/` package +

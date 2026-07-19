@@ -5,7 +5,8 @@
   "source": {
     "promotion": "heartbeat/evidence/bakeoffs/s3_daily_classifier.json (final_fold_model, 2026 fold)",
     "exit_gate": "heartbeat/evidence/bakeoffs/s3_exit_policy.json (X1 adopted 2026-07-19)",
-    "hold_study": "heartbeat/evidence/s3_hold_horizon.json (per-coin K with CIs, 2026-07-19)"
+    "hold_study": "research/data/s3/s3_hold_horizon.json (per-coin K with CIs, 2026-07-19)",
+    "trail_gate": "heartbeat/evidence/bakeoffs/s3_trail_exit.json (NO basis flip 2026-07-19; x4a/x5 SHADOW_ARM_ONLY)"
   },
   "features": ["clv", "range_atr", "vol_z", "shock_recency", "breadth", "retest"],
   "breadth_universe": ["BTC/USD", "ETH/USD", "ZEC/USD"],
@@ -15,7 +16,8 @@
     "BTC/USD": "X1 exit, +1.17%/trade net of 26bps/side, win 0.696 (n=23)",
     "ETH/USD": "X1 exit, +3.34%/trade net of 26bps/side, win 0.643 (n=28)",
     "ETH/USD_hold_k60": "shadow-tracked arm ONLY (boot LB +4.6%/trade, hit 44%, median -4.9%)",
-    "ZEC/USD": "EXCLUDED - classifier gate FAIL; bars feed breadth only"
+    "trail_arms": "x4a_trail_ma9 / x5_vigor_routed shadow-tracked ONLY - trail gate passed expectancy+exposure controls but failed LOYO stability (x4a) / C3 (x5); the shadow window arbitrates",
+    "ZEC/USD": "EXCLUDED - classifier gate FAIL; bars feed breadth only; trail FAILED there (-2.05%/trade)"
   },
   "models": {
     "BTC/USD": {
@@ -34,7 +36,8 @@
       },
       "threshold": 0.5677,
       "exit_policy": "x1_close_stop",
-      "shadow_arms": ["x0_registered", "x1_close_stop"]
+      "shadow_arms": ["x0_registered", "x1_close_stop", "x4a_trail_ma9", "x5_vigor_routed"],
+      "premium_cut": 1.449
     },
     "ETH/USD": {
       "intercept": -0.2004,
@@ -52,7 +55,8 @@
       },
       "threshold": 0.5575,
       "exit_policy": "x1_close_stop",
-      "shadow_arms": ["x0_registered", "x1_close_stop", "hold_k60_stop"]
+      "shadow_arms": ["x0_registered", "x1_close_stop", "hold_k60_stop", "x4a_trail_ma9", "x5_vigor_routed"],
+      "premium_cut": 1.585
     }
   }
 }
