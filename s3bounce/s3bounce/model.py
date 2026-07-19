@@ -37,6 +37,8 @@ class AssetModel:
     threshold: float
     exit_policy: str
     shadow_arms: tuple[str, ...]
+    premium_cut: Optional[float] = None   # x5_vigor_routed threshold
+    #   (final-fold train-median premium_atr; trail gate 2026-07-19)
 
 
 @dataclass(frozen=True)
@@ -76,7 +78,9 @@ def load_artifact(path: Optional[str] = None) -> Artifact:
                 stds={f: float(m["feature_stds"][f]) for f in FEATURES},
                 threshold=float(m["threshold"]),
                 exit_policy=str(m["exit_policy"]),
-                shadow_arms=tuple(m.get("shadow_arms", ())))
+                shadow_arms=tuple(m.get("shadow_arms", ())),
+                premium_cut=(float(m["premium_cut"])
+                             if m.get("premium_cut") is not None else None))
         return Artifact(models=models,
                         trained_through=str(raw["trained_through"]),
                         breadth_universe=tuple(raw["breadth_universe"]),

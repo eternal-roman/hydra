@@ -103,3 +103,39 @@ def test_no_order_path():
         text = f.read_text(encoding="utf-8")
         for token in forbidden:
             assert token not in text, f"{f.name} contains {token!r}"
+
+
+def test_trail_arming_survives_restart(tmp_path):
+    """x4a arms on close >= L0+3.3*ATR; a restarted ledger must remember
+    the armed flag or a post-restart dip to L0 would wrongly stop out."""
+    d = str(tmp_path / "led")
+    led = ShadowLedger(d)
+    propose(led, arms=("x4a_trail_ma9",))
+    arm_line = 100.0 + 3.3 * 2.0                       # 106.6
+    assert led.mark_bar("BTC/USD", bar(13, 104, 107, 103, arm_line),
+                        ma9=90.0) == []
+    assert led.open[0]["armed"] is True
+    led2 = ShadowLedger(d)                             # restart mid-hold
+    # armed position: close below L0 is NOT a stop; close<ma9 trails
+    assert led2.mark_bar("BTC/USD", bar(14, 105, 106, 98, 99.0),
+                         ma9=98.0) == []
+    closes = led2.mark_bar("BTC/USD", bar(15, 99, 100, 96, 97.0), ma9=98.0)
+    assert [c["reason"] for c in closes] == ["trail"]
+    assert closes[0]["exit_px"] == 97.0
+
+
+def test_x5_premium_cut_flows_from_proposal(tmp_path):
+    """premium_atr=1.5; cut 1.4 routes x5 to the trail (no target exit)."""
+    led = ShadowLedger(str(tmp_path / "led"))
+    led.propose(asset="BTC/USD", low_ts=10 * DAY, low_px=100.0,
+                atr=2.0, low_idx=10, entry_idx=12,
+                entry_ts=12 * DAY, entry_px=103.0, score=0.61,
+                arms=["x1_close_stop", "x5_vigor_routed"],
+                premium_cut=1.4, confirmer={"status": "no_opinion"})
+    ev = [json.loads(l) for l in
+          (Path(led.dir) / "events.jsonl").read_text().splitlines()]
+    assert ev[0]["premium_atr"] == 1.5 and ev[0]["premium_cut"] == 1.4
+    tgt_bar = bar(13, 104, 107.0, 103, 106.0)          # high >= 106.6
+    closes = led.mark_bar("BTC/USD", tgt_bar, ma9=90.0)
+    assert [c["arm"] for c in closes] == ["x1_close_stop"]
+    assert closes[0]["reason"] == "target"             # x5 rode through

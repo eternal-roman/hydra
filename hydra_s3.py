@@ -273,8 +273,12 @@ class S3Adapter:
                 return None
             bars = self.strategy.series[asset].completed_bars(now)
             led = self.ledger()
-            for b in bars[-3:]:                     # advance recent bars
-                led.mark_bar(asset, b)
+            n = len(bars)
+            for i, b in enumerate(bars[-3:]):       # advance recent bars
+                j = n - min(3, n) + i               # index of b in bars
+                ma9 = (sum(x.close for x in bars[j - 8:j + 1]) / 9
+                       if j >= 8 else None)         # trail arms (x4a/x5)
+                led.mark_bar(asset, b, ma9)
             sig = self._last_signal.get(asset) or \
                 self.strategy.evaluate(asset, now)
             if sig.stage != "entryable_b1" or not sig.gated:
@@ -289,6 +293,7 @@ class S3Adapter:
                 low_idx=s.low_idx, entry_idx=sig.entry_idx,
                 entry_ts=entry_bar.open_ts, entry_px=entry_bar.close,
                 score=sig.score, arms=list(model.shadow_arms),
+                premium_cut=model.premium_cut,
                 confirmer=confirmer,
                 extra={"pair": pair, "mark_price": mark_price,
                        "decision_s3_only": True,

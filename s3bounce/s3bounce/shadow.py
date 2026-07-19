@@ -68,8 +68,11 @@ class ShadowLedger:
                 low_idx: int, entry_idx: int, entry_ts: float,
                 entry_px: float, score: float, arms: list[str],
                 confirmer: Optional[dict] = None,
-                extra: Optional[dict] = None) -> bool:
-        """Open shadow positions for every arm; False if already proposed."""
+                extra: Optional[dict] = None,
+                premium_cut: Optional[float] = None) -> bool:
+        """Open shadow positions for every arm; False if already proposed.
+        `premium_cut` is the x5_vigor_routed threshold from the artifact —
+        stored on every arm position (only x5 reads it)."""
         key = self.setup_key(asset, low_ts, low_px)
         if key in self.proposed:
             return False
@@ -78,19 +81,25 @@ class ShadowLedger:
                     "low_ts": low_ts, "low_px": low_px, "atr": atr,
                     "entry_ts": entry_ts, "entry_px": entry_px,
                     "score": score, "arms": arms,
+                    "premium_atr": round((entry_px - low_px) / atr, 4),
+                    "premium_cut": premium_cut,
                     "confirmer": confirmer, "extra": extra or {}})
         for arm in arms:
             self.open.append({"key": key, "asset": asset, "arm": arm,
                               "entry_ts": entry_ts, "entry_px": entry_px,
                               "low_px": low_px, "atr": atr,
                               "low_idx": low_idx, "entry_idx": entry_idx,
-                              "bars_seen": 0})
+                              "premium_cut": premium_cut,
+                              "armed": False, "bars_seen": 0})
         self._save()
         return True
 
-    def mark_bar(self, asset: str, bar: DailyBar) -> list[dict]:
+    def mark_bar(self, asset: str, bar: DailyBar,
+                 ma9: Optional[float] = None) -> list[dict]:
         """Advance every open position of `asset` through one completed
-        bar that follows its entry bar. Returns close events emitted."""
+        bar that follows its entry bar. Returns close events emitted.
+        `ma9` = 9-bar MA of closes including `bar` (trail arms; the
+        caller owns the bar series — None keeps trails open)."""
         closes = []
         still_open = []
         advanced = False
@@ -108,10 +117,13 @@ class ShadowLedger:
             pos = OpenPosition(asset=p["asset"], arm=p["arm"],
                                entry_ts=p["entry_ts"], entry_px=p["entry_px"],
                                low_px=p["low_px"], atr=p["atr"],
-                               low_idx=p["low_idx"], entry_idx=p["entry_idx"])
+                               low_idx=p["low_idx"], entry_idx=p["entry_idx"],
+                               armed=bool(p.get("armed", False)),
+                               premium_cut=p.get("premium_cut"))
             # bar_idx reconstructed from bars elapsed since entry
             bar_idx = p["entry_idx"] + p["bars_seen"]
-            d = evaluate(p["arm"], pos, bar, bar_idx)
+            d = evaluate(p["arm"], pos, bar, bar_idx, ma9)
+            p["armed"] = pos.armed        # trail arming survives restarts
             if d is None:
                 still_open.append(p)
                 continue

@@ -21,6 +21,11 @@ def test_default_artifact_shape():
     assert all(m.exit_policy == "x1_close_stop" for m in a.models.values())
     assert "hold_k60_stop" in a.models["ETH/USD"].shadow_arms
     assert "hold_k60_stop" not in a.models["BTC/USD"].shadow_arms
+    for m in a.models.values():                        # trail gate 2026-07-19
+        assert "x4a_trail_ma9" in m.shadow_arms        # shadow-only, never
+        assert "x5_vigor_routed" in m.shadow_arms      # the exit_policy
+        assert m.exit_policy not in ("x4a_trail_ma9", "x5_vigor_routed")
+        assert m.premium_cut is not None and m.premium_cut > 0
 
 
 def test_score_matches_hand_sigmoid():
