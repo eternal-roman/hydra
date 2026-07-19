@@ -385,6 +385,13 @@ def _count_stale_fields(qi: Dict[str, Any]) -> int:
     NIGHT/USD). Every derivatives field is unavailable by design, so
     R10 tracks only the engine-internal CVD signal — otherwise every
     satellite would be structurally force-held on every tick.
+
+    Perp-only awareness (v2.29.0): if `basis_available=False`, the pair
+    has a direct perp but Kraken lists no quarterly contracts (e.g.
+    PF_ZECUSD), so `basis_apr_pct` is unavailable by construction —
+    not stale. R10 tracks the remaining 4 fields; without this the
+    pair would sit permanently at 1 stale field and any transient miss
+    would trip the blackout.
     """
     aggregate = qi.get("staleness_s")
     try:
@@ -397,6 +404,9 @@ def _count_stale_fields(qi: Dict[str, Any]) -> int:
         tracked = ("cvd_divergence_sigma",)
     elif qi.get("synthetic_pair"):
         tracked = ("funding_bps_8h", "cvd_divergence_sigma", "oi_price_regime")
+    elif qi.get("basis_available") is False:
+        tracked = ("funding_bps_8h", "oi_delta_1h_pct", "oi_price_regime",
+                   "cvd_divergence_sigma")
     else:
         tracked = ("funding_bps_8h", "oi_delta_1h_pct", "oi_price_regime",
                    "basis_apr_pct", "cvd_divergence_sigma")

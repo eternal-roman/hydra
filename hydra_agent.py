@@ -3,16 +3,19 @@
 HYDRA Agent — Kraken CLI Integration Layer (Live Trading)
 
 Connects the HYDRA engine to live Kraken market data via kraken-cli (WSL).
-Supports live trading on SOL/USD, SOL/BTC, and BTC/USD by default; the
-active triangle's stable quote (USD / USDC / USDT) is selected by
---pairs at agent boot.
+Trades BTC/USD, ETH/USD, and ZEC/USD by default (v2.29 — three independent
+stable-quoted pairs, no triangle/coordinator; 90-day real-tape studies
+showed no SOL edge and the SOL/BTC bridge was already proven dead).
+Explicit SOL pairs remain fully supported via --pairs, and passing a
+SOL/quote + SOL/BTC + BTC/quote trio re-activates the TradingTriangle
+and CrossPairCoordinator unchanged.
 Broadcasts state over WebSocket for the React dashboard.
 
 Usage:
     python hydra_agent.py --demo --duration 30          # offline, no keys / no WSL
-    python hydra_agent.py --pairs SOL/USD,SOL/BTC --balance 100 --duration 600
-    python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD --interval 60
-    python hydra_agent.py --pairs SOL/USDC,SOL/BTC,BTC/USDC --interval 60   # opt back into USDC
+    python hydra_agent.py --pairs BTC/USD,ETH/USD --balance 100 --duration 600
+    python hydra_agent.py --pairs BTC/USD,ETH/USD,ZEC/USD --interval 60
+    python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD --interval 60   # legacy SOL triangle
 """
 
 import json
@@ -79,16 +82,18 @@ KRAKEN_REST_FLOOR_S = 2.0
 # Seed prices for offline --demo synthetic candles (approx market levels).
 # Used only when demo=True; never for live/paper exchange paths.
 _DEMO_SEED_PRICES: Dict[str, float] = {
-    "BTC/USD": 95_000.0,
-    "BTC/USDC": 95_000.0,
-    "BTC/USDT": 95_000.0,
-    "SOL/USD": 150.0,
-    "SOL/USDC": 150.0,
-    "SOL/USDT": 150.0,
-    "SOL/BTC": 0.00158,
-    "ETH/USD": 3_500.0,
-    "ETH/USDC": 3_500.0,
-    "ETH/BTC": 0.037,
+    "BTC/USD": 65_000.0,
+    "BTC/USDC": 65_000.0,
+    "BTC/USDT": 65_000.0,
+    "SOL/USD": 75.0,
+    "SOL/USDC": 75.0,
+    "SOL/USDT": 75.0,
+    "SOL/BTC": 0.00116,
+    "ETH/USD": 1_900.0,
+    "ETH/USDC": 1_900.0,
+    "ETH/USDT": 1_900.0,
+    "ETH/BTC": 0.029,
+    "ZEC/USD": 500.0,
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -666,6 +671,7 @@ class HydraAgent:
                         "basis_apr_pct": snap.basis_apr_pct,
                         "staleness_s": round(snap.staleness_s, 1) if snap.staleness_s != float("inf") else None,
                         "synthetic_pair": snap.synthetic,
+                        "basis_available": getattr(snap, "basis_available", True),
                     }
             except Exception as e:
                 import logging; logging.warning(f"Ignored exception: {e}")
@@ -4200,7 +4206,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.28.1",
+            "version": "2.29.0",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
@@ -4233,9 +4239,12 @@ class HydraAgent:
 def discover_portfolio_pairs(default_quote: str = "USD") -> List[str]:
     """Resolve every held Kraken asset into a tradable stable-quoted pair.
 
-    Universe = the default triangle (SOL/quote, SOL/BTC, BTC/quote) plus one
-    satellite pair per additional held base asset. Quote selection per
-    satellite:
+    Universe = the default cores (BTC/quote, ETH/quote, ZEC/quote — v2.29,
+    always seeded so the highest-conviction pairs trade regardless of what
+    is currently held) plus one satellite pair per additional held base
+    asset. Held SOL is a satellite like any other asset — it trades freely
+    (all balance is operational) but is no longer a default core. Quote
+    selection per satellite:
 
       1. `HYDRA_AUTO_QUOTE` env (USD | USDC | USDT), if set, wins outright.
       2. Otherwise prefer BASE/USDC (idle USDC earns yield) **when the
@@ -4254,12 +4263,25 @@ def discover_portfolio_pairs(default_quote: str = "USD") -> List[str]:
     """
     from hydra_pair_registry import default_registry, STABLE_QUOTES
 
-    triangle = [f"SOL/{default_quote}", "SOL/BTC", f"BTC/{default_quote}"]
+    cores = [f"BTC/{default_quote}", f"ETH/{default_quote}",
+             f"ZEC/{default_quote}"]
+    if default_quote != "USD":
+        # Not every core base has every stable-quoted listing on Kraken
+        # (e.g. ZEC/USDC does not exist). Verify and fall back per-core to
+        # BASE/USD; on a constants fetch error keep the requested quote
+        # (fail soft — boot must not brick on a Kraken hiccup).
+        try:
+            listed = KrakenCLI.load_pair_constants(cores) or {}
+            cores = [c if c in listed else f"{c.split('/')[0]}/USD"
+                     for c in cores]
+        except Exception as e:
+            print(f"  [AUTO-PAIRS] core listing check failed ({e!r}) — "
+                  f"keeping {default_quote}-quoted cores")
     bal = KrakenCLI.balance()
     if not isinstance(bal, dict) or "error" in bal:
         print(f"  [AUTO-PAIRS] balance fetch failed ({bal!r}) — "
-              f"falling back to the default triangle")
-        return triangle
+              f"falling back to the default core pairs")
+        return cores
 
     # Aggregate spot holdings by canonical asset name.
     holdings: Dict[str, float] = {}
@@ -4283,8 +4305,8 @@ def discover_portfolio_pairs(default_quote: str = "USD") -> List[str]:
     satellites: List[str] = []
     reg = default_registry()
     for base, amount in sorted(holdings.items()):
-        if base in STABLE_QUOTES or base in ("SOL", "BTC"):
-            continue  # stables fund quotes; SOL/BTC are the triangle
+        if base in STABLE_QUOTES or base in ("BTC", "ETH", "ZEC"):
+            continue  # stables fund quotes; BTC/ETH/ZEC are the cores
         if forced_quote:
             quote_order = [forced_quote]
         elif usdc_funded:
@@ -4317,7 +4339,7 @@ def discover_portfolio_pairs(default_quote: str = "USD") -> List[str]:
             print(f"  [AUTO-PAIRS] {base}: no tradable stable-quoted pair "
                   f"on Kraken — skipping")
 
-    return triangle + satellites
+    return cores + satellites
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -4328,12 +4350,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="HYDRA — Live Regime-Adaptive Trading Agent for Kraken CLI",
     )
-    parser.add_argument("--pairs", type=str, default="SOL/USD,SOL/BTC,BTC/USD",
-                        help="Comma-separated trading pairs (default: SOL/USD,SOL/BTC,BTC/USD; "
-                             "v2.19+ flipped from USDC to USD). Pass 'auto' to discover every "
-                             "held Kraken asset and trade it against USDC (preferred, earns "
-                             "yield) or USD (fill-rate / USD-only listings) — see "
-                             "discover_portfolio_pairs.")
+    parser.add_argument("--pairs", type=str, default="BTC/USD,ETH/USD,ZEC/USD",
+                        help="Comma-separated trading pairs (default: BTC/USD,ETH/USD,ZEC/USD; "
+                             "v2.29 dropped the SOL triangle — pass "
+                             "SOL/USD,SOL/BTC,BTC/USD explicitly to restore it). Pass 'auto' "
+                             "to discover every held Kraken asset and trade it against USDC "
+                             "(preferred, earns yield) or USD (fill-rate / USD-only listings) "
+                             "— see discover_portfolio_pairs.")
     parser.add_argument("--balance", type=float, default=100.0,
                         help="Reference balance for position sizing (default: 100)")
     parser.add_argument("--interval", type=int, default=None,
@@ -4362,8 +4385,8 @@ def main():
     args = parser.parse_args()
     if args.pairs.strip().lower() == "auto":
         if args.demo:
-            print("  [AUTO-PAIRS] --demo has no exchange account; using the default triangle")
-            pairs = ["SOL/USD", "SOL/BTC", "BTC/USD"]
+            print("  [AUTO-PAIRS] --demo has no exchange account; using the default core pairs")
+            pairs = ["BTC/USD", "ETH/USD", "ZEC/USD"]
         else:
             from hydra_config import DEFAULT_QUOTE
             _env_q = os.environ.get("HYDRA_QUOTE", "").strip().upper()

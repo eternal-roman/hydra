@@ -11,9 +11,9 @@
 ## Highlights
 
 - **Regime switching** on pure-Python indicators (Wilder RSI/ATR, Bollinger, MACD, EMAs)
-- **Spot-only** execution — default `SOL/USD` + `BTC/USD` trading with the SOL/BTC bridge as
-  signal-only (drain mode; `HYDRA_BRIDGE_TRADING=1` re-enables). `--pairs auto` discovers every
-  held Kraken asset (USDC-preferred quote when funded, USD fallback)
+- **Spot-only** execution — default `BTC/USD` + `ETH/USD` + `ZEC/USD` (v2.29, independent pairs;
+  explicit SOL pairs restore the legacy triangle, bridge signal-only). `--pairs auto` seeds the
+  cores and adds a satellite per held Kraken asset (USDC-preferred quote when funded, USD fallback)
 - **Limit post-only** — never market; 2s REST floor; 15% drawdown **blocks new BUYs** (SELL flatten still allowed)
 - **AI quant pipeline** (optional): Market Quant + Risk Manager + Grok + R1–R11 rules
 - **Hold-through rails** (default on; `HYDRA_HOLD_THROUGH=0` off): TREND_UP entries ≥0.65 conf, flatten downs, ride mid-trends — defense + capture discipline, **not** a profit claim
@@ -92,7 +92,8 @@ python hydra_agent.py --demo --duration 30
 python hydra_agent.py --mode competition --paper
 
 # Live (requires keys + kraken-cli)
-python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD --balance 100
+python hydra_agent.py --balance 100                         # BTC/USD, ETH/USD, ZEC/USD
+python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD       # legacy SOL triangle
 
 # Dashboard (http://localhost:3000 → agent WS :8765)
 cd dashboard && npm run dev

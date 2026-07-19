@@ -61,37 +61,42 @@ def main() -> int:
         print(f"FAIL: missing history db {db}")
         return 2
 
+    # v2.29: gate every default core pair (BTC/ETH/ZEC), not just the
+    # legacy SOL default. Each core runs its own 90d window from its own
+    # coverage — the archives have different depths.
+    core_pairs = ("BTC/USD", "ETH/USD", "ZEC/USD")
     cov = _coverage(db)
-    sol = [r for r in cov if r[0] == 3600 and r[1] == "SOL/USD"]
-    if not sol:
-        print("FAIL: no SOL/USD 1h coverage")
-        return 2
-    _, _, tmin, tmax, _ = sol[0]
-    t0 = max(tmin, tmax - 90 * 86400)
-
-    print(f"Running go-live gates on {db} SOL/USD 90d 1h ...")
+    failures = []
     results = {}
-    for fill in ("pessimistic", "realistic"):
-        r = _run(db, ["SOL/USD"], 3600, t0, tmax, fill, "competition")
-        m = r.metrics
-        results[fill] = {
-            "status": r.status,
-            "return_pct": m.total_return_pct,
-            "max_dd": m.max_drawdown_pct,
-            "sharpe": m.sharpe,
-            "trades": m.total_trades,
-            "fill_rate": r.fills / max(1, r.fills + r.rejects),
-        }
-        print(f"  {fill}: ret={m.total_return_pct:.2f}% dd={m.max_drawdown_pct:.1f}% "
-              f"sharpe={m.sharpe:.2f} trades={m.total_trades}")
+    for pair in core_pairs:
+        rows = [r for r in cov if r[0] == 3600 and r[1] == pair]
+        if not rows:
+            failures.append(f"no {pair} 1h coverage")
+            continue
+        _, _, tmin, tmax, _ = rows[0]
+        t0 = max(tmin, tmax - 90 * 86400)
+        print(f"Running go-live gates on {db} {pair} 90d 1h ...")
+        for fill in ("pessimistic", "realistic"):
+            r = _run(db, [pair], 3600, t0, tmax, fill, "competition")
+            m = r.metrics
+            results[f"{pair}:{fill}"] = {
+                "status": r.status,
+                "return_pct": m.total_return_pct,
+                "max_dd": m.max_drawdown_pct,
+                "sharpe": m.sharpe,
+                "trades": m.total_trades,
+                "fill_rate": r.fills / max(1, r.fills + r.rejects),
+            }
+            print(f"  {pair} {fill}: ret={m.total_return_pct:.2f}% "
+                  f"dd={m.max_drawdown_pct:.1f}% "
+                  f"sharpe={m.sharpe:.2f} trades={m.total_trades}")
 
     # Soft gates — fail closed on broken plumbing, not on alpha.
-    failures = []
-    for fill, row in results.items():
+    for key, row in results.items():
         if row["status"] != "complete":
-            failures.append(f"{fill} status={row['status']}")
+            failures.append(f"{key} status={row['status']}")
         if row["max_dd"] > 99.0:
-            failures.append(f"{fill} max_dd absurd {row['max_dd']}")
+            failures.append(f"{key} max_dd absurd {row['max_dd']}")
         # After PR-A, halted engines should flatten — open inventory freeze
         # should not drive 100% session loss as the only outcome forever.
     # Unit invariant re-check via import
@@ -108,7 +113,7 @@ def main() -> int:
     )
     if r2.force_hold:
         failures.append("R2 still force_holds SELL")
-    eng = HydraEngine(initial_balance=100.0, asset="SOL/USD")
+    eng = HydraEngine(initial_balance=100.0, asset="BTC/USD")
     eng.halted = True
     eng.position.size = 0.5
     eng.position.avg_entry = 100.0

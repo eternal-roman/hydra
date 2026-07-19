@@ -111,7 +111,7 @@ class TestResearchDatasetCoverage(_ResearchFixture):
 class TestResearchLabRun(_ResearchFixture):
     def test_invalid_pair_rejected(self):
         """Unknown pair returns success=False before touching the store."""
-        reply = self._call("research_lab_run", {"pair": "ETH/USD"})
+        reply = self._call("research_lab_run", {"pair": "DOGE/USD"})
         self.assertFalse(reply["success"])
         self.assertIn("pair required", reply["error"])
 

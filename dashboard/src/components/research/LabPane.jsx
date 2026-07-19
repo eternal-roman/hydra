@@ -18,7 +18,7 @@
 import React, { useState, useEffect } from "react";
 import { COLORS, mono, heading, wilcoxonColor } from "../../theme";
 
-const PAIRS = ["BTC/USD", "SOL/USD", "SOL/BTC"];
+const PAIRS = ["BTC/USD", "ETH/USD", "ZEC/USD", "SOL/USD", "SOL/BTC"];
 
 const LABELS = {
   volatile_atr_mult: "Volatile ATR multiplier",

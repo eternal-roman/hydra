@@ -6,6 +6,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.29.0] — 2026-07-19
+
+Default pairs become three independent stable-quoted cores: **BTC/USD +
+ETH/USD + ZEC/USD** — no triangle, no coordinator. The SOL triangle
+remains fully supported via explicit `--pairs SOL/USD,SOL/BTC,BTC/USD`.
+
+### Changed
+- Default universe flip (evidence: 90d real-tape classifier gate — SOL
+  FAILED WF AUC 0.56, BTC 0.76 / ETH 0.73 PASSED; bridge already proven
+  dead in `.hydra-flywheel/bridge_isolation.json`).
+- `--pairs auto` seeds the three cores (per-core USD fallback); held SOL
+  becomes a normal tradable satellite.
+- Backtest/experiments/backtest-tool defaults `SOL/USD -> BTC/USD`;
+  research-lab whitelist + dashboard LabPane are supersets (SOL kept).
+- `scripts/go_live_gates.py` gates all three cores (was SOL-only).
+
+### Added
+- Derivatives coverage (signal input only, SPOT-ONLY unchanged): ETH
+  `PF_ETHUSD` + `FF_ETHUSD` quarterlies (full R1-R11); ZEC perp-only
+  `PF_ZECUSD` with structural `basis_available=False` (map-driven) so
+  R10 tracks 4 fields — prevents a permanent 1-stale-field force-hold
+  trap. New CLAUDE.md invariant.
+- Registry/sizing: ETH/USD + ZEC/USD fallback metadata;
+  `MIN_ORDER_SIZE["ZEC"]=0.01`.
+- Tests: portfolio-auto core+satellite semantics (incl. no-SOL-in-
+  defaults regression guard), `basis_available` stream + R10 tracking,
+  non-USD core fallback, drift-pair pinning.
+
+---
+
 ## [2.28.1] — 2026-07-13
 
 Docs-only patch: research corpus published in-repo.

@@ -154,7 +154,7 @@ class TestBacktestRunner(unittest.TestCase):
         result = BacktestRunner(cfg).run()
         self.assertEqual(result.status, "complete")
         self.assertEqual(result.candles_processed, 400)
-        self.assertGreater(len(result.equity_curve["SOL/USD"]), 100)
+        self.assertGreater(len(result.equity_curve["BTC/USD"]), 100)
         # Metrics are populated (even if trade count is low)
         self.assertIsNotNone(result.metrics)
         self.assertGreaterEqual(result.metrics.total_trades, 0)
@@ -247,10 +247,10 @@ class TestBacktestRunner(unittest.TestCase):
             name="po",
             n_candles=100,
             seed=1,
-            overrides={"SOL/USD": {"momentum_rsi_upper": 78.0}},
+            overrides={"BTC/USD": {"momentum_rsi_upper": 78.0}},
         )
         runner = BacktestRunner(cfg)
-        self.assertAlmostEqual(runner.engines["SOL/USD"].momentum_rsi_upper, 78.0)
+        self.assertAlmostEqual(runner.engines["BTC/USD"].momentum_rsi_upper, 78.0)
 
     def test_competition_mode_uses_competition_sizing(self):
         cfg = finalize_stamps(BacktestConfig(
@@ -272,7 +272,7 @@ class TestBacktestRunner(unittest.TestCase):
         self.assertTrue(hasattr(runner, "engines"))
         # Fresh runner with same config still gets its own engine (different object)
         runner2 = BacktestRunner(cfg)
-        self.assertIsNot(runner.engines["SOL/USD"], runner2.engines["SOL/USD"])
+        self.assertIsNot(runner.engines["BTC/USD"], runner2.engines["BTC/USD"])
 
 
 class TestMetricHelpers(unittest.TestCase):
