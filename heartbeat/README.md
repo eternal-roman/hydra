@@ -1,38 +1,127 @@
-# heartbeat — order-flow posterior for Kraken
+# heartbeat — order-flow posterior P(up)
 
-A recursive Bayesian posterior **P(up) / P(down)** computed per forming
-candle from live Kraken order flow, with a rolling ~30-candle evidence
-memory. It is **not** a standalone signal generator: it is a
-**confirmation classifier** for an existing trailing-stop bottom-buy
-system. When a counter-trend bounce is forming, heartbeat's job is to
-discriminate real reversals (persistent aggressive taker buying) from
-fakes (passive-fill bounces with evaporating pressure).
+A recursive Bayesian posterior **P(up) / P(down)** from trade tape (aggressor
+side + price/qty). Asset-agnostic: crypto **or** equity when trades carry
+side / aggressor. It is a **confirmation classifier**, not a standalone
+signal generator and **never** an order path — agents consume indicator JSON
+only.
 
-Primary asset BTC/USD; generalizes to ETH/USD, ZEC/USD, SOL/USD via
-config. Python 3.11+, no GPU. Self-contained package — nothing in here
-imports from or is imported by the HYDRA engine.
+Distribution name: **`heartbeat-flow`** · import name: **`heartbeat`**.
 
-## Install & test
+## Solo install
+
+From a checkout of this package (or the Hydra monorepo `heartbeat/` tree):
+
+```bash
+# monorepo root
+pip install -e ./heartbeat
+
+# or from inside the package
+cd heartbeat
+pip install -e .
+
+# with test tooling
+pip install -e ".[dev]"
+```
+
+Later (when published): `pip install heartbeat-flow`.
+
+Verify:
+
+```bash
+python -c "from heartbeat import run_dataset, __version__; print(__version__)"
+heartbeat run-dataset --help
+```
+
+Without an editable install, use `PYTHONPATH=src`:
 
 ```bash
 cd heartbeat
-pip install -e .[dev]          # or: pip install requests websockets pyarrow PyYAML pytest
-python -m pytest tests/        # 71 tests: no-lookahead, determinism, fixtures, mocks
+PYTHONPATH=src python -c "from heartbeat import run_dataset"
+PYTHONPATH=src python -m heartbeat.cli run-dataset sample.csv --symbol AAPL --tf 1h
 ```
 
-## CLI
+### Requirements
+
+| Component | Python | Required deps | Optional extras |
+|---|---|---|---|
+| Core indicator (`run_dataset`, dataset IO) | ≥3.10 | **PyYAML** | — |
+| Parquet tape store | ≥3.10 | pyarrow (core today) | `[parquet]` |
+| Live Kraken feed (`backfill` / `run`) | ≥3.10 | requests, websockets (core today) | `[kraken]` |
+| Tests | ≥3.10 | pytest | `[dev]` |
+
+Core currently pins PyYAML + requests + websockets + pyarrow so the full CLI
+and Hydra monorepo workflows work out of the box. Extras document the
+modular split for thinner installs later.
+
+## Quickstart — local dataset (no Kraken)
+
+Minimal CSV (`sample.csv`):
+
+```csv
+ts,price,qty,side
+1700000000,100.0,1.0,buy
+1700000090,100.1,0.5,sell
+1700000180,100.2,1.2,buy
+```
+
+Required columns (aliases allowed):
+
+| Field | Aliases | Notes |
+|---|---|---|
+| timestamp | `ts`, `timestamp`, `time` | Unix seconds (float ok) |
+| price | `price` | |
+| quantity | `qty`, `quantity`, `size`, `volume` | |
+| side | `side`, `aggressor` | `buy`/`sell`/`b`/`s`/`1`/`-1` |
+| trade_id | `trade_id`, `id` | optional |
+| ord_type | `ord_type`, `order_type` | optional |
+
+**OHLCV-only without aggressor side is not supported.**
+
+### CLI
 
 ```bash
+heartbeat run-dataset sample.csv --symbol AAPL --tf 1h
+heartbeat run-dataset sample.csv --symbol AAPL --tf 1h --json
+heartbeat run-dataset sample.csv --symbol BTC/USD --tf 1h --weights weights_BTC_USD_1h.json
+```
+
+Exit codes:
+
+| code | meaning |
+|---|---|
+| 0 | ok or degraded (e.g. uncalibrated weights — see warnings) |
+| 2 | missing dataset (`MissingDatasetError`) |
+| 3 | invalid dataset (`InvalidDatasetError`) |
+
+### Python API
+
+```python
+from heartbeat import run_dataset, MissingDatasetError
+
+result = run_dataset("sample.csv", symbol="AAPL", tf="1h")
+print(result.p_up, result.status, result.warnings)
+
+# agents / structured consumers
+print(result.to_dict())
+```
+
+Uncalibrated weights set `status="degraded"` and append
+`uncalibrated_weights: p_up uses default_weight (near coin-flip)` — never a
+silent coin-flip.
+
+## CLI (full)
+
+```bash
+heartbeat run-dataset PATH --symbol AAPL --tf 1h [--weights PATH] [--json]
 heartbeat backfill --pair BTC/USD --tf 1h --days 90     # historical tape via REST Trades
 heartbeat run --pair BTC/USD --tf 1h                    # live WS stream + P(up) per heartbeat
 heartbeat eval --pair BTC/USD --tf 1h                   # labeler + metrics -> report
 heartbeat calibrate --pairs BTC/USD,ETH/USD --tf 1h --walk-forward
-heartbeat replay --tape data/BTC_USD/1h/tape/part-....parquet   # deterministic replay
+heartbeat replay --tape data/BTC_USD/1h/tape/part-....parquet
 heartbeat status                                        # feed health + current P(up)
-heartbeat synth --pair BTC/USD --tf 1h --days 150 --seed 7      # offline validation tape
+heartbeat synth --pair BTC/USD --tf 1h --days 150 --seed 7
 ```
-
-(Without an editable install, use `PYTHONPATH=src python -m heartbeat.cli ...`.)
 
 `run` prints one machine-parseable line per heartbeat:
 
@@ -117,6 +206,9 @@ Consumer rules:
 * Sequence violations (backwards exchange timestamps) taint the
   inversion window.
 * Tainted events are excluded from eval/calibration.
+* Missing / invalid datasets raise structured errors
+  (`MissingDatasetError` / `InvalidDatasetError`) with `.code` and `.hint`
+  — never silent fabrications.
 
 ## Determinism
 
@@ -126,6 +218,14 @@ No wall clock, no unseeded randomness anywhere in the math path;
 `synth` tapes derive entirely from `random.Random(seed)`. Digests are
 **per-platform**: `math.exp` in the sigmoid is libm-dependent, so
 Linux and Windows produce different (each internally stable) digests.
+
+## Tests
+
+```bash
+cd heartbeat
+pip install -e ".[dev]"
+python -m pytest tests/
+```
 
 ## Verification gates — status
 
