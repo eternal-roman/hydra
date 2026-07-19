@@ -50,6 +50,24 @@ def test_arm_specific_closes(tmp_path):
     assert led.open == []
 
 
+def test_remarking_same_bar_is_idempotent(tmp_path):
+    """Callers re-mark recent bars every tick; hold counters must advance
+    once per distinct bar, and survive a restart."""
+    d = str(tmp_path / "led")
+    led = ShadowLedger(d)
+    propose(led, arms=("hold_k60_stop",))
+    b = bar(13, 102, 103, 101, 102)
+    for _ in range(30):
+        assert led.mark_bar("BTC/USD", b) == []
+    assert led.open[0]["bars_seen"] == 1
+    led2 = ShadowLedger(d)                       # restart persists counter
+    assert led2.open[0]["bars_seen"] == 1
+    led2.mark_bar("BTC/USD", bar(14, 102, 103, 101, 102))
+    assert led2.open[0]["bars_seen"] == 2
+    assert led2.mark_bar("BTC/USD", b) == []     # older bar: no effect
+    assert led2.open[0]["bars_seen"] == 2
+
+
 def test_bars_before_entry_ignored(tmp_path):
     led = ShadowLedger(str(tmp_path / "led"))
     propose(led)

@@ -93,11 +93,18 @@ class ShadowLedger:
         bar that follows its entry bar. Returns close events emitted."""
         closes = []
         still_open = []
+        advanced = False
         for p in self.open:
-            if p["asset"] != asset or bar.open_ts <= p["entry_ts"]:
+            # Idempotent per bar: callers re-mark recent bars every tick;
+            # a bar at-or-before the last marked (or entry) bar must not
+            # advance the hold counter again.
+            seen_through = max(p["entry_ts"], p.get("last_bar_ts", 0.0))
+            if p["asset"] != asset or bar.open_ts <= seen_through:
                 still_open.append(p)
                 continue
+            p["last_bar_ts"] = bar.open_ts
             p["bars_seen"] += 1
+            advanced = True
             pos = OpenPosition(asset=p["asset"], arm=p["arm"],
                                entry_ts=p["entry_ts"], entry_px=p["entry_px"],
                                low_px=p["low_px"], atr=p["atr"],
@@ -115,9 +122,7 @@ class ShadowLedger:
                   "hold_bars": p["bars_seen"], "ret_net": ret}
             self._emit(ev)
             closes.append(ev)
-        if len(still_open) != len(self.open):
-            self.open = still_open
-            self._save()
-        else:
-            self.open = still_open
+        self.open = still_open
+        if advanced or closes:
+            self._save()          # hold counters must survive restarts
         return closes
