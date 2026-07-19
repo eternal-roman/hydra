@@ -116,3 +116,12 @@ analogues. The shadow window remains the final live authority.
   S3 exits; the 15% CB applies to any future live arm regardless.
 - **Kelly/sizer**: F3 depth-sizing idea killed as a gate; sizing stays
   as shipped.
+
+---
+
+**RESOLUTION (same day):** survivors ran through the pre-registered
+trail-exit gate (`../bakeoffs/s3_trail_exit_REGISTRATION.md` →
+`s3_trail_exit.json`). Verdict: NO basis flip — X4a failed C5 LOYO
+stability, X5 failed C3; both entered the shadow ledger as
+measurement-only arms per the pre-committed decision rule. Full
+narrative: `research/S3_BOUNCE_EDGE_2026.md`.
