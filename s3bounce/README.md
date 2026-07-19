@@ -79,5 +79,5 @@ the research pipeline at 1e-9 tolerance.
 
 - Promotion: `heartbeat/evidence/bakeoffs/s3_daily_classifier.json`
 - Exit gate: `heartbeat/evidence/bakeoffs/s3_exit_policy.json` (+ registration)
-- Hold-horizon study: `heartbeat/evidence/s3_hold_horizon.json`
+- Hold-horizon study: `research/data/s3/s3_hold_horizon.json`
 - Narrative: `heartbeat/HONEST_FINDINGS.md`, `heartbeat/evidence/ABI_FUNNEL_ROUND3_2026-07-18.md`

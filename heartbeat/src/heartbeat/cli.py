@@ -128,6 +128,18 @@ def cmd_run(args, cfg) -> int:
     rest = KrakenRest(cfg["feed"]["rest_url"], cfg["feed"]["rest_rate_per_s"],
                       cfg["feed"]["rest_burst"])
     monitor = TapeMonitor(cfg["feed"]["clock_skew_alert_s"])
+    # H3: uncalibrated weights ≈ coin flip. Prefer committed real-tape
+    # weights so Hydra's confirmer/surface sees a meaningful p_up.
+    from .weights_io import apply_weights_to_config, find_weights
+    found = find_weights(pair, tf, store_root=cfg["store"]["root"])
+    if found:
+        weights, wpath = found
+        apply_weights_to_config(cfg, weights)
+        print(f"loaded calibrated weights from {wpath}")
+    else:
+        print(f"WARNING: no calibrated weights for {pair} {tf} — "
+              f"p_up uses default_weight (≈ coin flip until calibrate)",
+              file=sys.stderr)
     engine = PosteriorEngine(cfg)
     scaler_state = store.load_scalers(pair, tf)
     if scaler_state:
@@ -201,8 +213,11 @@ def cmd_run(args, cfg) -> int:
 
 
 def _write_status(cfg, pair, tf, pipe, monitor) -> None:
-    write_status_file(cfg["api"]["status_file"],
-                      status_payload(pair, tf, pipe, monitor))
+    # Multi-pair path: generic status_file → heartbeat_status_BTC_USD.json
+    # so Hydra's S3 confirmer + dashboard surface can poll without clobber.
+    from .api import resolve_status_path
+    path = resolve_status_path(cfg["api"]["status_file"], pair)
+    write_status_file(path, status_payload(pair, tf, pipe, monitor))
 
 
 async def _serve_tcp(cfg, pair, tf, pipe, monitor):
@@ -313,11 +328,18 @@ def cmd_replay(args, cfg) -> int:
 
 
 def cmd_status(args, cfg) -> int:
-    path = Path(cfg["api"]["status_file"])
+    from .api import resolve_status_path
+    pair = getattr(args, "pair", None) or cfg.get("pair") or "BTC/USD"
+    path = resolve_status_path(cfg["api"]["status_file"], pair)
     if not path.exists():
-        print(f"no status file at {path} — is `heartbeat run` active?",
-              file=sys.stderr)
-        return 2
+        # Fall back to legacy single-file path for older runs
+        legacy = Path(cfg["api"]["status_file"])
+        if legacy.exists():
+            path = legacy
+        else:
+            print(f"no status file at {path} — is `heartbeat run` active?",
+                  file=sys.stderr)
+            return 2
     print(path.read_text())
     return 0
 

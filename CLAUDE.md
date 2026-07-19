@@ -73,7 +73,7 @@ regression bug, not a style issue.
   (distro from `hydra_kraken_cli.WSL_DISTRO`, default `Ubuntu`; verify via `wsl -l -v`)
 - Kraken REST min interval: **2s** between calls
 - min_confidence: 0.65 (both modes); warmup_candles: 50
-- Circuit breaker: **15% drawdown halts engine for session** (permanent)
+- Circuit breaker: **15% drawdown sticky-halts new BUYs for session; SELL flatten still allowed (PR-A)**
 - WS dashboard port: 8765; Vite dev: 3000 (`strictPort: true`)
 - CI authority: `.github/workflows/ci.yml` (jobs: `engine-tests`,
   `dashboard-build`)
@@ -84,7 +84,7 @@ regression bug, not a style issue.
 - **Limit post-only, never market** — deliberate design choice
 - **No REST for market data** — all Kraken market data flows through the WebSocket streams or the `kraken` CLI (WSL Ubuntu). New data sources must use CLI or WS.
 - **2s REST floor** — Kraken throttles or bans below this
-- **15% drawdown kills engine for session** — both `tick()` and `_maybe_execute` check
+- **15% drawdown sticky-halts new BUYs for session** — SELL flatten still allowed when `position.size > 0` (PR-A); both `tick()` and `_maybe_execute` check
 - **RSI/ATR = Wilder exponential smoothing, NOT SMA** (Bollinger = population variance)
 - **SKIP ≠ BLOCK** — a soft restriction skips an action for the tick; BLOCK is reserved for hard rules (the 15% drawdown breaker)
 - **`HYDRA_COMPANION_LIVE_EXECUTION` default OFF** — proposals are paper until opted in
@@ -134,7 +134,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | pair_registry | `hydra_pair_registry.py` | single source of truth for pair metadata; `Pair` value object + `PairRegistry` (alias resolution, kraken-pairs bootstrap); `STABLE_QUOTES`, `normalize_asset` |
 | config | `hydra_config.py` | `TradingTriangle` role-binding + `HydraConfig` boot-time facade; `add_config_args()` registers `--quote` (env `HYDRA_QUOTE`); `DEFAULT_QUOTE = "USD"` |
 | state_migrator | `hydra_state_migrator.py` | one-shot quote-currency migration of `hydra_session_snapshot.json` (engines, regime history, derivatives); preserves `order_journal` audit trail |
-| heartbeat | `heartbeat/` | standalone research subsystem (own pyproject + tests, NOT wired into agent/engine/CI): recursive Bayesian order-flow posterior P(up) from Kraken tape — confirmation classifier for bounce fake-vs-reversal. Signal research only, no order path. Own store under `heartbeat/data/` (gitignored); backfilled trades are durably mirrored into `hydra_history.sqlite` `trades` table (owner: `heartbeat/tools/sync_trades_to_sqlite.py`; additive, `ohlc` untouched). Deep spec: `heartbeat/README.md`; findings: `heartbeat/HONEST_FINDINGS.md`. Tests: `cd heartbeat && python -m pytest tests/` (needs pyarrow/websockets, hence not in repo CI) |
+| heartbeat | `heartbeat/` + `hydra_heartbeat_surface.py` | standalone research package (own pyproject + tests, not in CI): recursive Bayesian order-flow posterior P(up) from Kraken tape — bounce fake-vs-reversal confirmer. **No order path.** Live: run `heartbeat run --pair BTC/USD --tf 1h` separately; writes `heartbeat/data/heartbeat_status_<PAIR>.json`. Agent polls via `hydra_heartbeat_surface` → `quant_indicators["heartbeat"]` (dashboard P(up) sparkline; kill `HYDRA_HEARTBEAT_SURFACE=0`). S3 shadow confirmer reads the same files. Store under `heartbeat/data/` (gitignored); trades mirrored to `hydra_history.sqlite` (`sync_trades_to_sqlite.py`). Spec: `heartbeat/README.md`; ledger: `heartbeat/HONEST_FINDINGS.md`. Tests: `cd heartbeat && python -m pytest tests/` (pyarrow/websockets) |
 | s3 | `hydra_s3.py` + `s3bounce/` | S3 daily bounce signal surface: standalone stdlib-only package (`s3bounce/` — own pyproject/tests/frozen `model_artifact.json`, publishable) + agent adapter. Read-only `quant_indicators["s3"]` block (BTC/ETH scored; ZEC breadth-only, structurally untradable) + env-gated shadow strategy (`HYDRA_S3_STRATEGY`, proposals to `.hydra-s3/`, NO order path). Parity to research pipeline pinned by golden fixtures (`heartbeat/tools/export_s3_model.py` = yearly refit path). Gate evidence: `heartbeat/evidence/bakeoffs/s3_*` (registrations + verdicts, exporter-read); research corpus + promoted study data: `research/S3_*` + `research/data/s3/` |
 | flywheel | `hydra_flywheel.py` | paper capital allocator (CLI-only, NO live order path, not wired into agent capital): signal-driven daily trend ensemble + carry monitor + cash; **only** the legacy engine sleeve is evidence-gated (0% until `validation_results.json` clears). Research tools: `tools/flywheel_validation.py`, `tools/carry_backtest.py`, `tools/trend_backtest.py` (trend/carry JSONs are research-only) |
 
@@ -197,7 +197,8 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | `HYDRA_HOLD_THROUGH` | engine | **Default ON** (all pairs). TREND_UP BUY ≥0.65, flatten `TREND_DOWN`, ride mid-UP except extreme overbought. `=0` = raw engine (research/tests). Does not disable friction or 15% CB. Spec: `docs/HOLD_THROUGH.md`. Replaces removed `HYDRA_REGIME_SELECTIVE`. |
 | `HYDRA_S3_DISABLED` | s3 | `=1` removes the S3 signal surface entirely (no daily tracking, no `quant_indicators["s3"]`, no shadow). Read per call — live-flippable. Default unset (signal ON). |
 | `HYDRA_S3_STRATEGY` | s3 | **Default OFF.** `=1` enables the S3 shadow strategy: gated entryable-b1 signals are logged as proposals with per-exit-arm paper positions in `.hydra-s3/`. Structurally shadow-only — this flag has NO code path to an order; live enablement is a future, gate-pending PR (needs the shadow window + `/bakeoff` to clear). |
-| `HYDRA_S3_HEARTBEAT_STATUS_DIR` | s3 | Directory of heartbeat confirmer status files (`heartbeat_status_<PAIR>.json`). Default `heartbeat/data`. Missing/stale(>300s)/tainted ⇒ `no_opinion`, recorded in the proposal (both S3-only and S3+confirmer decisions logged). |
+| `HYDRA_S3_HEARTBEAT_STATUS_DIR` | s3 + heartbeat surface | Directory of heartbeat status files (`heartbeat_status_<PAIR>.json`). Default `heartbeat/data`. Missing/stale(>300s)/tainted ⇒ `no_opinion` (never fabricate 0.5). Used by S3 shadow confirmer and dashboard surface. |
+| `HYDRA_HEARTBEAT_SURFACE` | agent/dashboard | **Default ON.** `=0` removes `quant_indicators["heartbeat"]` (P(up) display). Read-only — no order path. Requires separate `heartbeat run` process for live values. |
 | `HYDRA_FEE_DEDUCTION_DISABLED` | agent | `=1` reverts fee-true accounting (v2.27): confirmed fills debit `lifecycle.fee_quote` from the engine's quote balance exactly once (idempotent via `lifecycle.fee_applied`). Default off (fees deducted) — pre-v2.27 live P&L was overstated ~16 bps/fill vs the backtest, which always deducted fees. |
 
 ## Build / run

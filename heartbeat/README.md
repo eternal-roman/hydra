@@ -75,9 +75,14 @@ Tier 1/2 stay dark until their gates pass (`features.enabled_tiers`).
 `heartbeat run` exposes the posterior two ways; both carry the same JSON
 payload (field list in `src/heartbeat/api.py`):
 
-1. **Status file** — `api.status_file` (default `data/heartbeat_status.json`),
-   atomically rewritten after every heartbeat (`tmp` + `os.replace`;
-   readers never see torn writes). Poll it.
+1. **Status file** — `api.status_file` (default `data/heartbeat_status.json`)
+   is resolved **per pair** to `data/heartbeat_status_BTC_USD.json` (etc.)
+   via `resolve_status_path` so multi-pair `heartbeat run` processes do not
+   clobber each other. Atomically rewritten after every heartbeat
+   (`tmp` + `os.replace`). Hydra polls the same paths:
+   - dashboard surface: `hydra_heartbeat_surface` → `quant_indicators["heartbeat"]`
+   - S3 shadow confirmer: `HYDRA_S3_HEARTBEAT_STATUS_DIR` (default
+     `heartbeat/data`) + `heartbeat_status_<PAIR>.json`
 2. **TCP query** — connect to `api.tcp_host:api.tcp_port` (default
    `127.0.0.1:8790`), send any line, receive one JSON line. The
    connection stays open for repeated queries.
@@ -85,16 +90,22 @@ payload (field list in `src/heartbeat/api.py`):
 ```json
 {"pair": "BTC/USD", "tf": "1h", "p_up": 0.6421, "L": 0.5843,
  "ts": 1752741032.417, "candle_progress": 0.47, "tainted": false,
- "gap_count": 0, "max_clock_skew_s": 0.213, "alerts": 0}
+ "gap_count": 0, "max_clock_skew_s": 0.213, "alerts": 0,
+ "features": {"clv": {"z": 0.4, "raw": 0.7}, "ofi": {"z": 0.1, "raw": 0.05}}}
 ```
 
 Consumer rules:
 
 * Treat `tainted: true` as **no opinion** — never as 0.5.
-* Treat a stale `ts` (older than a few heartbeat intervals) as feed loss.
-* `p_up` is calibrated per pair/timeframe only after `heartbeat
-  calibrate` has written weights and they are loaded via config; before
-  that it reflects naive default weights.
+* Treat a stale `ts` (older than a few heartbeat intervals; Hydra uses 300s)
+  as feed loss.
+* `p_up` is calibrated per pair/timeframe only after weights load.
+  `heartbeat run` **auto-loads** the first hit of
+  `weights_{PAIR}_{tf}.json` from `data/reports/`,
+  `evidence/real_tape/`, then store root (`weights_io.find_weights`).
+  Without a file it warns and uses `default_weight` (≈ coin flip).
+* **No order path** from this contract — Hydra display + S3 shadow only
+  until a pre-registered `/bakeoff` promotes a gate.
 
 ## Data integrity (fail-loud rules)
 

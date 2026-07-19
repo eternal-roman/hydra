@@ -47,9 +47,10 @@ signal + regime + position
 
 - **Not a profit claim.** Absolute alpha unproven; rails are relative defense +
   capture discipline on historical windows.
-- **Not a pair delist.** SOL/USD · SOL/BTC · BTC/USD remain the default
-  triangle. Isolation (BH vs cash vs rails) shows **strategy + window**
-  limits, not “bad instruments.”
+- **Not a pair delist.** Defaults are **BTC/USD · ETH/USD · ZEC/USD**
+  (v2.29 independent cores). Explicit `--pairs SOL/USD,SOL/BTC,BTC/USD`
+  restores the legacy triangle (bridge signal-only). Isolation studies
+  show **strategy + window** limits, not “bad instruments.”
 - **Not extra TA.** ADX / HTF SMA / ATR trail / swing HH / squeeze failed the
   multi-pair bar (e.g. ADX helped SOL/bridge, hurt BTC). Do not ship as
   global defaults.

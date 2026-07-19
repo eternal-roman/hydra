@@ -259,6 +259,43 @@ function CandleChart({ candles, height = 140 }) {
   );
 }
 
+/** Heartbeat P(up) sparkline — read-only confirmer series from agent surface. */
+function HeartbeatSparkline({ history, height = 36, widthHint = 280 }) {
+  const [containerRef, cw] = useContainerWidth(widthHint);
+  const pts = Array.isArray(history) ? history.filter(h => h && typeof h.p_up === "number") : [];
+  if (pts.length < 2) {
+    return <div ref={containerRef} style={{ width: "100%", height }} />;
+  }
+  const pad = { top: 4, bottom: 4, left: 2, right: 28 };
+  const w = Math.max(cw, 80);
+  const innerW = w - pad.left - pad.right;
+  const innerH = height - pad.top - pad.bottom;
+  const n = pts.length;
+  const xy = (i, p) => {
+    const x = pad.left + (i / Math.max(n - 1, 1)) * innerW;
+    const y = pad.top + innerH * (1 - Math.min(1, Math.max(0, p)));
+    return [x, y];
+  };
+  const d = pts.map((h, i) => {
+    const [x, y] = xy(i, h.p_up);
+    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const last = pts[pts.length - 1].p_up;
+  const midY = pad.top + innerH * 0.5;
+  const color = last >= 0.6 ? COLORS.buy : last <= 0.4 ? COLORS.sell : COLORS.warn;
+  return (
+    <div ref={containerRef} style={{ width: "100%" }}>
+      <svg viewBox={`0 0 ${w} ${height}`} width={w} height={height} style={{ display: "block" }}>
+        <line x1={pad.left} y1={midY} x2={pad.left + innerW} y2={midY}
+              stroke={COLORS.panelBorder} strokeWidth={0.5} strokeDasharray="2,2" />
+        <path d={d} fill="none" stroke={color} strokeWidth={1.5} opacity={0.9} />
+        <text x={w - 2} y={pad.top + 8} fontFamily={mono} fontSize={9}
+              fill={color} textAnchor="end">{(last * 100).toFixed(0)}%</text>
+      </svg>
+    </div>
+  );
+}
+
 function ConfidenceMeter({ confidence, signal }) {
   const w = Math.max(5, confidence * 100);
   return (
@@ -2172,6 +2209,72 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                         <CandleChart candles={ps.candles.slice(-80)} height={254} />
                       </div>
                     )}
+
+                    {/* Heartbeat P(up) — read-only surface; missing/stale/tainted = no opinion */}
+                    {(() => {
+                      const qi = ps.quant_indicators
+                        || ps.ai_decision?.quant_indicators
+                        || null;
+                      const hb = qi?.heartbeat;
+                      if (!hb) return null;
+                      const ok = hb.status === "ok" && typeof hb.p_up === "number";
+                      const pColor = !ok ? COLORS.textMuted
+                        : hb.p_up >= 0.6 ? COLORS.buy
+                        : hb.p_up <= 0.4 ? COLORS.sell
+                        : COLORS.warn;
+                      const label = ok
+                        ? `P(up) ${(hb.p_up * 100).toFixed(1)}%`
+                        : `P(up) ${hb.why || hb.status || "—"}`;
+                      return (
+                        <div style={{
+                          marginTop: 6, padding: "6px 8px",
+                          background: `${COLORS.blue}0c`,
+                          border: `1px solid ${COLORS.blue}22`,
+                          borderRadius: 4,
+                        }}>
+                          <div style={{
+                            display: "flex", alignItems: "center", gap: 8,
+                            flexWrap: "wrap", fontFamily: mono, fontSize: 11,
+                          }}>
+                            <span style={{
+                              fontSize: 8, fontWeight: 700, letterSpacing: "0.06em",
+                              textTransform: "uppercase", color: COLORS.blue,
+                            }}>HEARTBEAT</span>
+                            <span style={{ fontWeight: 700, color: pColor }}>{label}</span>
+                            {ok && hb.candle_progress != null && (
+                              <span style={{ color: COLORS.textMuted, fontSize: 10 }}>
+                                bar {(Number(hb.candle_progress) * 100).toFixed(0)}%
+                              </span>
+                            )}
+                            {hb.flow_gate_fail && (
+                              <span
+                                style={{
+                                  fontSize: 8, fontWeight: 700, color: COLORS.warn,
+                                  textTransform: "uppercase",
+                                }}
+                                title="Real-tape flow classifier FAIL — display only"
+                              >
+                                flow-fail asset
+                              </span>
+                            )}
+                            {ok && hb.features && typeof hb.features === "object" && (
+                              <span style={{ color: COLORS.textDim, fontSize: 10 }}>
+                                {Object.entries(hb.features).slice(0, 5).map(([k, v]) => {
+                                  const z = v && typeof v === "object" ? v.z : v;
+                                  if (z == null || Number.isNaN(Number(z))) return null;
+                                  return `${k}:${Number(z).toFixed(2)}`;
+                                }).filter(Boolean).join(" · ")}
+                              </span>
+                            )}
+                          </div>
+                          {Array.isArray(hb.history) && hb.history.length >= 2 && (
+                            <div style={{ marginTop: 4 }}>
+                              <HeartbeatSparkline history={hb.history} height={32} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* Signal + Position + Equity row */}
                     <div style={{ display: "flex", gap: 16, marginTop: 10 }}>

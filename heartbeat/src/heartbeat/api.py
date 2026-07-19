@@ -19,8 +19,13 @@ Payload fields:
     gap_count           feed gaps observed this session
     max_clock_skew_s    worst |local - exchange| seen
     alerts              total TapeAlerts
+    features            optional {name: {z, raw}} from last heartbeat
 
 Consumers MUST treat `tainted: true` (or a stale `ts`) as "no opinion".
+
+Multi-pair path contract (Hydra S3 confirmer + dashboard surface):
+    resolve_status_path("data/heartbeat_status.json", "BTC/USD")
+        → data/heartbeat_status_BTC_USD.json
 """
 
 from __future__ import annotations
@@ -32,9 +37,35 @@ from pathlib import Path
 from typing import Optional
 
 
+def resolve_status_path(status_file_or_dir: str | Path, pair: str) -> Path:
+    """Map api.status_file (+ pair) → multi-pair status path Hydra polls.
+
+    Generic ``heartbeat_status.json`` becomes ``heartbeat_status_BTC_USD.json``
+    so concurrent `heartbeat run --pair …` processes do not clobber each
+    other and match ``hydra_s3`` / ``hydra_heartbeat_surface`` filenames.
+    """
+    raw = Path(status_file_or_dir)
+    token = pair.replace("/", "_")
+    pair_name = f"heartbeat_status_{token}.json"
+    if token in raw.name and raw.suffix == ".json":
+        return raw
+    if raw.suffix != ".json":
+        return raw / pair_name
+    return raw.parent / pair_name
+
+
 def status_payload(pair: str, tf: str, pipe, monitor) -> dict:
     out = pipe.last_output
     forming = pipe.builder.forming
+    features = None
+    if out is not None:
+        z = getattr(out, "z", None) or {}
+        raw = getattr(out, "raw", None) or {}
+        if z or raw:
+            keys = set(z) | set(raw)
+            features = {
+                k: {"z": z.get(k), "raw": raw.get(k)} for k in sorted(keys)
+            }
     return {
         "pair": pair, "tf": tf,
         "p_up": out.p_up if out else None,
@@ -45,6 +76,7 @@ def status_payload(pair: str, tf: str, pipe, monitor) -> dict:
         "gap_count": monitor.gap_count,
         "max_clock_skew_s": round(monitor.max_skew_s, 3),
         "alerts": len(monitor.alerts),
+        "features": features,
     }
 
 

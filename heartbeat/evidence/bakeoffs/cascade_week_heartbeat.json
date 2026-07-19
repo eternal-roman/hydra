@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-07-19T22:23:20Z",
+  "registration": "cascade_week_heartbeat_REGISTRATION.md",
+  "days": 90,
+  "pairs": {
+    "BTC/USD": {
+      "cascade_n": 19,
+      "quiet_n": 49,
+      "auc_cascade": 0.8286,
+      "auc_quiet": 0.7417
+    },
+    "ETH/USD": {
+      "cascade_n": 21,
+      "quiet_n": 54,
+      "auc_cascade": 0.8241,
+      "auc_quiet": 0.7088
+    },
+    "SOL/USD": {
+      "cascade_n": 26,
+      "quiet_n": 53,
+      "auc_cascade": 0.7986,
+      "auc_quiet": 0.6408
+    }
+  },
+  "pooled": {
+    "auc_cascade": 0.811,
+    "auc_quiet": 0.703,
+    "n_cascade": 66,
+    "n_quiet": 156,
+    "decision": "NO_BLACKOUT"
+  }
+}

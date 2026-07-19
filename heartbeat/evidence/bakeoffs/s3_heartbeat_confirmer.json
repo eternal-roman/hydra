@@ -1,0 +1,101 @@
+{
+  "generated_at": "2026-07-19T22:26:33Z",
+  "registration": "s3_heartbeat_confirmer_REGISTRATION.md",
+  "window_days": 90,
+  "theta": 0.5,
+  "fee_bps_side": 26.0,
+  "pairs": {
+    "BTC/USD": {
+      "A_s3_only": {
+        "n": 1,
+        "avg_pct": 7.4403,
+        "stop_rate": 0.0,
+        "win_rate": 1.0,
+        "sum_pct": 7.4403
+      },
+      "B_s3_plus_hb": {
+        "n": 1,
+        "avg_pct": 7.4403,
+        "stop_rate": 0.0,
+        "win_rate": 1.0,
+        "sum_pct": 7.4403
+      },
+      "C_inverse": {
+        "n": 0,
+        "avg_pct": null,
+        "stop_rate": null,
+        "win_rate": null
+      },
+      "D_random50": {
+        "n": 0,
+        "avg_pct": null,
+        "stop_rate": null,
+        "win_rate": null
+      },
+      "posterior_candles": 2136,
+      "n_trades": 1
+    },
+    "ETH/USD": {
+      "A_s3_only": {
+        "n": 0,
+        "avg_pct": null,
+        "stop_rate": null,
+        "win_rate": null
+      },
+      "B_s3_plus_hb": {
+        "n": 0,
+        "avg_pct": null,
+        "stop_rate": null,
+        "win_rate": null
+      },
+      "C_inverse": {
+        "n": 0,
+        "avg_pct": null,
+        "stop_rate": null,
+        "win_rate": null
+      },
+      "D_random50": {
+        "n": 0,
+        "avg_pct": null,
+        "stop_rate": null,
+        "win_rate": null
+      },
+      "posterior_candles": 2138,
+      "n_trades": 0
+    }
+  },
+  "pooled": {
+    "A_s3_only": {
+      "n": 1,
+      "avg_pct": 7.4403,
+      "stop_rate": 0.0,
+      "win_rate": 1.0,
+      "sum_pct": 7.4403
+    },
+    "B_s3_plus_hb": {
+      "n": 1,
+      "avg_pct": 7.4403,
+      "stop_rate": 0.0,
+      "win_rate": 1.0,
+      "sum_pct": 7.4403
+    },
+    "C_inverse": {
+      "n": 0,
+      "avg_pct": null,
+      "stop_rate": null,
+      "win_rate": null
+    },
+    "D_random50": {
+      "n": 0,
+      "avg_pct": null,
+      "stop_rate": null,
+      "win_rate": null
+    },
+    "coverage_ok_frac": 1.0,
+    "verdict": {
+      "decision": "INCONCLUSIVE",
+      "why": "C6 power n(A)<15",
+      "n_A": 1
+    }
+  }
+}

@@ -86,6 +86,14 @@ Shipped v2.30.0+: `s3bounce/` package (parity-pinned 1e-9, yearly refit
 `HYDRA_S3_STRATEGY` shadow phase (all arms logged in parallel to
 `.hydra-s3/`; NO order path exists).
 
+Shipped (docs densify + surface, post-v2.30.1 branch):
+- Pair-named status files (`heartbeat_status_BTC_USD.json`) via
+  `resolve_status_path` — matches S3 confirmer + agent poller.
+- `hydra_heartbeat_surface.py` → `quant_indicators["heartbeat"]` every
+  tick (HOLD included); dashboard P(up) sparkline. Kill:
+  `HYDRA_HEARTBEAT_SURFACE=0`. **Still no order path.**
+- ABI funnel: `evidence/ABI_FUNNEL_2026-07-19.md`.
+
 1. **Shadow window** is the final authority on every provisional
    verdict above — start it by setting `HYDRA_S3_STRATEGY=1`.
 2. **Heartbeat network gates still unrun**: 24h live WS soak +
@@ -95,3 +103,11 @@ Shipped v2.30.0+: `s3bounce/` package (parity-pinned 1e-9, yearly refit
    `/bakeoff` — dedicated bounce-entry surface with heartbeat as
    confirmation layer; the trend overlay must NOT gate S3 entries
    (evidence above). No live wiring before that passes.
+4. **Confirmer bakeoff** (`s3_heartbeat_confirmer` registration +
+   `tools/bakeoff_s3_heartbeat_confirmer.py`) before any SKIP-BUY from
+   heartbeat on the S3 book. Engine BUY co-occurrence diagnostic must
+   show n_BUY≥20 before any engine-path confirmer claim
+   (`engine_buy_cooccurrence_*`). Cascade AUC is measurement-only
+   (`cascade_week_heartbeat_*`). **Rejected without new anomalies:**
+   default-on shadow, live engine SKIP from HB, S3 live orders, trail
+   basis flip, daily-entry/1h-exit, stripping rails.

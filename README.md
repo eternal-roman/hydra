@@ -108,7 +108,7 @@ start_hydra.bat            # production: --mode competition --resume
 | Source | Purpose |
 |--------|---------|
 | `.env` / `.env.example` | API keys, kill switches (`HYDRA_*`) |
-| `--pairs` / `--quote` / `HYDRA_QUOTE` | Triangle + stable quote (default USD) |
+| `--pairs` / `--quote` / `HYDRA_QUOTE` | Pairs + stable quote (default USD; triangle only if SOL triple configured) |
 | `--demo` / `--paper` / `--resume` / `--mode` | Offline demo, paper, snapshot resume, Kelly mode |
 
 Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`](SKILL.md)
@@ -173,11 +173,15 @@ Harness: `smoke` · `mock` (**35** scenarios in CI) · `validate` · `live` (exp
 | Doc | Contents |
 |-----|----------|
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |
-| [`CLAUDE.md`](CLAUDE.md) | Agent/dev invariants & module index |
-| [`SKILL.md`](SKILL.md) | Full trading specification |
+| [`CLAUDE.md`](CLAUDE.md) | Agent/dev invariants, env flags, module index |
+| [`SKILL.md`](SKILL.md) | Trading formulas + risk rules |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting |
 | [`docs/BACKTEST.md`](docs/BACKTEST.md) | Backtest runbook |
+| [`docs/BACKTEST_SPEC.md`](docs/BACKTEST_SPEC.md) | Backtest design archive (defaults: code wins) |
 | [`docs/COMPANION_SPEC.md`](docs/COMPANION_SPEC.md) | Companion system |
 | [`docs/HOLD_THROUGH.md`](docs/HOLD_THROUGH.md) | Hold-through rails (default on) |
+| [`heartbeat/README.md`](heartbeat/README.md) · [`HONEST_FINDINGS.md`](heartbeat/HONEST_FINDINGS.md) | Order-flow posterior + evidence ledger |
+| [`research/`](research/) | Formal papers + promoted study data |
 
 ## Troubleshooting
 

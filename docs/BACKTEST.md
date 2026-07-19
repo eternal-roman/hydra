@@ -53,26 +53,43 @@ Kill switch: `HYDRA_BACKTEST_DISABLED=1`.
 ```bash
 python -c "
 from hydra_backtest import BacktestConfig, BacktestRunner, SyntheticSource
-from hydra_engine import HydraEngine
-cfg = BacktestConfig(pair='SOL/USD', start_ts=0, end_ts=86400*30, seed=42)
-runner = BacktestRunner(cfg, engine_factory=HydraEngine, sources_override={'SOL/USD': SyntheticSource(seed=42)})
+cfg = BacktestConfig(
+    name='smoke',
+    pairs=('BTC/USD',),
+    candle_interval=60,   # live default (v2.28+); rails calibrated on 1h
+    random_seed=42,
+    max_ticks=200,
+)
+src = SyntheticSource(seed=42, n_candles=300)
+runner = BacktestRunner(cfg, sources_override={'BTC/USD': src})
 result = runner.run()
-print(f'trades={result.metrics.total_trades} sharpe={result.metrics.sharpe_ratio:.2f}')
+print(f'status={result.status} trades={result.metrics.total_trades} '
+      f'sharpe={result.metrics.sharpe_ratio:.2f}')
 "
 ```
 
-For real historical data, swap `SyntheticSource` for `KrakenHistoricalSource`
-(caches to `.hydra-experiments/candle_cache/`; respects the 2s Kraken rate limit).
+Live product defaults: `pairs=("BTC/USD",)`, `candle_interval=60`. Schema
+history in `BACKTEST_SPEC.md` may show older SOL/15m design-era defaults —
+**code is authoritative.**
+
+For real historical data, use `data_source="sqlite"` + `hydra_history.sqlite`
+params, or `KrakenHistoricalSource` (caches under `.hydra-experiments/`; 2s REST floor).
 
 ### Use a preset programmatically
 
 ```python
-from hydra_experiments import PRESET_LIBRARY, run_experiment
+from hydra_backtest import BacktestConfig, BacktestRunner, SyntheticSource
 
-preset = PRESET_LIBRARY["regime_volatile"]
-experiment = run_experiment(preset, pair="SOL/USD", start_ts=0, end_ts=86400*7)
-print(experiment.result.metrics.sharpe_ratio)
+cfg = BacktestConfig(name="regime_volatile_smoke", pairs=("BTC/USD",),
+                     candle_interval=60, random_seed=7, max_ticks=150)
+result = BacktestRunner(
+    cfg, sources_override={"BTC/USD": SyntheticSource(seed=7, n_candles=250)}
+).run()
+print(result.status, result.metrics.total_trades, result.metrics.sharpe_ratio)
 ```
+
+Presets live in `hydra_experiments.PRESET_LIBRARY` / `.hydra-experiments/`;
+prefer the RESEARCH tab Lab pane for full experiment store runs.
 
 ---
 

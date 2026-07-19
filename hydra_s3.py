@@ -238,19 +238,18 @@ class S3Adapter:
     def _read_confirmer(self, asset: str, now_wall: float) -> dict:
         """Heartbeat 1h flow posterior status file (read-only, stdlib).
         Missing/stale/tainted => no_opinion — recorded, never blocking
-        the shadow log (both arms are written)."""
-        name = f"heartbeat_status_{asset.replace('/', '_')}.json"
-        path = Path(CONFIRMER_STATUS_DIR) / name
+        the shadow log (both arms are written). Shared contract with
+        hydra_heartbeat_surface (pair-named status files)."""
         try:
-            import json
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if raw.get("tainted"):
-                return {"status": "no_opinion", "why": "tainted"}
-            ts = float(raw.get("ts") or 0.0)
-            if now_wall - ts > CONFIRMER_STALE_S:
-                return {"status": "no_opinion", "why": "stale"}
-            return {"status": "ok", "p_up": raw.get("p_up"), "ts": ts}
-        except (OSError, ValueError, TypeError):
+            from hydra_heartbeat_surface import read_status, resolve_status_path
+            path = resolve_status_path(CONFIRMER_STATUS_DIR, asset)
+            block = read_status(path, now=now_wall, stale_s=CONFIRMER_STALE_S)
+            if block.get("status") != "ok":
+                return {"status": "no_opinion",
+                        "why": block.get("why") or "missing"}
+            return {"status": "ok", "p_up": block.get("p_up"),
+                    "ts": block.get("ts")}
+        except Exception:
             return {"status": "no_opinion", "why": "missing"}
 
     def ledger(self) -> ShadowLedger:
