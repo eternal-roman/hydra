@@ -1,0 +1,549 @@
+{
+  "generated_at": "2026-07-19T02:54:29Z",
+  "design": "ABI_FUNNEL_STOPS_2026-07-18.md \u00a76 S2 (frozen)",
+  "frozen": {
+    "fee_per_side": 0.0026,
+    "gate": 0.6,
+    "clock": 10,
+    "seed": 42,
+    "draws": 25,
+    "scorer": "exit_layer_lab.daily_scores (verbatim)"
+  },
+  "assets": {
+    "BTC/USD": {
+      "n_candles": 101155,
+      "eval_start_ts": 1451620800,
+      "n_round_trips_a": 28,
+      "folds": {
+        "2016": {
+          "a_gate_flip_pct": 113.93,
+          "b_exposure_matched_pct": 106.21,
+          "b_median_draw_pct": 106.82,
+          "b_geomean_draw_pct": 105.94,
+          "c_inverse_pct": 3.62,
+          "d_bh_pct": 122.5,
+          "exposure_bars": 8287,
+          "fold_bars": 8601,
+          "exposure_frac": 0.963
+        },
+        "2017": {
+          "a_gate_flip_pct": 1345.0,
+          "b_exposure_matched_pct": 1337.5,
+          "b_median_draw_pct": 1337.5,
+          "b_geomean_draw_pct": 1337.5,
+          "c_inverse_pct": 0.0,
+          "d_bh_pct": 1345.0,
+          "exposure_bars": 8758,
+          "fold_bars": 8758,
+          "exposure_frac": 1.0
+        },
+        "2018": {
+          "a_gate_flip_pct": -50.96,
+          "b_exposure_matched_pct": -10.84,
+          "b_median_draw_pct": -11.39,
+          "b_geomean_draw_pct": -12.75,
+          "c_inverse_pct": -47.56,
+          "d_bh_pct": -73.59,
+          "exposure_bars": 975,
+          "fold_bars": 8709,
+          "exposure_frac": 0.112
+        },
+        "2019": {
+          "a_gate_flip_pct": 59.88,
+          "b_exposure_matched_pct": 100.41,
+          "b_median_draw_pct": 107.61,
+          "b_geomean_draw_pct": 81.19,
+          "c_inverse_pct": 20.32,
+          "d_bh_pct": 94.16,
+          "exposure_bars": 4238,
+          "fold_bars": 8757,
+          "exposure_frac": 0.484
+        },
+        "2020": {
+          "a_gate_flip_pct": 181.3,
+          "b_exposure_matched_pct": 111.61,
+          "b_median_draw_pct": 81.2,
+          "b_geomean_draw_pct": 101.99,
+          "c_inverse_pct": 43.32,
+          "d_bh_pct": 303.99,
+          "exposure_bars": 6976,
+          "fold_bars": 8783,
+          "exposure_frac": 0.794
+        },
+        "2021": {
+          "a_gate_flip_pct": 12.79,
+          "b_exposure_matched_pct": 24.18,
+          "b_median_draw_pct": 12.71,
+          "b_geomean_draw_pct": 16.8,
+          "c_inverse_pct": 30.11,
+          "d_bh_pct": 59.36,
+          "exposure_bars": 5942,
+          "fold_bars": 8754,
+          "exposure_frac": 0.679
+        },
+        "2022": {
+          "a_gate_flip_pct": -15.64,
+          "b_exposure_matched_pct": -0.6,
+          "b_median_draw_pct": -0.71,
+          "b_geomean_draw_pct": -1.43,
+          "c_inverse_pct": -58.08,
+          "d_bh_pct": -64.19,
+          "exposure_bars": 307,
+          "fold_bars": 8760,
+          "exposure_frac": 0.035
+        },
+        "2023": {
+          "a_gate_flip_pct": 66.77,
+          "b_exposure_matched_pct": 83.67,
+          "b_median_draw_pct": 75.86,
+          "b_geomean_draw_pct": 80.95,
+          "c_inverse_pct": 51.4,
+          "d_bh_pct": 155.57,
+          "exposure_bars": 6819,
+          "fold_bars": 8759,
+          "exposure_frac": 0.779
+        },
+        "2024": {
+          "a_gate_flip_pct": 68.93,
+          "b_exposure_matched_pct": 77.31,
+          "b_median_draw_pct": 68.79,
+          "b_geomean_draw_pct": 73.25,
+          "c_inverse_pct": 26.58,
+          "d_bh_pct": 121.04,
+          "exposure_bars": 6818,
+          "fold_bars": 8773,
+          "exposure_frac": 0.777
+        },
+        "2025": {
+          "a_gate_flip_pct": -2.23,
+          "b_exposure_matched_pct": 1.45,
+          "b_median_draw_pct": 4.1,
+          "b_geomean_draw_pct": 0.08,
+          "c_inverse_pct": -10.15,
+          "d_bh_pct": -6.29,
+          "exposure_bars": 5624,
+          "fold_bars": 8751,
+          "exposure_frac": 0.643
+        },
+        "2026": {
+          "a_gate_flip_pct": -2.33,
+          "b_exposure_matched_pct": -2.83,
+          "b_median_draw_pct": -2.51,
+          "b_geomean_draw_pct": -3.71,
+          "c_inverse_pct": -25.3,
+          "d_bh_pct": -26.11,
+          "exposure_bars": 524,
+          "fold_bars": 4773,
+          "exposure_frac": 0.11
+        }
+      },
+      "fold_wins_a_gt_b": 4,
+      "folds_counted": 11,
+      "fold_wins_a_gt_b_median": 6,
+      "totals": {
+        "a_pct": 17352.75,
+        "b_pct": 44315.75,
+        "b_median_pct": 33310.43,
+        "c_pct": -34.26,
+        "d_pct": 14693.07
+      },
+      "max_dd": {
+        "a": 0.6599,
+        "d": 0.8392,
+        "a_lt_0.7d": false
+      }
+    },
+    "ETH/USD": {
+      "n_candles": 89848,
+      "eval_start_ts": 1457481600,
+      "n_round_trips_a": 24,
+      "folds": {
+        "2016": {
+          "a_gate_flip_pct": -8.64,
+          "b_exposure_matched_pct": -20.81,
+          "b_median_draw_pct": -24.31,
+          "b_geomean_draw_pct": -24.54,
+          "c_inverse_pct": -18.04,
+          "d_bh_pct": -18.65,
+          "exposure_bars": 4589,
+          "fold_bars": 7002,
+          "exposure_frac": 0.655
+        },
+        "2017": {
+          "a_gate_flip_pct": 6977.2,
+          "b_exposure_matched_pct": 7171.47,
+          "b_median_draw_pct": 7173.94,
+          "b_geomean_draw_pct": 7152.8,
+          "c_inverse_pct": 28.49,
+          "d_bh_pct": 9143.87,
+          "exposure_bars": 8254,
+          "fold_bars": 8705,
+          "exposure_frac": 0.948
+        },
+        "2018": {
+          "a_gate_flip_pct": -35.03,
+          "b_exposure_matched_pct": -48.13,
+          "b_median_draw_pct": -50.79,
+          "b_geomean_draw_pct": -51.31,
+          "c_inverse_pct": -75.36,
+          "d_bh_pct": -82.46,
+          "exposure_bars": 2090,
+          "fold_bars": 8710,
+          "exposure_frac": 0.24
+        },
+        "2019": {
+          "a_gate_flip_pct": 22.39,
+          "b_exposure_matched_pct": 34.69,
+          "b_median_draw_pct": 17.79,
+          "b_geomean_draw_pct": 19.78,
+          "c_inverse_pct": -20.88,
+          "d_bh_pct": -1.72,
+          "exposure_bars": 2774,
+          "fold_bars": 8757,
+          "exposure_frac": 0.317
+        },
+        "2020": {
+          "a_gate_flip_pct": 138.65,
+          "b_exposure_matched_pct": 258.75,
+          "b_median_draw_pct": 212.8,
+          "b_geomean_draw_pct": 240.76,
+          "c_inverse_pct": 138.52,
+          "d_bh_pct": 473.44,
+          "exposure_bars": 7073,
+          "fold_bars": 8782,
+          "exposure_frac": 0.805
+        },
+        "2021": {
+          "a_gate_flip_pct": 285.57,
+          "b_exposure_matched_pct": 291.19,
+          "b_median_draw_pct": 272.14,
+          "b_geomean_draw_pct": 278.4,
+          "c_inverse_pct": 38.58,
+          "d_bh_pct": 398.6,
+          "exposure_bars": 7745,
+          "fold_bars": 8754,
+          "exposure_frac": 0.885
+        },
+        "2022": {
+          "a_gate_flip_pct": -26.89,
+          "b_exposure_matched_pct": -2.3,
+          "b_median_draw_pct": -8.96,
+          "b_geomean_draw_pct": -5.0,
+          "c_inverse_pct": -56.4,
+          "d_bh_pct": -67.5,
+          "exposure_bars": 617,
+          "fold_bars": 8760,
+          "exposure_frac": 0.07
+        },
+        "2023": {
+          "a_gate_flip_pct": 37.03,
+          "b_exposure_matched_pct": 39.95,
+          "b_median_draw_pct": 39.02,
+          "b_geomean_draw_pct": 38.73,
+          "c_inverse_pct": 31.24,
+          "d_bh_pct": 90.96,
+          "exposure_bars": 6611,
+          "fold_bars": 8759,
+          "exposure_frac": 0.755
+        },
+        "2024": {
+          "a_gate_flip_pct": 9.9,
+          "b_exposure_matched_pct": 36.0,
+          "b_median_draw_pct": 23.66,
+          "b_geomean_draw_pct": 29.53,
+          "c_inverse_pct": 25.37,
+          "d_bh_pct": 46.07,
+          "exposure_bars": 5662,
+          "fold_bars": 8772,
+          "exposure_frac": 0.645
+        },
+        "2025": {
+          "a_gate_flip_pct": 6.71,
+          "b_exposure_matched_pct": -1.1,
+          "b_median_draw_pct": -4.71,
+          "b_geomean_draw_pct": -8.6,
+          "c_inverse_pct": -20.54,
+          "d_bh_pct": -10.85,
+          "exposure_bars": 4518,
+          "fold_bars": 8750,
+          "exposure_frac": 0.516
+        },
+        "2026": {
+          "a_gate_flip_pct": 0.0,
+          "b_exposure_matched_pct": null,
+          "b_median_draw_pct": null,
+          "b_geomean_draw_pct": null,
+          "c_inverse_pct": -38.84,
+          "d_bh_pct": -37.32,
+          "exposure_bars": 0,
+          "fold_bars": 2159,
+          "exposure_frac": 0.0
+        }
+      },
+      "fold_wins_a_gt_b": 3,
+      "folds_counted": 10,
+      "fold_wins_a_gt_b_median": 5,
+      "totals": {
+        "a_pct": 55487.76,
+        "b_pct": 103730.87,
+        "b_median_pct": 55302.48,
+        "c_pct": -76.34,
+        "d_pct": 18578.07
+      },
+      "max_dd": {
+        "a": 0.746,
+        "d": 0.9434,
+        "a_lt_0.7d": false
+      }
+    },
+    "SOL/USD": {
+      "n_candles": 44516,
+      "eval_start_ts": 1642032000,
+      "n_round_trips_a": 16,
+      "folds": {
+        "2022": {
+          "a_gate_flip_pct": 0.0,
+          "b_exposure_matched_pct": null,
+          "b_median_draw_pct": null,
+          "b_geomean_draw_pct": null,
+          "c_inverse_pct": -93.39,
+          "d_bh_pct": -93.39,
+          "exposure_bars": 0,
+          "fold_bars": 8471,
+          "exposure_frac": 0.0
+        },
+        "2023": {
+          "a_gate_flip_pct": 118.5,
+          "b_exposure_matched_pct": 143.17,
+          "b_median_draw_pct": 135.74,
+          "b_geomean_draw_pct": 114.23,
+          "c_inverse_pct": 352.73,
+          "d_bh_pct": 921.89,
+          "exposure_bars": 4639,
+          "fold_bars": 8759,
+          "exposure_frac": 0.53
+        },
+        "2024": {
+          "a_gate_flip_pct": 3.01,
+          "b_exposure_matched_pct": 96.95,
+          "b_median_draw_pct": 93.97,
+          "b_geomean_draw_pct": 88.88,
+          "c_inverse_pct": 75.26,
+          "d_bh_pct": 85.65,
+          "exposure_bars": 6417,
+          "fold_bars": 8771,
+          "exposure_frac": 0.732
+        },
+        "2025": {
+          "a_gate_flip_pct": -1.69,
+          "b_exposure_matched_pct": -10.34,
+          "b_median_draw_pct": -21.71,
+          "b_geomean_draw_pct": -16.15,
+          "c_inverse_pct": -32.95,
+          "d_bh_pct": -34.15,
+          "exposure_bars": 3912,
+          "fold_bars": 8751,
+          "exposure_frac": 0.447
+        },
+        "2026": {
+          "a_gate_flip_pct": 0.0,
+          "b_exposure_matched_pct": null,
+          "b_median_draw_pct": null,
+          "b_geomean_draw_pct": null,
+          "c_inverse_pct": -39.58,
+          "d_bh_pct": -39.42,
+          "exposure_bars": 0,
+          "fold_bars": 4773,
+          "exposure_frac": 0.0
+        }
+      },
+      "fold_wins_a_gt_b": 1,
+      "folds_counted": 3,
+      "fold_wins_a_gt_b_median": 1,
+      "totals": {
+        "a_pct": 121.27,
+        "b_pct": 329.4,
+        "b_median_pct": 257.99,
+        "c_pct": -78.76,
+        "d_pct": -50.26
+      },
+      "max_dd": {
+        "a": 0.5917,
+        "d": 0.9474,
+        "a_lt_0.7d": true
+      }
+    },
+    "ZEC/USD": {
+      "n_candles": 78607,
+      "eval_start_ts": 1495843200,
+      "n_round_trips_a": 48,
+      "folds": {
+        "2017": {
+          "a_gate_flip_pct": -8.09,
+          "b_exposure_matched_pct": 117.47,
+          "b_median_draw_pct": 76.91,
+          "b_geomean_draw_pct": 88.52,
+          "c_inverse_pct": 217.66,
+          "d_bh_pct": 135.88,
+          "exposure_bars": 4345,
+          "fold_bars": 5234,
+          "exposure_frac": 0.83
+        },
+        "2018": {
+          "a_gate_flip_pct": -67.61,
+          "b_exposure_matched_pct": -36.03,
+          "b_median_draw_pct": -47.01,
+          "b_geomean_draw_pct": -42.65,
+          "c_inverse_pct": -71.23,
+          "d_bh_pct": -88.51,
+          "exposure_bars": 1389,
+          "fold_bars": 8461,
+          "exposure_frac": 0.164
+        },
+        "2019": {
+          "a_gate_flip_pct": -30.71,
+          "b_exposure_matched_pct": -14.16,
+          "b_median_draw_pct": -14.52,
+          "b_geomean_draw_pct": -19.52,
+          "c_inverse_pct": -34.18,
+          "d_bh_pct": -50.18,
+          "exposure_bars": 1998,
+          "fold_bars": 7782,
+          "exposure_frac": 0.257
+        },
+        "2020": {
+          "a_gate_flip_pct": -44.08,
+          "b_exposure_matched_pct": 57.05,
+          "b_median_draw_pct": 32.54,
+          "b_geomean_draw_pct": 36.92,
+          "c_inverse_pct": 262.36,
+          "d_bh_pct": 133.13,
+          "exposure_bars": 5259,
+          "fold_bars": 8277,
+          "exposure_frac": 0.635
+        },
+        "2021": {
+          "a_gate_flip_pct": 7.94,
+          "b_exposure_matched_pct": 85.53,
+          "b_median_draw_pct": 42.35,
+          "b_geomean_draw_pct": 55.56,
+          "c_inverse_pct": 125.24,
+          "d_bh_pct": 129.22,
+          "exposure_bars": 5387,
+          "fold_bars": 8735,
+          "exposure_frac": 0.617
+        },
+        "2022": {
+          "a_gate_flip_pct": -17.72,
+          "b_exposure_matched_pct": -6.34,
+          "b_median_draw_pct": -13.25,
+          "b_geomean_draw_pct": -11.6,
+          "c_inverse_pct": -70.64,
+          "d_bh_pct": -74.55,
+          "exposure_bars": 941,
+          "fold_bars": 8459,
+          "exposure_frac": 0.111
+        },
+        "2023": {
+          "a_gate_flip_pct": -20.24,
+          "b_exposure_matched_pct": -0.52,
+          "b_median_draw_pct": -0.33,
+          "b_geomean_draw_pct": -3.36,
+          "c_inverse_pct": -14.66,
+          "d_bh_pct": -27.56,
+          "exposure_bars": 1324,
+          "fold_bars": 8089,
+          "exposure_frac": 0.164
+        },
+        "2024": {
+          "a_gate_flip_pct": 5.96,
+          "b_exposure_matched_pct": 120.62,
+          "b_median_draw_pct": 98.98,
+          "b_geomean_draw_pct": 92.2,
+          "c_inverse_pct": 67.98,
+          "d_bh_pct": 108.11,
+          "exposure_bars": 4526,
+          "fold_bars": 8602,
+          "exposure_frac": 0.526
+        },
+        "2025": {
+          "a_gate_flip_pct": 619.19,
+          "b_exposure_matched_pct": 521.7,
+          "b_median_draw_pct": 300.31,
+          "b_geomean_draw_pct": 301.78,
+          "c_inverse_pct": 23.26,
+          "d_bh_pct": 810.78,
+          "exposure_bars": 4499,
+          "fold_bars": 8725,
+          "exposure_frac": 0.516
+        },
+        "2026": {
+          "a_gate_flip_pct": -12.11,
+          "b_exposure_matched_pct": 26.43,
+          "b_median_draw_pct": 29.24,
+          "b_geomean_draw_pct": 24.99,
+          "c_inverse_pct": 18.71,
+          "d_bh_pct": 8.41,
+          "exposure_bars": 1795,
+          "fold_bars": 2159,
+          "exposure_frac": 0.831
+        }
+      },
+      "fold_wins_a_gt_b": 1,
+      "folds_counted": 10,
+      "fold_wins_a_gt_b_median": 1,
+      "totals": {
+        "a_pct": -45.28,
+        "b_pct": 5521.9,
+        "b_median_pct": 1245.71,
+        "c_pct": 202.33,
+        "d_pct": 171.97
+      },
+      "max_dd": {
+        "a": 0.9794,
+        "d": 0.9791,
+        "a_lt_0.7d": false
+      }
+    }
+  },
+  "criteria": {
+    "C1_a_gt_b_pooled": {
+      "sum_log_eq_a": 12.2769,
+      "sum_log_eq_b": 14.4988,
+      "pass": false
+    },
+    "C2_a_gt_b_folds": {
+      "wins": 8,
+      "total": 24,
+      "frac": 0.333,
+      "threshold": 0.6,
+      "pass": false
+    },
+    "C3_maxdd_a_lt_0.7_d": {
+      "by_asset": {
+        "BTC/USD": false,
+        "ETH/USD": false,
+        "SOL/USD": true
+      },
+      "pass": false
+    },
+    "C4_inverse_loses_pooled": {
+      "sum_log_eq_c": -3.4103,
+      "pass": true
+    },
+    "C5_zec_fails_as_predicted": {
+      "zec_a_pct": -45.28,
+      "zec_b_pct": 5521.9,
+      "zec_fold_frac_a_gt_b": 0.1,
+      "zec_passes_pattern_FLAG": false,
+      "pass": true
+    }
+  },
+  "supplementary_median_control": {
+    "note": "registered control is mean-of-25-draws; the arithmetic mean is Jensen-inflated on volatile tape, so the median-draw comparison is reported to show the verdict is not an artifact of that choice",
+    "sum_log_eq_b_median": 13.404,
+    "folds_a_gt_b_median": 12,
+    "folds_total": 24
+  },
+  "verdict": "FAIL"
+}
