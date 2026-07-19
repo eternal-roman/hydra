@@ -5,7 +5,7 @@
   "source": {
     "promotion": "heartbeat/evidence/bakeoffs/s3_daily_classifier.json (final_fold_model, 2026 fold)",
     "exit_gate": "heartbeat/evidence/bakeoffs/s3_exit_policy.json (X1 adopted 2026-07-19)",
-    "hold_study": "heartbeat/evidence/s3_hold_horizon.json (per-coin K with CIs, 2026-07-19)",
+    "hold_study": "research/data/s3/s3_hold_horizon.json (per-coin K with CIs, 2026-07-19)",
     "trail_gate": "heartbeat/evidence/bakeoffs/s3_trail_exit.json (NO basis flip 2026-07-19; x4a/x5 SHADOW_ARM_ONLY)"
   },
   "features": ["clv", "range_atr", "vol_z", "shock_recency", "breadth", "retest"],

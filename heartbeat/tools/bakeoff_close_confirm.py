@@ -230,7 +230,7 @@ def main() -> int:
     promote = c1 and c2 and c3 and inverse_ok
     report["verdict"] = "PROMOTE" if promote else "FAIL"
 
-    out = HEARTBEAT_ROOT / "evidence" / "bakeoffs" / "close_confirm_exits.json"
+    out = HEARTBEAT_ROOT.parent / "research" / "data" / "s3" / "killed" / "close_confirm_exits.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2))
     print(json.dumps(report["criteria"], indent=2))
