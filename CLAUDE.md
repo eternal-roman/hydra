@@ -39,6 +39,16 @@ regression bug, not a style issue.
 - **HYDRA** — regime-adaptive crypto trading agent for Kraken. Detects
   regime (trending/ranging/volatile), switches between 4 strategies
   (Momentum, MeanReversion, Grid, Defensive), executes limit post-only.
+- **Product thesis (evidence-locked):** live engine path is
+  **capital preservation** (hold-through + daily trend overlay + friction
+  + 15% BUY-only CB) — not a proven growth alpha claim. The only
+  after-fee *selection* edge in the ledger is **S3 daily bounce X1 on
+  BTC/ETH**, still **shadow-only** (`HYDRA_S3_STRATEGY`, no order path).
+  **Heartbeat** is a BTC/ETH order-flow confirmer for display + shadow
+  co-log (dashboard P(up); brain advisory); **never** a live BUY/SELL
+  gate until a powered bakeoff clears. SOL/ZEC flow FAIL; ZEC S3
+  untradable. Ledger: `heartbeat/HONEST_FINDINGS.md` · funnel:
+  `heartbeat/evidence/ABI_FUNNEL_2026-07-19.md`.
 - **Pairs (default v2.29+):** BTC/USD, ETH/USD, ZEC/USD — three
   independent stable-quoted cores, NO triangle/coordinator (both
   `_derive_triangle`s return None; coordinator is a no-op). The SOL
@@ -96,6 +106,12 @@ regression bug, not a style issue.
 - **Trend overlay is evidence-gated and fails open** — every consumer of `daily_trend_long()` must treat `None` (warmup / disabled) as "behave exactly as pre-overlay". The daily-entry path (enter on ensemble alone) was tested and REJECTED (whipsawed against 1h flattens, −5.4% vs +0.1% 2y — `.hydra-flywheel/trend_entry_gate.json`); do not re-add without a passing gate. Daily closes are seeded at boot (agent: Kraken 1440m OHLC; backtest: pre-window sqlite) and persist in the snapshot.
 - **`exit_only` drain mode** — engine-level flag: BUY entries refused (SKIP semantics), every SELL path untouched. Set per-session by the agent (never persisted); the bridge default uses it. Composes with hold-through and the CB.
 - **`hydra_rm_features.py` is pure** — no I/O, subprocess, network, or file access; every function returns `Optional[float]` (or `Optional[dict]`) from input alone, returning `None` on insufficient data. A future contributor adding side effects breaks the "fails-silent with None" contract that lets R10 and RM reason over missing vs corrupted data and that lets `HYDRA_RM_FEATURES_DISABLED` work as an instant rollback.
+- **Research surfaces never place orders** — `hydra_s3` / `s3bounce` and
+  `hydra_heartbeat_surface` / `heartbeat` are signal, display, shadow, or
+  brain-advisory only. Grep-guards in tests forbid order verbs. No
+  `HYDRA_S3_LIVE` or engine SKIP from heartbeat without a powered
+  pre-registered bakeoff (engine co-occurrence currently FORBID claims:
+  0 BUYs / 365d under rails).
 - **`PLACEMENT_FAILED` entries are session-only** — pre-exchange diagnostics (`insufficient_USD_balance`, `placement_error:api`) live in the in-memory `HydraAgent.order_journal` for live debugging but MUST NOT persist to `hydra_session_snapshot.json` or the rolling `hydra_order_journal.json`. The `_journal_for_persistence()` helper is the single chokepoint; both write paths (`_save_snapshot` and the per-tick rolling write) go through it. If you add a third write path, route it through the helper too.
 - **Pair identity has one source of truth** — `hydra_pair_registry.PairRegistry` owns alias resolution (XBT↔BTC, ZUSD↔USD, USDC.F→USDC, slashed↔slashless, case-insensitive) and per-pair metadata (price decimals, ordermin, costmin, tick size). `hydra_kraken_cli.KrakenCLI` delegates to the class-level `registry`. New pair-handling code must consume the registry — never re-implement an alias dict. v2.19 absorbed 1048 USDC literals into a single registry + role binding.
 - **Roles, not literal pair names, in coordinator/agent logic** — CrossPairCoordinator and HydraAgent address pairs by their `TradingTriangle` role (`stable_sol`, `stable_btc`, `bridge`), not by hardcoded `"SOL/USDC"` etc. `STABLE_QUOTES = {USD, USDC, USDT}`; the engine treats every member as $1. Switching the default quote is a config flip, not a refactor — see `hydra_config.HydraConfig.from_quote`.
@@ -134,20 +150,18 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | pair_registry | `hydra_pair_registry.py` | single source of truth for pair metadata; `Pair` value object + `PairRegistry` (alias resolution, kraken-pairs bootstrap); `STABLE_QUOTES`, `normalize_asset` |
 | config | `hydra_config.py` | `TradingTriangle` role-binding + `HydraConfig` boot-time facade; `add_config_args()` registers `--quote` (env `HYDRA_QUOTE`); `DEFAULT_QUOTE = "USD"` |
 | state_migrator | `hydra_state_migrator.py` | one-shot quote-currency migration of `hydra_session_snapshot.json` (engines, regime history, derivatives); preserves `order_journal` audit trail |
-| heartbeat | `heartbeat/` + `hydra_heartbeat_surface.py` | standalone research package (own pyproject + tests, not in CI): recursive Bayesian order-flow posterior P(up) from Kraken tape — bounce fake-vs-reversal confirmer. **No order path.** Live: run `heartbeat run --pair BTC/USD --tf 1h` separately; writes `heartbeat/data/heartbeat_status_<PAIR>.json`. Agent polls via `hydra_heartbeat_surface` → `quant_indicators["heartbeat"]` (dashboard P(up) sparkline; kill `HYDRA_HEARTBEAT_SURFACE=0`). S3 shadow confirmer reads the same files. Store under `heartbeat/data/` (gitignored); trades mirrored to `hydra_history.sqlite` (`sync_trades_to_sqlite.py`). Spec: `heartbeat/README.md`; ledger: `heartbeat/HONEST_FINDINGS.md`. Tests: `cd heartbeat && python -m pytest tests/` (pyarrow/websockets) |
-| s3 | `hydra_s3.py` + `s3bounce/` | S3 daily bounce signal surface: standalone stdlib-only package (`s3bounce/` — own pyproject/tests/frozen `model_artifact.json`, publishable) + agent adapter. Read-only `quant_indicators["s3"]` block (BTC/ETH scored; ZEC breadth-only, structurally untradable) + env-gated shadow strategy (`HYDRA_S3_STRATEGY`, proposals to `.hydra-s3/`, NO order path). Parity to research pipeline pinned by golden fixtures (`heartbeat/tools/export_s3_model.py` = yearly refit path). Gate evidence: `heartbeat/evidence/bakeoffs/s3_*` (registrations + verdicts, exporter-read); research corpus + promoted study data: `research/S3_*` + `research/data/s3/` |
+| heartbeat | `heartbeat/` + `hydra_heartbeat_surface.py` | Order-flow P(up) confirmer (BTC/ETH PASS). **No order path.** Separate `heartbeat run`; status `heartbeat_status_<PAIR>.json`; agent → `quant_indicators["heartbeat"]` + dashboard; kill `HYDRA_HEARTBEAT_SURFACE=0`. Ledger: `heartbeat/HONEST_FINDINGS.md` |
+| s3 | `hydra_s3.py` + `s3bounce/` | Daily bounce X1 signal (BTC/ETH; ZEC breadth-only). Read-only QI + **shadow** (`HYDRA_S3_STRATEGY=1`, default off, `.hydra-s3/`). **No order path.** Evidence: `heartbeat/evidence/bakeoffs/s3_*`, `research/S3_*` |
 | flywheel | `hydra_flywheel.py` | paper capital allocator (CLI-only, NO live order path, not wired into agent capital): signal-driven daily trend ensemble + carry monitor + cash; **only** the legacy engine sleeve is evidence-gated (0% until `validation_results.json` clears). Research tools: `tools/flywheel_validation.py`, `tools/carry_backtest.py`, `tools/trend_backtest.py` (trend/carry JSONs are research-only) |
 
 ## Deep specs
 
-- `SKILL.md` — full trading specification (agent-readable)
-- `CHANGELOG.md` — version history
-- `SECURITY.md` — security policy
-- `docs/BACKTEST.md` / `docs/BACKTEST_SPEC.md` — runbook + authoritative design
-- `docs/COMPANION_SPEC.md` — companion spec (authoritative)
-- `research/RETAIL_CRYPTO_EDGE_2026.md` — formal research paper (studies, gates,
-  negative results); evidence data committed in `research/data/` (regenerable)
-- Latest post-release audit report lives in `AUDIT_YYYY-MM-DD.md` at root (keep only the most recent)
+- `SKILL.md` — trading formulas + risk rules · `CHANGELOG.md` · `SECURITY.md`
+- `docs/BACKTEST.md` runbook · `docs/BACKTEST_SPEC.md` design archive (defaults: code)
+- `docs/COMPANION_SPEC.md` · `docs/HOLD_THROUGH.md`
+- `heartbeat/HONEST_FINDINGS.md` — research verdict ledger (S3 + heartbeat)
+- `research/RETAIL_CRYPTO_EDGE_2026.md` · `research/S3_BOUNCE_EDGE_2026.md` + `research/data/`
+- Root `AUDIT_*.md` gitignored local snapshot only (not product truth)
 
 ## Claude Code tooling
 

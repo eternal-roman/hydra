@@ -1,16 +1,13 @@
 # ABI Funnel 2026-07-19 — Hydra trading + heartbeat
 
-> Anomaly → Bore → Ideate on **v2.30.1** (cores BTC/USD, ETH/USD, ZEC/USD).
-> Evidence-only. Survivors need pre-registered `/bakeoff` — never promote here.
-> Absorbs: `ABI_FUNNEL_2026-07-18.md`, `ABI_FUNNEL_STOPS_2026-07-18.md`,
-> `ABI_FUNNEL_ROUND3_2026-07-18.md`, `abi/s3_trail_funnel_2026-07-19.md`.
+> Evidence-only cycle on **v2.30.1**. Survivors need `/bakeoff` — never promote
+> here. Hot ledger: `HONEST_FINDINGS.md`. Absorbs prior ABI_FUNNEL_* / s3_trail.
 
-## One-line synthesis
+## Thesis (locked)
 
-Retail spot HYDRA already solves **capital preservation** (rails + overlay);
-the only after-fee selection edge in evidence is **daily S3 bounce quality on
-BTC/ETH with X1 exits**; heartbeat is a **calibrated, liquidity-limited
-confirmer** for that book — not a fix for the fee-dead 1h engine.
+Live engine = **capital preservation** (rails + overlay). Selection edge =
+**S3 daily X1 on BTC/ETH** (shadow-only). Heartbeat = BTC/ETH **confirmer**
+for display/shadow co-log — not a 1h P&L engine.
 
 ## Anomalies (quoted)
 

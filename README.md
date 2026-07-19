@@ -6,7 +6,7 @@
 
 **Regime-adaptive Kraken spot trading agent** — detects trending / ranging / volatile markets, switches among Momentum, Mean Reversion, Grid, and Defensive strategies, and places **limit post-only** orders only. Live React dashboard included.
 
-> **Not financial advice.** Experimental research software. **Strategy expectancy is not proven** on the shipped engine path; safety rails reduce some failure modes but do not guarantee profit. Crypto trading can lose money.
+> **Not financial advice.** Experimental research software. The **live engine path is capital-preservation rails** (hold-through, daily trend overlay, friction, 15% BUY-only CB) — **not a proven growth-alpha claim**. Research surfaces (S3 shadow book, heartbeat P(up)) are display/shadow only until bakeoffs clear; they never place orders. Crypto trading can lose money.
 
 ## Highlights
 
@@ -21,6 +21,8 @@
   don55 on daily closes gate entries, flatten on regime flip, vol-target conviction sizing —
   evidence-gated on real tape (`.hydra-flywheel/trend_overlay_gate.json`); 1h candles default
 - **Research stack**: backtests, walk-forward, paper flywheel (no live flywheel orders), tools under `tools/`
+- **S3 bounce surface** (read-only QI; shadow with `HYDRA_S3_STRATEGY=1`, default off — no orders)
+- **Heartbeat P(up)** (optional separate `heartbeat run`; dashboard sparkline; kill `HYDRA_HEARTBEAT_SURFACE=0` — no orders)
 - **Companions** (chat/proposals; live execution opt-in, default off)
 
 ## Safety (non-negotiable)
@@ -117,10 +119,12 @@ Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`]
 
 ```
 Candle/Ticker WS → indicators → regime → strategy signal
-        → hold-through rails (default on)
-        → (optional) AI brain + R1–R11
+        → hold-through + daily trend overlay (default on)
+        → friction (entries) → 15% CB (BUY only)
+        → (optional) AI brain + R1–R11 / QFE
         → Kelly size → limit post-only (kraken-cli / WSL)
         → ExecutionStream / journal / snapshot → dashboard WS :8765
+        ↳ parallel: S3 QI ± shadow | heartbeat P(up) surface  (never orders)
 ```
 
 **Backtests** replay `HydraEngine` (+ coordinator). Full AI brain is not on the Phase-1 backtest path.

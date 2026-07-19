@@ -176,8 +176,14 @@ class TestNoOrderPathGuard(unittest.TestCase):
     def test_module_source_has_no_order_verbs(self):
         src = Path(hbs.__file__).read_text(encoding="utf-8").lower()
         for needle in ("order_buy", "order_sell", "krakencli", "place_order",
-                       "subprocess"):
+                       "subprocess", "execute_signal", "add_order"):
             self.assertNotIn(needle, src)
+
+    def test_surface_never_mutates_signal_action(self):
+        """Thesis: surface is QI only — no BUY/SELL rewrite API."""
+        self.assertFalse(hasattr(hbs.HeartbeatSurface, "gate_buy"))
+        self.assertFalse(hasattr(hbs.HeartbeatSurface, "apply_to_signal"))
+        self.assertTrue(hasattr(hbs.HeartbeatSurface, "indicator_block"))
 
 
 class TestHeartbeatApiPairPath(unittest.TestCase):

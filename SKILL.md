@@ -25,8 +25,12 @@ description: >
 ## Overview
 
 HYDRA selects a strategy from a four-regime matrix. That is a **design**, not a
-profit claim. Default **hold-through** rails (`HYDRA_HOLD_THROUGH=0` to disable)
-filter entries/exits; sqlite replays still show absolute losses on some windows.
+profit claim. Default **hold-through** + **daily trend overlay**
+(`HYDRA_HOLD_THROUGH=0` / `HYDRA_TREND_OVERLAY=0` to disable) are capital-
+preservation rails; sqlite replays still show absolute losses on some windows.
+**Research surfaces** (S3 bounce QI / optional shadow; heartbeat P(up) display)
+never place orders — see `CLAUDE.md` product thesis and
+`heartbeat/HONEST_FINDINGS.md`.
 
 Matrix:
 

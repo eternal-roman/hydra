@@ -2210,21 +2210,25 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                       </div>
                     )}
 
-                    {/* Heartbeat P(up) — read-only surface; missing/stale/tainted = no opinion */}
+                    {/* Research surfaces — display/shadow only; never order path (thesis) */}
                     {(() => {
                       const qi = ps.quant_indicators
                         || ps.ai_decision?.quant_indicators
                         || null;
-                      const hb = qi?.heartbeat;
-                      if (!hb) return null;
-                      const ok = hb.status === "ok" && typeof hb.p_up === "number";
-                      const pColor = !ok ? COLORS.textMuted
+                      if (!qi) return null;
+                      const hb = qi.heartbeat;
+                      const s3 = qi.s3;
+                      if (!hb && !s3) return null;
+                      const ok = hb && hb.status === "ok" && typeof hb.p_up === "number";
+                      const pColor = !hb ? COLORS.textMuted
+                        : !ok ? COLORS.textMuted
                         : hb.p_up >= 0.6 ? COLORS.buy
                         : hb.p_up <= 0.4 ? COLORS.sell
                         : COLORS.warn;
-                      const label = ok
-                        ? `P(up) ${(hb.p_up * 100).toFixed(1)}%`
+                      const hbLabel = !hb ? null
+                        : ok ? `P(up) ${(hb.p_up * 100).toFixed(1)}%`
                         : `P(up) ${hb.why || hb.status || "—"}`;
+                      const s3Active = s3 && s3.active;
                       return (
                         <div style={{
                           marginTop: 6, padding: "6px 8px",
@@ -2238,38 +2242,67 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                           }}>
                             <span style={{
                               fontSize: 8, fontWeight: 700, letterSpacing: "0.06em",
-                              textTransform: "uppercase", color: COLORS.blue,
-                            }}>HEARTBEAT</span>
-                            <span style={{ fontWeight: 700, color: pColor }}>{label}</span>
-                            {ok && hb.candle_progress != null && (
-                              <span style={{ color: COLORS.textMuted, fontSize: 10 }}>
-                                bar {(Number(hb.candle_progress) * 100).toFixed(0)}%
-                              </span>
+                              textTransform: "uppercase", color: COLORS.textMuted,
+                            }} title="Signal/display/shadow only — no orders">RESEARCH</span>
+                            {hb && (
+                              <>
+                                <span style={{
+                                  fontSize: 8, fontWeight: 700, letterSpacing: "0.06em",
+                                  textTransform: "uppercase", color: COLORS.blue,
+                                }}>HB</span>
+                                <span style={{ fontWeight: 700, color: pColor }}>{hbLabel}</span>
+                                {ok && hb.candle_progress != null && (
+                                  <span style={{ color: COLORS.textMuted, fontSize: 10 }}>
+                                    bar {(Number(hb.candle_progress) * 100).toFixed(0)}%
+                                  </span>
+                                )}
+                                {hb.flow_gate_fail && (
+                                  <span style={{
+                                    fontSize: 8, fontWeight: 700, color: COLORS.warn,
+                                    textTransform: "uppercase",
+                                  }} title="Flow classifier FAIL on this asset — display only">
+                                    flow-fail
+                                  </span>
+                                )}
+                              </>
                             )}
-                            {hb.flow_gate_fail && (
-                              <span
-                                style={{
-                                  fontSize: 8, fontWeight: 700, color: COLORS.warn,
+                            {s3 && (
+                              <>
+                                <span style={{
+                                  fontSize: 8, fontWeight: 700, letterSpacing: "0.06em",
                                   textTransform: "uppercase",
-                                }}
-                                title="Real-tape flow classifier FAIL — display only"
-                              >
-                                flow-fail asset
-                              </span>
-                            )}
-                            {ok && hb.features && typeof hb.features === "object" && (
-                              <span style={{ color: COLORS.textDim, fontSize: 10 }}>
-                                {Object.entries(hb.features).slice(0, 5).map(([k, v]) => {
-                                  const z = v && typeof v === "object" ? v.z : v;
-                                  if (z == null || Number.isNaN(Number(z))) return null;
-                                  return `${k}:${Number(z).toFixed(2)}`;
-                                }).filter(Boolean).join(" · ")}
-                              </span>
+                                  color: s3Active && s3.gated ? COLORS.buy : COLORS.textDim,
+                                }}>S3</span>
+                                {s3Active ? (
+                                  <span style={{
+                                    color: s3.gated ? COLORS.buy : COLORS.textDim,
+                                    fontWeight: s3.gated ? 700 : 500,
+                                  }} title="Shadow/signal only — HYDRA_S3_STRATEGY for paper arms">
+                                    {s3.stage || "—"}
+                                    {typeof s3.score === "number" ? ` ${s3.score.toFixed(2)}` : ""}
+                                    {s3.gated ? " gated" : ""}
+                                    {s3.degraded ? " degraded" : ""}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: COLORS.textMuted }}>
+                                    {s3.reason || "off"}
+                                  </span>
+                                )}
+                              </>
                             )}
                           </div>
-                          {Array.isArray(hb.history) && hb.history.length >= 2 && (
+                          {ok && hb.features && typeof hb.features === "object" && (
+                            <div style={{ color: COLORS.textDim, fontSize: 10, marginTop: 2, fontFamily: mono }}>
+                              {Object.entries(hb.features).slice(0, 5).map(([k, v]) => {
+                                const z = v && typeof v === "object" ? v.z : v;
+                                if (z == null || Number.isNaN(Number(z))) return null;
+                                return `${k}:${Number(z).toFixed(2)}`;
+                              }).filter(Boolean).join(" · ")}
+                            </div>
+                          )}
+                          {Array.isArray(hb?.history) && hb.history.length >= 2 && (
                             <div style={{ marginTop: 4 }}>
-                              <HeartbeatSparkline history={hb.history} height={32} />
+                              <HeartbeatSparkline history={hb.history} height={28} />
                             </div>
                           )}
                         </div>
