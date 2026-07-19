@@ -225,3 +225,46 @@ reproduces the promoted S3 gated P&L exactly (BTC 23/+1.03, ETH
   stays excluded — its classifier gate failed). Still provisional
   pending the paper-shadow window, which logs all exit arms in
   parallel.
+
+## S3 hold-horizon study — per-coin, confidence-bounded (2026-07-19)
+
+User-directed precision pass before any live wiring: is the classifier
+"right every time" at K=20/50 continuation holds? **No — and the claim
+dies on per-entry data.** Tool `tools/s3_hold_horizon_study.py`,
+evidence `evidence/s3_hold_horizon.json`. Per-entry forward curves
+(k=1..60, close-fill L0 stop composed, 26 bps/side), Wilson 95% CIs,
+10k-draw bootstrap LB on the mean, LOYO stability of the K* choice:
+
+- **Per-entry hit rates at K≥20 are coin-flip on every asset.** BTC
+  K=20: 14/24 = 58.3% [CI 38.8–75.5]; K=50: 12/23 = 52.2% [33.0–70.8].
+  ETH K=20: 16/32 = 50.0% [33.6–66.4]; K=50: 15/32 = 46.9%. ZEC K=50:
+  5/21 = 23.8%. Every CI includes 0.5. The earlier T_K sequenced win
+  rates (0.61–0.72) were flattered by one-position sequencing dropping
+  clustered entries.
+- **Large-K averages are lottery-shaped.** ETH K=50: avg +13.1% but
+  MEDIAN −4.1%; top-3 trades carry +252pp of the +519pp K=60 total.
+  BTC K=40: top-3 carry +141pp of +183pp. Optimal-hold distributions
+  are bimodal (peaks at 1–5 and 46–60 bars): a leg either fails fast
+  or rides a regime for months — there is no single "right" K.
+- **Fold-level the long-hold construction is still coherent:** BTC
+  K=40 positive fold sums 7/7 years, ETH K=60 5/6 — but BTC's
+  bootstrap 2.5% LB is NEGATIVE (−0.2%/trade) and its LOYO K* flips
+  3↔40 (unstable). **ETH K=60 is the one significant long-hold:**
+  boot LB +4.6%/trade, LOYO-stable at 60 across all folds.
+- **Stop frequency:** 11/24 BTC, 17/32 ETH, 15/21 ZEC gated entries
+  hit the L0 close-stop within 60 bars — the classifier picks legs
+  whose low holds only about half the time; its real, CI-supported
+  edge is short-horizon bounce quality under the X1 target/stop
+  construction (win rates 0.64–0.70, bounded tails).
+
+**Registered per-coin algorithm basis (what real money may use):**
+
+| asset | basis | status |
+|---|---|---|
+| BTC/USD | X1 exit (close-fill stop L0 / tgt 3.3·ATR / 200-bar horizon), +1.17%/trade | tradable basis, provisional pending shadow |
+| ETH/USD | X1 exit, +3.34%/trade | tradable basis, provisional pending shadow |
+| ETH/USD K=60 long-hold | boot-LB +4.6%/trade but 44% hit rate, median −4.9%, top-3 = half of P&L | shadow-tracked candidate arm ONLY — not a live basis |
+| ZEC/USD | none — classifier FAIL + no K with positive LB | excluded |
+
+No blind K is adopted anywhere. Long-hold continuation is NOT part of
+the tradable basis; it survives only as a parallel shadow arm on ETH.
