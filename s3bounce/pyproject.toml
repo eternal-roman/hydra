@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "s3bounce"
+version = "0.1.0"
+description = "Daily bounce-leg continuation classifier with gate-adopted exit policy (S3, HYDRA heartbeat research program)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[tool.setuptools]
+packages = ["s3bounce"]
+
+[tool.setuptools.package-data]
+s3bounce = ["model_artifact.json"]

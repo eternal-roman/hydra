@@ -1,0 +1,85 @@
+# heartbeat default configuration.
+# Every knob the math path reads lives here so runs are reproducible from
+# (config, tape) alone. No wall-clock dependence anywhere in the math path.
+
+pair: BTC/USD
+timeframe: 1h          # 1m 5m 15m 30m 1h 4h 1d
+
+decay:
+  # Rolling evidence memory, defined in CANDLE units (lambda = 1 - 1/N).
+  # Converted to per-heartbeat decay via heartbeats-per-candle so memory
+  # does not depend on trade rate.
+  memory_candles: 30
+
+heartbeat:
+  # One heartbeat per trade; if trailing-1s trade rate exceeds
+  # bucket_rate_threshold, trades are micro-bucketed into windows of
+  # micro_bucket_ms (exchange-timestamp based -> deterministic).
+  micro_bucket_ms: 500
+  bucket_rate_threshold: 20.0
+  # Used for the per-heartbeat decay conversion until enough closed candles
+  # exist to estimate heartbeats-per-candle from data.
+  default_heartbeats_per_candle: 60
+
+features:
+  # Tiers enabled for the posterior. Tier gates: 0 must pass before 1.
+  enabled_tiers: [0]
+  # Per-feature overrides: {feature_name: true/false} wins over tier list.
+  overrides: {}
+  # Weights per feature. Missing -> default_weight. calibrate writes these.
+  weights: {}
+  default_weight: 0.5
+
+scaling:
+  # Rolling robust scaler: median/MAD over trailing window of candle-close
+  # raw feature values, frozen at candle open. z = clip(x-med / (c*1.4826*MAD)).
+  window_candles: 500
+  clip_mads: 3.0
+  min_history: 30     # feature contributes 0 until this many samples seen
+
+atr:
+  period: 14
+  outlier_mult: 3.0   # true ranges > 3x rolling median are dropped (robust ATR)
+
+vol_z:
+  window: 96
+
+labeler:
+  ma_period: 9
+  swing_window: 2         # candles each side defining a swing low
+  down_leg_lookback: 30   # window before event to find >=2 lower swing lows
+  bounce_atr: 1.0
+  reversal_atr: 3.3
+  crash_range_atr: 3.0
+  horizon_candles: 200
+  min_events: 60
+
+eval:
+  auc_promote: 0.70
+  checkpoints: [1, 2, 3]   # bounce+N candle closes; 2.0-ATR-progress always added
+
+calibrate:
+  l2: 1.0
+  lr: 0.05
+  iters: 2000
+  walk_forward_folds: 4
+  min_train_events: 20
+
+store:
+  root: data
+
+feed:
+  ws_url: wss://ws.kraken.com/v2
+  rest_url: https://api.kraken.com
+  rest_rate_per_s: 0.9      # token bucket; public tier ~1 req/s sustained
+  rest_burst: 3
+  clock_skew_alert_s: 2.0
+  reconnect_base_s: 1.0
+  reconnect_max_s: 60.0
+
+api:
+  # Live confirmation contract: atomic-write JSON status file + line-oriented
+  # TCP query server (see heartbeat/README.md "Integration contract").
+  status_file: data/heartbeat_status.json
+  tcp_host: 127.0.0.1
+  tcp_port: 8790

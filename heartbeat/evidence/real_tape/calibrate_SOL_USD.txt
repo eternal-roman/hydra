@@ -1,0 +1,14 @@
+
+== SOL/USD 1h: 80 events (31 reversal / 49 fake)
+fold              train range               test range    n   AUC+1   AUC+2   AUC+3 overlap
+   2   2026-04-21..2026-05-31   2026-06-01..2026-06-09   16  0.6364  0.6182  0.6182 NONE
+   3   2026-04-21..2026-06-09   2026-06-10..2026-07-05   16  0.6667  0.6825  0.6508 NONE
+   4   2026-04-21..2026-07-05   2026-07-06..2026-07-18   16  0.4333  0.4167     0.4 NONE
+final weights (fit on all 80 events) -> data\reports\weights_SOL_USD_1h.json
+                 clv: +0.5518
+                 ofi: +0.2388
+        ofi_momentum: +0.1074
+           range_atr: +0.0070
+               vol_z: +0.0538
+
+--- stderr ---

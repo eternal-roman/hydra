@@ -1,0 +1,670 @@
+{
+  "generated_at": "2026-07-19T00:50:38Z",
+  "pairs": [
+    "SOL/USD",
+    "BTC/USD"
+  ],
+  "window": [
+    1776632400,
+    1784404800
+  ],
+  "split_ts": 1781295840,
+  "train_frac": 0.6,
+  "trend_overlay": "off",
+  "gate_calibration": {
+    "SOL/USD": {
+      "weights": {
+        "clv": 0.9785116293457032,
+        "ofi": 0.5833523278814542,
+        "ofi_momentum": -0.2157412502970925,
+        "range_atr": -0.010604164364304372,
+        "vol_z": 0.12419936825424231
+      },
+      "weights_fitted": true,
+      "n_train_events": 49,
+      "n_test_events": 31,
+      "test_auc_bounce3": 0.4868421052631579
+    },
+    "BTC/USD": {
+      "weights": {
+        "clv": 0.7663515282715008,
+        "ofi": 0.3056835210578226,
+        "ofi_momentum": 0.4534127132030613,
+        "range_atr": 0.03215661236258975,
+        "vol_z": 0.07187424777054116
+      },
+      "weights_fitted": true,
+      "n_train_events": 46,
+      "n_test_events": 23,
+      "test_auc_bounce3": 0.823076923076923
+    }
+  },
+  "thresholds": {
+    "20": {
+      "SOL/USD": 0.17793345204828398,
+      "BTC/USD": 0.2506143882695948
+    },
+    "35": {
+      "SOL/USD": 0.3547717781380679,
+      "BTC/USD": 0.3688541363178081
+    },
+    "50": {
+      "SOL/USD": 0.5073209398883336,
+      "BTC/USD": 0.467172167306378
+    },
+    "65": {
+      "SOL/USD": 0.656790280847336,
+      "BTC/USD": 0.5517373532497859
+    }
+  },
+  "arms": {
+    "baseline_full": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 1,
+      "candles": 2160,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 1,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      }
+    },
+    "gated_p20_full": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 1,
+      "candles": 2160,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 1,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 0,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    },
+    "gated_p35_full": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 1,
+      "candles": 2160,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 1,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 0,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    },
+    "gated_p50_full": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 1,
+      "candles": 2160,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 1,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 0,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    },
+    "gated_p65_full": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 0,
+      "candles": 2160,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 0,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    },
+    "inverse_p35_full": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 0,
+      "candles": 2160,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 0,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    },
+    "inverse_p50_full": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 0,
+      "candles": 2160,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 0,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    },
+    "baseline_oos": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 1,
+      "candles": 864,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 1,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      }
+    },
+    "gated_p20_oos": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 1,
+      "candles": 864,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 1,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 0,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    },
+    "gated_p35_oos": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 1,
+      "candles": 864,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 1,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 0,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    },
+    "gated_p50_oos": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 1,
+      "candles": 864,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 1,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 0,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    },
+    "gated_p65_oos": {
+      "status": "complete",
+      "fills": 0,
+      "rejects": 0,
+      "candles": 864,
+      "aggregate": {
+        "total_return_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "win_rate_pct": 0.0,
+        "fills": 0,
+        "rejects": 0,
+        "avg_holding_ticks": 0.0
+      },
+      "per_pair": {
+        "SOL/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        },
+        "BTC/USD": {
+          "total_return_pct": 0.0,
+          "sharpe": 0.0,
+          "sortino": 0.0,
+          "max_drawdown_pct": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 0,
+          "win_rate_pct": 0.0,
+          "fills": 0,
+          "rejects": 0,
+          "avg_holding_ticks": 0.0
+        }
+      },
+      "buy_vetoes": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      },
+      "buys_checked": {
+        "SOL/USD": 1,
+        "BTC/USD": 0
+      }
+    }
+  }
+}

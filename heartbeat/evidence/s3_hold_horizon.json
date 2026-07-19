@@ -1,0 +1,1429 @@
+{
+  "generated_at": "2026-07-19T18:35:09Z",
+  "design_note": "S3 hold-horizon study \u2014 per-coin optimal hold with confidence bounds.\n\nQuestion (user-directed, 2026-07-19): if the S3 classifier selects the\nright leg for continuation, what is the per-coin optimal-but-\nhigh-confidence hold period \u2014 precisely, not via blind K=20/K=50 \u2014 and\nhow often is the selection actually right at each K? Real money rides\non this, so every rate ships with its confidence interval and its\nleave-one-year-out stability, and the known biases are stated.\n\nUpstream is IDENTICAL to the promoted S3 bakeoff + exit-policy gate\n(imported): daily bars, walk-forward yearly folds, frozen 6-feature\nlogistic, gate = train-p75, entry b1 close, 26 bps/side.\n\nMeasurements per asset (BTC/ETH primary; ZEC reported \u2014 classifier\ngate failed, stays non-tradable unless separately re-gated):\n\n1. PER-ENTRY forward net-return curves r_k, k=1..60 daily bars, two\n   families: pure hold (mark at close of entry+k) and stop-composed\n   (close<L0 disaster stop first \u2014 the adopted X1 stop \u2014 else exit at\n   close of entry+k). Entries taken independently (overlap disclosed:\n   clustered entries double-count shared market moves at large k).\n2. Hit-rate vs K table with Wilson 95% CIs, exact x/n counts \u2014 the\n   direct answer to \"is it right every time at K=20/50?\" (it is not;\n   see the JSON).\n3. Optimal-hold distribution: per entry argmax_k of the stop-composed\n   curve; median/IQR/histogram per asset.\n4. K* selection: argmax over K_GRID of the bootstrap 2.5th-percentile\n   of mean net return (stop-composed, per-entry, seed=7, 10k draws) \u2014\n   maximizing a LOWER confidence bound, not the point estimate.\n   Disclosed bias: K* is selected on the full sample (no third\n   walk-forward layer is possible at n~20-30/asset); stability is\n   probed by re-running the selection leave-one-year-out.\n5. SEQUENCED (one-position) arm P&L at each K in K_GRID for\n   comparability with the exit-policy gate's T_K controls.\n\n",
+  "fee_per_side": 0.0026,
+  "k_max": 60,
+  "k_grid": [
+    3,
+    5,
+    7,
+    10,
+    15,
+    20,
+    25,
+    30,
+    40,
+    50,
+    60
+  ],
+  "assets": {
+    "BTC/USD": {
+      "n_gated_entries": 24,
+      "n_stopped_out": 11,
+      "per_entry_pure": {
+        "3": {
+          "n": 24,
+          "pos": 12,
+          "hit_rate": 0.5,
+          "wilson95": [
+            0.3143,
+            0.6857
+          ],
+          "avg_ret_pct": 0.811,
+          "median_ret_pct": 0.095,
+          "p10_pct": -3.737,
+          "worst_pct": -6.571
+        },
+        "5": {
+          "n": 24,
+          "pos": 17,
+          "hit_rate": 0.708,
+          "wilson95": [
+            0.5083,
+            0.8509
+          ],
+          "avg_ret_pct": 1.119,
+          "median_ret_pct": 0.978,
+          "p10_pct": -9.1,
+          "worst_pct": -12.956
+        },
+        "7": {
+          "n": 24,
+          "pos": 12,
+          "hit_rate": 0.5,
+          "wilson95": [
+            0.3143,
+            0.6857
+          ],
+          "avg_ret_pct": 0.831,
+          "median_ret_pct": -0.25,
+          "p10_pct": -8.595,
+          "worst_pct": -22.418
+        },
+        "10": {
+          "n": 24,
+          "pos": 14,
+          "hit_rate": 0.583,
+          "wilson95": [
+            0.3883,
+            0.7553
+          ],
+          "avg_ret_pct": 1.785,
+          "median_ret_pct": 1.293,
+          "p10_pct": -11.822,
+          "worst_pct": -14.994
+        },
+        "15": {
+          "n": 24,
+          "pos": 14,
+          "hit_rate": 0.583,
+          "wilson95": [
+            0.3883,
+            0.7553
+          ],
+          "avg_ret_pct": 1.412,
+          "median_ret_pct": 1.845,
+          "p10_pct": -14.41,
+          "worst_pct": -27.009
+        },
+        "20": {
+          "n": 24,
+          "pos": 16,
+          "hit_rate": 0.667,
+          "wilson95": [
+            0.4671,
+            0.8203
+          ],
+          "avg_ret_pct": 3.377,
+          "median_ret_pct": 4.468,
+          "p10_pct": -16.342,
+          "worst_pct": -28.414
+        },
+        "25": {
+          "n": 23,
+          "pos": 14,
+          "hit_rate": 0.609,
+          "wilson95": [
+            0.4079,
+            0.7784
+          ],
+          "avg_ret_pct": 3.716,
+          "median_ret_pct": 4.558,
+          "p10_pct": -19.302,
+          "worst_pct": -32.493
+        },
+        "30": {
+          "n": 23,
+          "pos": 13,
+          "hit_rate": 0.565,
+          "wilson95": [
+            0.3681,
+            0.7437
+          ],
+          "avg_ret_pct": 6.68,
+          "median_ret_pct": 1.967,
+          "p10_pct": -19.556,
+          "worst_pct": -30.59
+        },
+        "40": {
+          "n": 23,
+          "pos": 16,
+          "hit_rate": 0.696,
+          "wilson95": [
+            0.4913,
+            0.844
+          ],
+          "avg_ret_pct": 8.654,
+          "median_ret_pct": 7.137,
+          "p10_pct": -21.828,
+          "worst_pct": -35.516
+        },
+        "50": {
+          "n": 23,
+          "pos": 15,
+          "hit_rate": 0.652,
+          "wilson95": [
+            0.4489,
+            0.8119
+          ],
+          "avg_ret_pct": 8.993,
+          "median_ret_pct": 12.192,
+          "p10_pct": -29.151,
+          "worst_pct": -49.12
+        },
+        "60": {
+          "n": 23,
+          "pos": 17,
+          "hit_rate": 0.739,
+          "wilson95": [
+            0.5353,
+            0.8745
+          ],
+          "avg_ret_pct": 10.492,
+          "median_ret_pct": 8.335,
+          "p10_pct": -31.143,
+          "worst_pct": -48.407
+        }
+      },
+      "per_entry_stopped": {
+        "3": {
+          "n": 24,
+          "pos": 12,
+          "hit_rate": 0.5,
+          "wilson95": [
+            0.3143,
+            0.6857
+          ],
+          "avg_ret_pct": 0.725,
+          "median_ret_pct": 0.095,
+          "p10_pct": -4.274,
+          "worst_pct": -6.571
+        },
+        "5": {
+          "n": 24,
+          "pos": 16,
+          "hit_rate": 0.667,
+          "wilson95": [
+            0.4671,
+            0.8203
+          ],
+          "avg_ret_pct": 0.94,
+          "median_ret_pct": 0.978,
+          "p10_pct": -9.1,
+          "worst_pct": -12.956
+        },
+        "7": {
+          "n": 24,
+          "pos": 11,
+          "hit_rate": 0.458,
+          "wilson95": [
+            0.2789,
+            0.6493
+          ],
+          "avg_ret_pct": 0.416,
+          "median_ret_pct": -0.791,
+          "p10_pct": -8.802,
+          "worst_pct": -22.418
+        },
+        "10": {
+          "n": 24,
+          "pos": 12,
+          "hit_rate": 0.5,
+          "wilson95": [
+            0.3143,
+            0.6857
+          ],
+          "avg_ret_pct": 0.85,
+          "median_ret_pct": -0.523,
+          "p10_pct": -8.802,
+          "worst_pct": -22.418
+        },
+        "15": {
+          "n": 24,
+          "pos": 12,
+          "hit_rate": 0.5,
+          "wilson95": [
+            0.3143,
+            0.6857
+          ],
+          "avg_ret_pct": 1.877,
+          "median_ret_pct": -0.2,
+          "p10_pct": -11.235,
+          "worst_pct": -22.418
+        },
+        "20": {
+          "n": 24,
+          "pos": 14,
+          "hit_rate": 0.583,
+          "wilson95": [
+            0.3883,
+            0.7553
+          ],
+          "avg_ret_pct": 3.473,
+          "median_ret_pct": 1.995,
+          "p10_pct": -11.235,
+          "worst_pct": -22.418
+        },
+        "25": {
+          "n": 23,
+          "pos": 12,
+          "hit_rate": 0.522,
+          "wilson95": [
+            0.3296,
+            0.7076
+          ],
+          "avg_ret_pct": 4.504,
+          "median_ret_pct": 0.82,
+          "p10_pct": -11.235,
+          "worst_pct": -22.418
+        },
+        "30": {
+          "n": 23,
+          "pos": 11,
+          "hit_rate": 0.478,
+          "wilson95": [
+            0.2924,
+            0.6704
+          ],
+          "avg_ret_pct": 6.103,
+          "median_ret_pct": -0.1,
+          "p10_pct": -11.235,
+          "worst_pct": -22.418
+        },
+        "40": {
+          "n": 23,
+          "pos": 13,
+          "hit_rate": 0.565,
+          "wilson95": [
+            0.3681,
+            0.7437
+          ],
+          "avg_ret_pct": 7.949,
+          "median_ret_pct": 4.947,
+          "p10_pct": -15.623,
+          "worst_pct": -22.418
+        },
+        "50": {
+          "n": 23,
+          "pos": 12,
+          "hit_rate": 0.522,
+          "wilson95": [
+            0.3296,
+            0.7076
+          ],
+          "avg_ret_pct": 7.523,
+          "median_ret_pct": 9.004,
+          "p10_pct": -16.493,
+          "worst_pct": -22.418
+        },
+        "60": {
+          "n": 23,
+          "pos": 12,
+          "hit_rate": 0.522,
+          "wilson95": [
+            0.3296,
+            0.7076
+          ],
+          "avg_ret_pct": 7.482,
+          "median_ret_pct": 0.05,
+          "p10_pct": -16.493,
+          "worst_pct": -22.418
+        }
+      },
+      "optimal_hold": {
+        "median": 23.5,
+        "iqr": [
+          4,
+          46
+        ],
+        "histogram": {
+          "1-5": 8,
+          "6-10": 0,
+          "11-20": 3,
+          "21-30": 2,
+          "31-45": 3,
+          "46-60": 8
+        }
+      },
+      "k_star_selection": {
+        "k_star": 40,
+        "boot_lb_by_k_pct": {
+          "3": -0.874,
+          "5": -1.927,
+          "7": -3.13,
+          "10": -3.019,
+          "15": -3.051,
+          "20": -1.875,
+          "25": -1.613,
+          "30": -1.34,
+          "40": -0.199,
+          "50": -0.903,
+          "60": -2.137
+        },
+        "k_star_lb_pct": -0.199,
+        "loyo_k_star": {
+          "2020": 3,
+          "2021": 40,
+          "2022": 3,
+          "2023": 40,
+          "2024": 3,
+          "2025": 40,
+          "2026": 3
+        },
+        "loyo_stable": false
+      },
+      "sequenced_stop_composed": {
+        "3": {
+          "n": 24,
+          "win_rate": 0.5,
+          "avg_ret_pct": 0.725,
+          "total_ret_pct": 16.69,
+          "profit_factor": 1.56,
+          "avg_hold_h": 3.0,
+          "exit_reasons": {
+            "hold": 24
+          },
+          "worst_trade_pct": -6.571
+        },
+        "5": {
+          "n": 23,
+          "win_rate": 0.696,
+          "avg_ret_pct": 1.544,
+          "total_ret_pct": 34.98,
+          "profit_factor": 1.92,
+          "avg_hold_h": 4.8,
+          "exit_reasons": {
+            "hold": 23
+          },
+          "worst_trade_pct": -11.235
+        },
+        "7": {
+          "n": 23,
+          "win_rate": 0.478,
+          "avg_ret_pct": 1.409,
+          "total_ret_pct": 29.34,
+          "profit_factor": 1.66,
+          "avg_hold_h": 6.4,
+          "exit_reasons": {
+            "hold": 23
+          },
+          "worst_trade_pct": -11.235
+        },
+        "10": {
+          "n": 23,
+          "win_rate": 0.522,
+          "avg_ret_pct": 1.862,
+          "total_ret_pct": 41.2,
+          "profit_factor": 1.77,
+          "avg_hold_h": 8.7,
+          "exit_reasons": {
+            "hold": 23
+          },
+          "worst_trade_pct": -11.235
+        },
+        "15": {
+          "n": 23,
+          "win_rate": 0.522,
+          "avg_ret_pct": 2.933,
+          "total_ret_pct": 68.26,
+          "profit_factor": 1.9,
+          "avg_hold_h": 12.4,
+          "exit_reasons": {
+            "hold": 23
+          },
+          "worst_trade_pct": -14.41
+        },
+        "20": {
+          "n": 22,
+          "win_rate": 0.591,
+          "avg_ret_pct": 4.242,
+          "total_ret_pct": 112.82,
+          "profit_factor": 2.49,
+          "avg_hold_h": 15.8,
+          "exit_reasons": {
+            "hold": 22
+          },
+          "worst_trade_pct": -15.623
+        },
+        "25": {
+          "n": 21,
+          "win_rate": 0.571,
+          "avg_ret_pct": 6.032,
+          "total_ret_pct": 178.7,
+          "profit_factor": 2.9,
+          "avg_hold_h": 18.8,
+          "exit_reasons": {
+            "hold": 21
+          },
+          "worst_trade_pct": -15.623
+        },
+        "30": {
+          "n": 21,
+          "win_rate": 0.524,
+          "avg_ret_pct": 8.079,
+          "total_ret_pct": 282.92,
+          "profit_factor": 3.45,
+          "avg_hold_h": 21.9,
+          "exit_reasons": {
+            "hold": 21
+          },
+          "worst_trade_pct": -15.623
+        },
+        "40": {
+          "n": 21,
+          "win_rate": 0.619,
+          "avg_ret_pct": 10.287,
+          "total_ret_pct": 454.5,
+          "profit_factor": 3.91,
+          "avg_hold_h": 28.0,
+          "exit_reasons": {
+            "hold": 21
+          },
+          "worst_trade_pct": -16.493
+        },
+        "50": {
+          "n": 21,
+          "win_rate": 0.571,
+          "avg_ret_pct": 9.411,
+          "total_ret_pct": 350.33,
+          "profit_factor": 3.14,
+          "avg_hold_h": 33.6,
+          "exit_reasons": {
+            "hold": 21
+          },
+          "worst_trade_pct": -18.278
+        },
+        "60": {
+          "n": 18,
+          "win_rate": 0.667,
+          "avg_ret_pct": 13.328,
+          "total_ret_pct": 532.24,
+          "profit_factor": 5.22,
+          "avg_hold_h": 43.8,
+          "exit_reasons": {
+            "hold": 18
+          },
+          "worst_trade_pct": -18.278
+        }
+      }
+    },
+    "ETH/USD": {
+      "n_gated_entries": 32,
+      "n_stopped_out": 17,
+      "per_entry_pure": {
+        "3": {
+          "n": 32,
+          "pos": 21,
+          "hit_rate": 0.656,
+          "wilson95": [
+            0.4831,
+            0.7959
+          ],
+          "avg_ret_pct": 0.498,
+          "median_ret_pct": 0.625,
+          "p10_pct": -4.883,
+          "worst_pct": -11.609
+        },
+        "5": {
+          "n": 32,
+          "pos": 20,
+          "hit_rate": 0.625,
+          "wilson95": [
+            0.4525,
+            0.7707
+          ],
+          "avg_ret_pct": 2.213,
+          "median_ret_pct": 1.456,
+          "p10_pct": -5.438,
+          "worst_pct": -12.401
+        },
+        "7": {
+          "n": 32,
+          "pos": 19,
+          "hit_rate": 0.594,
+          "wilson95": [
+            0.4226,
+            0.7448
+          ],
+          "avg_ret_pct": 2.774,
+          "median_ret_pct": 3.301,
+          "p10_pct": -4.652,
+          "worst_pct": -10.45
+        },
+        "10": {
+          "n": 32,
+          "pos": 19,
+          "hit_rate": 0.594,
+          "wilson95": [
+            0.4226,
+            0.7448
+          ],
+          "avg_ret_pct": 4.89,
+          "median_ret_pct": 2.795,
+          "p10_pct": -7.935,
+          "worst_pct": -14.95
+        },
+        "15": {
+          "n": 32,
+          "pos": 21,
+          "hit_rate": 0.656,
+          "wilson95": [
+            0.4831,
+            0.7959
+          ],
+          "avg_ret_pct": 6.755,
+          "median_ret_pct": 3.963,
+          "p10_pct": -10.813,
+          "worst_pct": -36.806
+        },
+        "20": {
+          "n": 32,
+          "pos": 20,
+          "hit_rate": 0.625,
+          "wilson95": [
+            0.4525,
+            0.7707
+          ],
+          "avg_ret_pct": 7.619,
+          "median_ret_pct": 3.738,
+          "p10_pct": -8.37,
+          "worst_pct": -42.418
+        },
+        "25": {
+          "n": 32,
+          "pos": 19,
+          "hit_rate": 0.594,
+          "wilson95": [
+            0.4226,
+            0.7448
+          ],
+          "avg_ret_pct": 6.718,
+          "median_ret_pct": 3.455,
+          "p10_pct": -16.987,
+          "worst_pct": -36.556
+        },
+        "30": {
+          "n": 32,
+          "pos": 21,
+          "hit_rate": 0.656,
+          "wilson95": [
+            0.4831,
+            0.7959
+          ],
+          "avg_ret_pct": 8.558,
+          "median_ret_pct": 9.112,
+          "p10_pct": -16.508,
+          "worst_pct": -45.384
+        },
+        "40": {
+          "n": 32,
+          "pos": 21,
+          "hit_rate": 0.656,
+          "wilson95": [
+            0.4831,
+            0.7959
+          ],
+          "avg_ret_pct": 12.238,
+          "median_ret_pct": 8.238,
+          "p10_pct": -26.152,
+          "worst_pct": -40.373
+        },
+        "50": {
+          "n": 32,
+          "pos": 20,
+          "hit_rate": 0.625,
+          "wilson95": [
+            0.4525,
+            0.7707
+          ],
+          "avg_ret_pct": 16.411,
+          "median_ret_pct": 8.373,
+          "p10_pct": -22.771,
+          "worst_pct": -41.811
+        },
+        "60": {
+          "n": 32,
+          "pos": 21,
+          "hit_rate": 0.656,
+          "wilson95": [
+            0.4831,
+            0.7959
+          ],
+          "avg_ret_pct": 19.505,
+          "median_ret_pct": 10.644,
+          "p10_pct": -19.677,
+          "worst_pct": -60.458
+        }
+      },
+      "per_entry_stopped": {
+        "3": {
+          "n": 32,
+          "pos": 20,
+          "hit_rate": 0.625,
+          "wilson95": [
+            0.4525,
+            0.7707
+          ],
+          "avg_ret_pct": 0.115,
+          "median_ret_pct": 0.281,
+          "p10_pct": -6.145,
+          "worst_pct": -11.609
+        },
+        "5": {
+          "n": 32,
+          "pos": 20,
+          "hit_rate": 0.625,
+          "wilson95": [
+            0.4525,
+            0.7707
+          ],
+          "avg_ret_pct": 2.019,
+          "median_ret_pct": 1.456,
+          "p10_pct": -7.513,
+          "worst_pct": -12.401
+        },
+        "7": {
+          "n": 32,
+          "pos": 18,
+          "hit_rate": 0.562,
+          "wilson95": [
+            0.3933,
+            0.7183
+          ],
+          "avg_ret_pct": 2.22,
+          "median_ret_pct": 2.252,
+          "p10_pct": -4.883,
+          "worst_pct": -9.737
+        },
+        "10": {
+          "n": 32,
+          "pos": 18,
+          "hit_rate": 0.562,
+          "wilson95": [
+            0.3933,
+            0.7183
+          ],
+          "avg_ret_pct": 4.526,
+          "median_ret_pct": 2.564,
+          "p10_pct": -8.873,
+          "worst_pct": -14.95
+        },
+        "15": {
+          "n": 32,
+          "pos": 18,
+          "hit_rate": 0.562,
+          "wilson95": [
+            0.3933,
+            0.7183
+          ],
+          "avg_ret_pct": 6.487,
+          "median_ret_pct": 3.276,
+          "p10_pct": -9.753,
+          "worst_pct": -14.95
+        },
+        "20": {
+          "n": 32,
+          "pos": 16,
+          "hit_rate": 0.5,
+          "wilson95": [
+            0.3363,
+            0.6637
+          ],
+          "avg_ret_pct": 6.502,
+          "median_ret_pct": 1.142,
+          "p10_pct": -9.785,
+          "worst_pct": -14.95
+        },
+        "25": {
+          "n": 32,
+          "pos": 15,
+          "hit_rate": 0.469,
+          "wilson95": [
+            0.3087,
+            0.6355
+          ],
+          "avg_ret_pct": 6.756,
+          "median_ret_pct": -3.34,
+          "p10_pct": -10.813,
+          "worst_pct": -20.567
+        },
+        "30": {
+          "n": 32,
+          "pos": 15,
+          "hit_rate": 0.469,
+          "wilson95": [
+            0.3087,
+            0.6355
+          ],
+          "avg_ret_pct": 8.051,
+          "median_ret_pct": -2.136,
+          "p10_pct": -10.813,
+          "worst_pct": -27.14
+        },
+        "40": {
+          "n": 32,
+          "pos": 15,
+          "hit_rate": 0.469,
+          "wilson95": [
+            0.3087,
+            0.6355
+          ],
+          "avg_ret_pct": 10.121,
+          "median_ret_pct": -3.887,
+          "p10_pct": -12.929,
+          "worst_pct": -19.486
+        },
+        "50": {
+          "n": 32,
+          "pos": 15,
+          "hit_rate": 0.469,
+          "wilson95": [
+            0.3087,
+            0.6355
+          ],
+          "avg_ret_pct": 13.046,
+          "median_ret_pct": -4.119,
+          "p10_pct": -12.929,
+          "worst_pct": -26.936
+        },
+        "60": {
+          "n": 32,
+          "pos": 14,
+          "hit_rate": 0.438,
+          "wilson95": [
+            0.2817,
+            0.6067
+          ],
+          "avg_ret_pct": 16.233,
+          "median_ret_pct": -4.852,
+          "p10_pct": -12.929,
+          "worst_pct": -19.802
+        }
+      },
+      "optimal_hold": {
+        "median": 14.5,
+        "iqr": [
+          2,
+          48
+        ],
+        "histogram": {
+          "1-5": 10,
+          "6-10": 2,
+          "11-20": 7,
+          "21-30": 1,
+          "31-45": 2,
+          "46-60": 10
+        }
+      },
+      "k_star_selection": {
+        "k_star": 60,
+        "boot_lb_by_k_pct": {
+          "3": -1.484,
+          "5": -0.454,
+          "7": -0.083,
+          "10": 0.677,
+          "15": 0.872,
+          "20": 0.384,
+          "25": -0.036,
+          "30": 0.515,
+          "40": 1.668,
+          "50": 2.679,
+          "60": 4.618
+        },
+        "k_star_lb_pct": 4.618,
+        "loyo_k_star": {
+          "2019": 60,
+          "2020": 60,
+          "2021": 60,
+          "2022": 60,
+          "2023": 60,
+          "2024": 60
+        },
+        "loyo_stable": true
+      },
+      "sequenced_stop_composed": {
+        "3": {
+          "n": 32,
+          "win_rate": 0.625,
+          "avg_ret_pct": 0.115,
+          "total_ret_pct": 0.51,
+          "profit_factor": 1.08,
+          "avg_hold_h": 2.9,
+          "exit_reasons": {
+            "hold": 32
+          },
+          "worst_trade_pct": -11.609
+        },
+        "5": {
+          "n": 32,
+          "win_rate": 0.625,
+          "avg_ret_pct": 2.019,
+          "total_ret_pct": 75.36,
+          "profit_factor": 2.1,
+          "avg_hold_h": 4.8,
+          "exit_reasons": {
+            "hold": 32
+          },
+          "worst_trade_pct": -12.401
+        },
+        "7": {
+          "n": 31,
+          "win_rate": 0.548,
+          "avg_ret_pct": 2.17,
+          "total_ret_pct": 81.72,
+          "profit_factor": 2.2,
+          "avg_hold_h": 6.6,
+          "exit_reasons": {
+            "hold": 31
+          },
+          "worst_trade_pct": -9.737
+        },
+        "10": {
+          "n": 31,
+          "win_rate": 0.548,
+          "avg_ret_pct": 4.18,
+          "total_ret_pct": 197.22,
+          "profit_factor": 2.64,
+          "avg_hold_h": 9.2,
+          "exit_reasons": {
+            "hold": 31
+          },
+          "worst_trade_pct": -14.95
+        },
+        "15": {
+          "n": 27,
+          "win_rate": 0.556,
+          "avg_ret_pct": 5.926,
+          "total_ret_pct": 237.62,
+          "profit_factor": 2.77,
+          "avg_hold_h": 12.9,
+          "exit_reasons": {
+            "hold": 27
+          },
+          "worst_trade_pct": -14.95
+        },
+        "20": {
+          "n": 27,
+          "win_rate": 0.519,
+          "avg_ret_pct": 6.137,
+          "total_ret_pct": 241.73,
+          "profit_factor": 2.59,
+          "avg_hold_h": 16.0,
+          "exit_reasons": {
+            "hold": 27
+          },
+          "worst_trade_pct": -14.95
+        },
+        "25": {
+          "n": 27,
+          "win_rate": 0.481,
+          "avg_ret_pct": 6.489,
+          "total_ret_pct": 234.16,
+          "profit_factor": 2.33,
+          "avg_hold_h": 19.0,
+          "exit_reasons": {
+            "hold": 27
+          },
+          "worst_trade_pct": -20.567
+        },
+        "30": {
+          "n": 26,
+          "win_rate": 0.462,
+          "avg_ret_pct": 8.088,
+          "total_ret_pct": 323.01,
+          "profit_factor": 2.52,
+          "avg_hold_h": 21.6,
+          "exit_reasons": {
+            "hold": 26
+          },
+          "worst_trade_pct": -27.14
+        },
+        "40": {
+          "n": 25,
+          "win_rate": 0.48,
+          "avg_ret_pct": 11.149,
+          "total_ret_pct": 596.03,
+          "profit_factor": 3.13,
+          "avg_hold_h": 27.2,
+          "exit_reasons": {
+            "hold": 25
+          },
+          "worst_trade_pct": -19.486
+        },
+        "50": {
+          "n": 22,
+          "win_rate": 0.455,
+          "avg_ret_pct": 5.708,
+          "total_ret_pct": 111.49,
+          "profit_factor": 1.94,
+          "avg_hold_h": 32.1,
+          "exit_reasons": {
+            "hold": 22
+          },
+          "worst_trade_pct": -26.936
+        },
+        "60": {
+          "n": 20,
+          "win_rate": 0.4,
+          "avg_ret_pct": 8.899,
+          "total_ret_pct": 217.04,
+          "profit_factor": 2.46,
+          "avg_hold_h": 37.0,
+          "exit_reasons": {
+            "hold": 20
+          },
+          "worst_trade_pct": -19.802
+        }
+      }
+    },
+    "ZEC/USD": {
+      "n_gated_entries": 21,
+      "n_stopped_out": 15,
+      "per_entry_pure": {
+        "3": {
+          "n": 21,
+          "pos": 12,
+          "hit_rate": 0.571,
+          "wilson95": [
+            0.3655,
+            0.7553
+          ],
+          "avg_ret_pct": -1.638,
+          "median_ret_pct": 0.216,
+          "p10_pct": -7.019,
+          "worst_pct": -18.088
+        },
+        "5": {
+          "n": 21,
+          "pos": 9,
+          "hit_rate": 0.429,
+          "wilson95": [
+            0.2447,
+            0.6345
+          ],
+          "avg_ret_pct": -2.39,
+          "median_ret_pct": -0.963,
+          "p10_pct": -9.494,
+          "worst_pct": -35.605
+        },
+        "7": {
+          "n": 21,
+          "pos": 11,
+          "hit_rate": 0.524,
+          "wilson95": [
+            0.3237,
+            0.7166
+          ],
+          "avg_ret_pct": -0.522,
+          "median_ret_pct": 0.458,
+          "p10_pct": -15.64,
+          "worst_pct": -27.396
+        },
+        "10": {
+          "n": 21,
+          "pos": 11,
+          "hit_rate": 0.524,
+          "wilson95": [
+            0.3237,
+            0.7166
+          ],
+          "avg_ret_pct": 0.107,
+          "median_ret_pct": 0.269,
+          "p10_pct": -12.73,
+          "worst_pct": -25.241
+        },
+        "15": {
+          "n": 21,
+          "pos": 10,
+          "hit_rate": 0.476,
+          "wilson95": [
+            0.2834,
+            0.6763
+          ],
+          "avg_ret_pct": -1.239,
+          "median_ret_pct": -0.359,
+          "p10_pct": -25.154,
+          "worst_pct": -35.257
+        },
+        "20": {
+          "n": 21,
+          "pos": 11,
+          "hit_rate": 0.524,
+          "wilson95": [
+            0.3237,
+            0.7166
+          ],
+          "avg_ret_pct": -0.789,
+          "median_ret_pct": 1.58,
+          "p10_pct": -25.963,
+          "worst_pct": -34.484
+        },
+        "25": {
+          "n": 21,
+          "pos": 9,
+          "hit_rate": 0.429,
+          "wilson95": [
+            0.2447,
+            0.6345
+          ],
+          "avg_ret_pct": -0.644,
+          "median_ret_pct": -0.872,
+          "p10_pct": -26.356,
+          "worst_pct": -35.034
+        },
+        "30": {
+          "n": 21,
+          "pos": 12,
+          "hit_rate": 0.571,
+          "wilson95": [
+            0.3655,
+            0.7553
+          ],
+          "avg_ret_pct": 4.236,
+          "median_ret_pct": 4.633,
+          "p10_pct": -21.784,
+          "worst_pct": -29.347
+        },
+        "40": {
+          "n": 21,
+          "pos": 11,
+          "hit_rate": 0.524,
+          "wilson95": [
+            0.3237,
+            0.7166
+          ],
+          "avg_ret_pct": 5.725,
+          "median_ret_pct": 4.483,
+          "p10_pct": -16.434,
+          "worst_pct": -25.027
+        },
+        "50": {
+          "n": 21,
+          "pos": 10,
+          "hit_rate": 0.476,
+          "wilson95": [
+            0.2834,
+            0.6763
+          ],
+          "avg_ret_pct": 1.502,
+          "median_ret_pct": -2.493,
+          "p10_pct": -26.764,
+          "worst_pct": -38.758
+        },
+        "60": {
+          "n": 21,
+          "pos": 9,
+          "hit_rate": 0.429,
+          "wilson95": [
+            0.2447,
+            0.6345
+          ],
+          "avg_ret_pct": 9.284,
+          "median_ret_pct": -4.464,
+          "p10_pct": -23.624,
+          "worst_pct": -37.292
+        }
+      },
+      "per_entry_stopped": {
+        "3": {
+          "n": 21,
+          "pos": 12,
+          "hit_rate": 0.571,
+          "wilson95": [
+            0.3655,
+            0.7553
+          ],
+          "avg_ret_pct": -1.191,
+          "median_ret_pct": 0.216,
+          "p10_pct": -6.676,
+          "worst_pct": -10.268
+        },
+        "5": {
+          "n": 21,
+          "pos": 9,
+          "hit_rate": 0.429,
+          "wilson95": [
+            0.2447,
+            0.6345
+          ],
+          "avg_ret_pct": -1.49,
+          "median_ret_pct": -0.963,
+          "p10_pct": -9.494,
+          "worst_pct": -22.344
+        },
+        "7": {
+          "n": 21,
+          "pos": 11,
+          "hit_rate": 0.524,
+          "wilson95": [
+            0.3237,
+            0.7166
+          ],
+          "avg_ret_pct": 0.352,
+          "median_ret_pct": 0.458,
+          "p10_pct": -9.494,
+          "worst_pct": -22.344
+        },
+        "10": {
+          "n": 21,
+          "pos": 10,
+          "hit_rate": 0.476,
+          "wilson95": [
+            0.2834,
+            0.6763
+          ],
+          "avg_ret_pct": 0.0,
+          "median_ret_pct": -1.096,
+          "p10_pct": -11.008,
+          "worst_pct": -22.344
+        },
+        "15": {
+          "n": 21,
+          "pos": 10,
+          "hit_rate": 0.476,
+          "wilson95": [
+            0.2834,
+            0.6763
+          ],
+          "avg_ret_pct": 1.144,
+          "median_ret_pct": -0.359,
+          "p10_pct": -18.14,
+          "worst_pct": -30.741
+        },
+        "20": {
+          "n": 21,
+          "pos": 10,
+          "hit_rate": 0.476,
+          "wilson95": [
+            0.2834,
+            0.6763
+          ],
+          "avg_ret_pct": 1.277,
+          "median_ret_pct": -3.414,
+          "p10_pct": -22.344,
+          "worst_pct": -30.741
+        },
+        "25": {
+          "n": 21,
+          "pos": 8,
+          "hit_rate": 0.381,
+          "wilson95": [
+            0.2075,
+            0.5912
+          ],
+          "avg_ret_pct": 0.062,
+          "median_ret_pct": -5.452,
+          "p10_pct": -26.74,
+          "worst_pct": -30.741
+        },
+        "30": {
+          "n": 21,
+          "pos": 10,
+          "hit_rate": 0.476,
+          "wilson95": [
+            0.2834,
+            0.6763
+          ],
+          "avg_ret_pct": 0.72,
+          "median_ret_pct": -5.452,
+          "p10_pct": -26.74,
+          "worst_pct": -30.741
+        },
+        "40": {
+          "n": 21,
+          "pos": 8,
+          "hit_rate": 0.381,
+          "wilson95": [
+            0.2075,
+            0.5912
+          ],
+          "avg_ret_pct": -1.22,
+          "median_ret_pct": -8.935,
+          "p10_pct": -26.74,
+          "worst_pct": -30.741
+        },
+        "50": {
+          "n": 21,
+          "pos": 5,
+          "hit_rate": 0.238,
+          "wilson95": [
+            0.1063,
+            0.4509
+          ],
+          "avg_ret_pct": -5.174,
+          "median_ret_pct": -10.249,
+          "p10_pct": -26.74,
+          "worst_pct": -30.741
+        },
+        "60": {
+          "n": 21,
+          "pos": 5,
+          "hit_rate": 0.238,
+          "wilson95": [
+            0.1063,
+            0.4509
+          ],
+          "avg_ret_pct": 1.986,
+          "median_ret_pct": -10.249,
+          "p10_pct": -26.74,
+          "worst_pct": -30.741
+        }
+      },
+      "optimal_hold": {
+        "median": 14,
+        "iqr": [
+          2,
+          29
+        ],
+        "histogram": {
+          "1-5": 6,
+          "6-10": 3,
+          "11-20": 4,
+          "21-30": 3,
+          "31-45": 2,
+          "46-60": 3
+        }
+      },
+      "k_star_selection": {
+        "k_star": 3,
+        "boot_lb_by_k_pct": {
+          "3": -3.133,
+          "5": -4.636,
+          "7": -3.561,
+          "10": -4.992,
+          "15": -6.096,
+          "20": -6.36,
+          "25": -8.84,
+          "30": -8.528,
+          "40": -9.657,
+          "50": -12.685,
+          "60": -13.639
+        },
+        "k_star_lb_pct": -3.133,
+        "loyo_k_star": {
+          "2020": 3,
+          "2021": 3,
+          "2022": 7,
+          "2023": 3,
+          "2024": 3,
+          "2025": 3
+        },
+        "loyo_stable": false
+      },
+      "sequenced_stop_composed": {
+        "3": {
+          "n": 20,
+          "win_rate": 0.55,
+          "avg_ret_pct": -1.533,
+          "total_ret_pct": -27.95,
+          "profit_factor": 0.41,
+          "avg_hold_h": 2.8,
+          "exit_reasons": {
+            "hold": 20
+          },
+          "worst_trade_pct": -10.268
+        },
+        "5": {
+          "n": 20,
+          "win_rate": 0.45,
+          "avg_ret_pct": -1.516,
+          "total_ret_pct": -30.67,
+          "profit_factor": 0.58,
+          "avg_hold_h": 4.5,
+          "exit_reasons": {
+            "hold": 20
+          },
+          "worst_trade_pct": -22.344
+        },
+        "7": {
+          "n": 20,
+          "win_rate": 0.55,
+          "avg_ret_pct": 0.428,
+          "total_ret_pct": -0.59,
+          "profit_factor": 1.12,
+          "avg_hold_h": 6.2,
+          "exit_reasons": {
+            "hold": 20
+          },
+          "worst_trade_pct": -22.344
+        },
+        "10": {
+          "n": 20,
+          "win_rate": 0.5,
+          "avg_ret_pct": 0.069,
+          "total_ret_pct": -13.28,
+          "profit_factor": 1.01,
+          "avg_hold_h": 8.5,
+          "exit_reasons": {
+            "hold": 20
+          },
+          "worst_trade_pct": -22.344
+        },
+        "15": {
+          "n": 18,
+          "win_rate": 0.5,
+          "avg_ret_pct": 0.255,
+          "total_ret_pct": -10.35,
+          "profit_factor": 1.05,
+          "avg_hold_h": 11.5,
+          "exit_reasons": {
+            "hold": 18
+          },
+          "worst_trade_pct": -22.344
+        },
+        "20": {
+          "n": 18,
+          "win_rate": 0.444,
+          "avg_ret_pct": 1.484,
+          "total_ret_pct": 2.52,
+          "profit_factor": 1.24,
+          "avg_hold_h": 14.4,
+          "exit_reasons": {
+            "hold": 18
+          },
+          "worst_trade_pct": -26.74
+        },
+        "25": {
+          "n": 18,
+          "win_rate": 0.333,
+          "avg_ret_pct": -0.268,
+          "total_ret_pct": -34.16,
+          "profit_factor": 0.97,
+          "avg_hold_h": 16.9,
+          "exit_reasons": {
+            "hold": 18
+          },
+          "worst_trade_pct": -28.403
+        },
+        "30": {
+          "n": 17,
+          "win_rate": 0.471,
+          "avg_ret_pct": 2.188,
+          "total_ret_pct": -5.16,
+          "profit_factor": 1.27,
+          "avg_hold_h": 19.7,
+          "exit_reasons": {
+            "hold": 17
+          },
+          "worst_trade_pct": -28.403
+        },
+        "40": {
+          "n": 16,
+          "win_rate": 0.375,
+          "avg_ret_pct": -0.166,
+          "total_ret_pct": -30.69,
+          "profit_factor": 0.98,
+          "avg_hold_h": 24.5,
+          "exit_reasons": {
+            "hold": 16
+          },
+          "worst_trade_pct": -28.403
+        },
+        "50": {
+          "n": 16,
+          "win_rate": 0.25,
+          "avg_ret_pct": -2.625,
+          "total_ret_pct": -52.63,
+          "profit_factor": 0.73,
+          "avg_hold_h": 28.4,
+          "exit_reasons": {
+            "hold": 16
+          },
+          "worst_trade_pct": -28.403
+        },
+        "60": {
+          "n": 16,
+          "win_rate": 0.188,
+          "avg_ret_pct": 5.309,
+          "total_ret_pct": -38.16,
+          "profit_factor": 1.47,
+          "avg_hold_h": 30.8,
+          "exit_reasons": {
+            "hold": 16
+          },
+          "worst_trade_pct": -28.403
+        }
+      }
+    }
+  }
+}

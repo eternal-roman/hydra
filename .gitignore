@@ -69,6 +69,7 @@ hydra_backtest_errors.log
 # Flywheel runtime artifacts (paper ledger state, validation evidence,
 # downloaded funding history)
 .hydra-flywheel/
+.hydra-s3/
 
 # Brain audit log (v2.14.0+; JSONL of every deliberate() and fallback)
 hydra_brain.jsonl
@@ -112,3 +113,6 @@ docs/superpowers/
 
 # Test runtime scratch (offline demo unit tests)
 tests/_demo_tmp/
+
+# heartbeat research subsystem: local tape/posterior store + generated reports
+heartbeat/data/

@@ -1,0 +1,1556 @@
+{
+  "generated_at": "2026-07-19T02:56:04Z",
+  "design": {
+    "registration": "heartbeat/evidence/ABI_FUNNEL_2026-07-18.md \u00a76 S3",
+    "bars": "daily (resampled from 1h sqlite)",
+    "features_frozen": [
+      "clv",
+      "range_atr",
+      "vol_z",
+      "shock_recency",
+      "breadth",
+      "retest"
+    ],
+    "feature_checkpoint": "bounce-confirm bar (breadth at setup date)",
+    "range_atr_denominator": "setup robust ATR14 from causal_setups",
+    "auc_note": "events scored once from bounce-bar features; 'bounce+3' in the registration names the heartbeat checkpoint this single frozen checkpoint replaces",
+    "logistic": {
+      "l2_on_weights": 1.0,
+      "intercept": "unpenalized",
+      "lr": 0.1,
+      "iters": 3000,
+      "init": "zeros"
+    },
+    "min_train_events": {
+      "BTC/USD": 10,
+      "ETH/USD": 40,
+      "ZEC/USD": 40
+    },
+    "folds": "expanding yearly, train = events resolved (close of resolution bar) before Jan 1 of Y, test = year-Y bounce bars, Y=2016..2026",
+    "pnl": "entry b1 close, exit tgt 3.3*ATR / touch-stop at L0 (fill min(close,L0)) / 200-bar horizon, 26 bps/side",
+    "gate": "prob >= p75 of TRAIN predicted probs; inverse <= p25"
+  },
+  "fee_per_side": 0.0026,
+  "assets": {
+    "BTC/USD": {
+      "n_daily_candles": 4657,
+      "n_setups": 182,
+      "n_labeled": 181,
+      "folds": [
+        {
+          "year": 2016,
+          "train_n": 34,
+          "test_n": 5,
+          "thr_p75": 0.5575,
+          "thr_p25": 0.2008,
+          "auc": 0.3333,
+          "pnl": {
+            "ungated": {
+              "n": 5,
+              "win_rate": 0.6,
+              "avg_ret_pct": 3.219,
+              "total_ret_pct": 15.83,
+              "profit_factor": 3.03,
+              "avg_hold_h": 11.0,
+              "exit_reasons": {
+                "target": 3,
+                "stop": 2
+              }
+            },
+            "gated": {
+              "n": 0
+            },
+            "inverse": {
+              "n": 2,
+              "win_rate": 0.5,
+              "avg_ret_pct": 5.291,
+              "total_ret_pct": 10.29,
+              "profit_factor": 5.63,
+              "avg_hold_h": 12.5,
+              "exit_reasons": {
+                "target": 1,
+                "stop": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2017,
+          "train_n": 39,
+          "test_n": 5,
+          "thr_p75": 0.5113,
+          "thr_p25": 0.2657,
+          "auc": 0.6667,
+          "pnl": {
+            "ungated": {
+              "n": 5,
+              "win_rate": 0.6,
+              "avg_ret_pct": 3.43,
+              "total_ret_pct": 14.43,
+              "profit_factor": 1.83,
+              "avg_hold_h": 6.2,
+              "exit_reasons": {
+                "target": 3,
+                "stop": 2
+              }
+            },
+            "gated": {
+              "n": 0
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.333,
+              "avg_ret_pct": -2.072,
+              "total_ret_pct": -8.07,
+              "profit_factor": 0.7,
+              "avg_hold_h": 4.7,
+              "exit_reasons": {
+                "stop": 2,
+                "target": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2018,
+          "train_n": 44,
+          "test_n": 16,
+          "thr_p75": 0.5549,
+          "thr_p25": 0.3177,
+          "auc": 0.1455,
+          "pnl": {
+            "ungated": {
+              "n": 13,
+              "win_rate": 0.308,
+              "avg_ret_pct": -4.416,
+              "total_ret_pct": -51.38,
+              "profit_factor": 0.5,
+              "avg_hold_h": 7.2,
+              "exit_reasons": {
+                "stop": 9,
+                "target": 4
+              }
+            },
+            "gated": {
+              "n": 0
+            },
+            "inverse": {
+              "n": 9,
+              "win_rate": 0.444,
+              "avg_ret_pct": 0.408,
+              "total_ret_pct": -5.02,
+              "profit_factor": 1.07,
+              "avg_hold_h": 6.8,
+              "exit_reasons": {
+                "target": 4,
+                "stop": 5
+              }
+            }
+          }
+        },
+        {
+          "year": 2019,
+          "train_n": 60,
+          "test_n": 11,
+          "thr_p75": 0.5022,
+          "thr_p25": 0.3102,
+          "auc": 0.7143,
+          "pnl": {
+            "ungated": {
+              "n": 7,
+              "win_rate": 0.143,
+              "avg_ret_pct": -5.164,
+              "total_ret_pct": -31.87,
+              "profit_factor": 0.13,
+              "avg_hold_h": 12.6,
+              "exit_reasons": {
+                "stop": 6,
+                "target": 1
+              }
+            },
+            "gated": {
+              "n": 0
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.0,
+              "avg_ret_pct": -6.076,
+              "total_ret_pct": -17.24,
+              "profit_factor": 0.0,
+              "avg_hold_h": 3.0,
+              "exit_reasons": {
+                "stop": 3
+              }
+            }
+          }
+        },
+        {
+          "year": 2020,
+          "train_n": 71,
+          "test_n": 11,
+          "thr_p75": 0.4672,
+          "thr_p25": 0.2856,
+          "auc": 0.5,
+          "pnl": {
+            "ungated": {
+              "n": 5,
+              "win_rate": 0.4,
+              "avg_ret_pct": -1.086,
+              "total_ret_pct": -6.49,
+              "profit_factor": 0.72,
+              "avg_hold_h": 14.4,
+              "exit_reasons": {
+                "stop": 3,
+                "target": 2
+              }
+            },
+            "gated": {
+              "n": 1,
+              "win_rate": 1.0,
+              "avg_ret_pct": 3.61,
+              "total_ret_pct": 3.61,
+              "profit_factor": null,
+              "avg_hold_h": 15.0,
+              "exit_reasons": {
+                "target": 1
+              }
+            },
+            "inverse": {
+              "n": 2,
+              "win_rate": 0.5,
+              "avg_ret_pct": -1.006,
+              "total_ret_pct": -2.25,
+              "profit_factor": 0.66,
+              "avg_hold_h": 13.5,
+              "exit_reasons": {
+                "stop": 1,
+                "target": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2021,
+          "train_n": 82,
+          "test_n": 19,
+          "thr_p75": 0.4772,
+          "thr_p25": 0.3077,
+          "auc": 0.7273,
+          "pnl": {
+            "ungated": {
+              "n": 11,
+              "win_rate": 0.455,
+              "avg_ret_pct": -2.73,
+              "total_ret_pct": -30.8,
+              "profit_factor": 0.55,
+              "avg_hold_h": 10.7,
+              "exit_reasons": {
+                "target": 5,
+                "stop": 6
+              }
+            },
+            "gated": {
+              "n": 8,
+              "win_rate": 0.625,
+              "avg_ret_pct": 0.103,
+              "total_ret_pct": -2.91,
+              "profit_factor": 1.03,
+              "avg_hold_h": 7.0,
+              "exit_reasons": {
+                "target": 5,
+                "stop": 3
+              }
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.0,
+              "avg_ret_pct": -8.746,
+              "total_ret_pct": -24.07,
+              "profit_factor": 0.0,
+              "avg_hold_h": 8.0,
+              "exit_reasons": {
+                "stop": 3
+              }
+            }
+          }
+        },
+        {
+          "year": 2022,
+          "train_n": 100,
+          "test_n": 18,
+          "thr_p75": 0.509,
+          "thr_p25": 0.3222,
+          "auc": 0.3889,
+          "pnl": {
+            "ungated": {
+              "n": 11,
+              "win_rate": 0.455,
+              "avg_ret_pct": -1.171,
+              "total_ret_pct": -15.83,
+              "profit_factor": 0.74,
+              "avg_hold_h": 12.5,
+              "exit_reasons": {
+                "stop": 6,
+                "target": 5
+              }
+            },
+            "gated": {
+              "n": 5,
+              "win_rate": 0.6,
+              "avg_ret_pct": 2.391,
+              "total_ret_pct": 11.2,
+              "profit_factor": 2.04,
+              "avg_hold_h": 18.4,
+              "exit_reasons": {
+                "stop": 2,
+                "target": 3
+              }
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.667,
+              "avg_ret_pct": 2.787,
+              "total_ret_pct": 7.1,
+              "profit_factor": 1.93,
+              "avg_hold_h": 11.3,
+              "exit_reasons": {
+                "stop": 1,
+                "target": 2
+              }
+            }
+          }
+        },
+        {
+          "year": 2023,
+          "train_n": 117,
+          "test_n": 17,
+          "thr_p75": 0.5266,
+          "thr_p25": 0.3469,
+          "auc": 0.8333,
+          "pnl": {
+            "ungated": {
+              "n": 10,
+              "win_rate": 0.4,
+              "avg_ret_pct": -0.984,
+              "total_ret_pct": -9.92,
+              "profit_factor": 0.53,
+              "avg_hold_h": 7.1,
+              "exit_reasons": {
+                "target": 4,
+                "stop": 6
+              }
+            },
+            "gated": {
+              "n": 2,
+              "win_rate": 0.5,
+              "avg_ret_pct": -0.74,
+              "total_ret_pct": -1.54,
+              "profit_factor": 0.56,
+              "avg_hold_h": 3.0,
+              "exit_reasons": {
+                "target": 1,
+                "stop": 1
+              }
+            },
+            "inverse": {
+              "n": 6,
+              "win_rate": 0.333,
+              "avg_ret_pct": -1.015,
+              "total_ret_pct": -6.17,
+              "profit_factor": 0.48,
+              "avg_hold_h": 3.5,
+              "exit_reasons": {
+                "target": 2,
+                "stop": 4
+              }
+            }
+          }
+        },
+        {
+          "year": 2024,
+          "train_n": 136,
+          "test_n": 17,
+          "thr_p75": 0.5736,
+          "thr_p25": 0.3589,
+          "auc": 0.5972,
+          "pnl": {
+            "ungated": {
+              "n": 11,
+              "win_rate": 0.636,
+              "avg_ret_pct": 1.383,
+              "total_ret_pct": 13.7,
+              "profit_factor": 1.59,
+              "avg_hold_h": 6.3,
+              "exit_reasons": {
+                "stop": 4,
+                "target": 7
+              }
+            },
+            "gated": {
+              "n": 2,
+              "win_rate": 1.0,
+              "avg_ret_pct": 3.928,
+              "total_ret_pct": 7.98,
+              "profit_factor": null,
+              "avg_hold_h": 2.5,
+              "exit_reasons": {
+                "target": 2
+              }
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.333,
+              "avg_ret_pct": 0.345,
+              "total_ret_pct": 0.17,
+              "profit_factor": 1.1,
+              "avg_hold_h": 11.0,
+              "exit_reasons": {
+                "stop": 2,
+                "target": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2025,
+          "train_n": 152,
+          "test_n": 19,
+          "thr_p75": 0.5831,
+          "thr_p25": 0.3628,
+          "auc": 0.5444,
+          "pnl": {
+            "ungated": {
+              "n": 15,
+              "win_rate": 0.4,
+              "avg_ret_pct": -1.643,
+              "total_ret_pct": -23.64,
+              "profit_factor": 0.47,
+              "avg_hold_h": 9.8,
+              "exit_reasons": {
+                "stop": 8,
+                "target": 7
+              }
+            },
+            "gated": {
+              "n": 3,
+              "win_rate": 0.667,
+              "avg_ret_pct": -0.049,
+              "total_ret_pct": -0.22,
+              "profit_factor": 0.95,
+              "avg_hold_h": 3.3,
+              "exit_reasons": {
+                "target": 2,
+                "stop": 1
+              }
+            },
+            "inverse": {
+              "n": 4,
+              "win_rate": 0.5,
+              "avg_ret_pct": 1.195,
+              "total_ret_pct": 4.07,
+              "profit_factor": 1.5,
+              "avg_hold_h": 16.5,
+              "exit_reasons": {
+                "stop": 2,
+                "target": 2
+              }
+            }
+          }
+        },
+        {
+          "year": 2026,
+          "train_n": 169,
+          "test_n": 9,
+          "thr_p75": 0.5677,
+          "thr_p25": 0.3503,
+          "auc": 0.7778,
+          "pnl": {
+            "ungated": {
+              "n": 9,
+              "win_rate": 0.333,
+              "avg_ret_pct": -1.189,
+              "total_ret_pct": -10.91,
+              "profit_factor": 0.54,
+              "avg_hold_h": 5.1,
+              "exit_reasons": {
+                "stop": 5,
+                "target": 3,
+                "eod": 1
+              }
+            },
+            "gated": {
+              "n": 2,
+              "win_rate": 0.5,
+              "avg_ret_pct": 0.56,
+              "total_ret_pct": 0.94,
+              "profit_factor": 1.3,
+              "avg_hold_h": 5.0,
+              "exit_reasons": {
+                "target": 1,
+                "stop": 1
+              }
+            },
+            "inverse": {
+              "n": 2,
+              "win_rate": 0.0,
+              "avg_ret_pct": -5.519,
+              "total_ret_pct": -10.74,
+              "profit_factor": 0.0,
+              "avg_hold_h": 5.0,
+              "exit_reasons": {
+                "stop": 2
+              }
+            }
+          }
+        }
+      ],
+      "pooled": {
+        "auc": 0.5977,
+        "auc_n_events": 147,
+        "ungated": {
+          "n": 102,
+          "win_rate": 0.422,
+          "avg_ret_pct": -1.359,
+          "total_ret_pct": -83.33,
+          "profit_factor": 0.68,
+          "avg_hold_h": 9.1,
+          "exit_reasons": {
+            "target": 44,
+            "stop": 57,
+            "eod": 1
+          }
+        },
+        "gated": {
+          "n": 23,
+          "win_rate": 0.652,
+          "avg_ret_pct": 1.032,
+          "total_ret_pct": 19.77,
+          "profit_factor": 1.44,
+          "avg_hold_h": 8.4,
+          "exit_reasons": {
+            "target": 15,
+            "stop": 8
+          }
+        },
+        "inverse": {
+          "n": 40,
+          "win_rate": 0.35,
+          "avg_ret_pct": -1.035,
+          "total_ret_pct": -44.69,
+          "profit_factor": 0.77,
+          "avg_hold_h": 8.1,
+          "exit_reasons": {
+            "target": 14,
+            "stop": 26
+          }
+        },
+        "gated_close_stop": {
+          "n": 23,
+          "win_rate": 0.696,
+          "avg_ret_pct": 1.165,
+          "total_ret_pct": 22.55,
+          "profit_factor": 1.46,
+          "avg_hold_h": 10.4,
+          "exit_reasons": {
+            "target": 16,
+            "stop_close": 7
+          }
+        },
+        "gated_flip": {
+          "n": 21,
+          "win_rate": 0.381,
+          "avg_ret_pct": 18.67,
+          "total_ret_pct": 167.47,
+          "profit_factor": 6.21,
+          "avg_hold_h": 21.3,
+          "exit_reasons": {
+            "time": 1,
+            "flip": 20
+          }
+        }
+      },
+      "final_fold_model": {
+        "year": 2026,
+        "train_n": 169,
+        "intercept": -0.0814,
+        "weights_std_space": {
+          "clv": 0.2833,
+          "range_atr": 0.7191,
+          "vol_z": 0.0588,
+          "shock_recency": 0.1708,
+          "breadth": 0.1616,
+          "retest": -0.0898
+        },
+        "feature_means": {
+          "clv": 0.2993,
+          "range_atr": 1.2266,
+          "vol_z": 0.1996,
+          "shock_recency": 6.3077,
+          "breadth": 1.1183,
+          "retest": 0.6568
+        },
+        "feature_stds": {
+          "clv": 0.523,
+          "range_atr": 0.7367,
+          "vol_z": 1.3885,
+          "shock_recency": 3.9178,
+          "breadth": 1.1348,
+          "retest": 0.4748
+        }
+      }
+    },
+    "ETH/USD": {
+      "n_daily_candles": 3884,
+      "n_setups": 178,
+      "n_labeled": 178,
+      "folds": [
+        {
+          "year": 2016,
+          "train_n": 9,
+          "test_n": 11,
+          "skipped": "insufficient_train"
+        },
+        {
+          "year": 2017,
+          "train_n": 22,
+          "test_n": 6,
+          "skipped": "insufficient_train"
+        },
+        {
+          "year": 2018,
+          "train_n": 28,
+          "test_n": 20,
+          "skipped": "insufficient_train"
+        },
+        {
+          "year": 2019,
+          "train_n": 48,
+          "test_n": 26,
+          "thr_p75": 0.4845,
+          "thr_p25": 0.3294,
+          "auc": 0.7937,
+          "pnl": {
+            "ungated": {
+              "n": 16,
+              "win_rate": 0.312,
+              "avg_ret_pct": -1.806,
+              "total_ret_pct": -30.04,
+              "profit_factor": 0.64,
+              "avg_hold_h": 8.6,
+              "exit_reasons": {
+                "stop": 11,
+                "target": 5
+              }
+            },
+            "gated": {
+              "n": 5,
+              "win_rate": 0.8,
+              "avg_ret_pct": 8.011,
+              "total_ret_pct": 44.81,
+              "profit_factor": 6.11,
+              "avg_hold_h": 10.6,
+              "exit_reasons": {
+                "target": 4,
+                "stop": 1
+              }
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.0,
+              "avg_ret_pct": -7.137,
+              "total_ret_pct": -19.96,
+              "profit_factor": 0.0,
+              "avg_hold_h": 6.3,
+              "exit_reasons": {
+                "stop": 3
+              }
+            }
+          }
+        },
+        {
+          "year": 2020,
+          "train_n": 73,
+          "test_n": 9,
+          "thr_p75": 0.4912,
+          "thr_p25": 0.2573,
+          "auc": 0.6111,
+          "pnl": {
+            "ungated": {
+              "n": 7,
+              "win_rate": 0.714,
+              "avg_ret_pct": 2.159,
+              "total_ret_pct": 13.7,
+              "profit_factor": 1.78,
+              "avg_hold_h": 8.3,
+              "exit_reasons": {
+                "target": 5,
+                "stop": 2
+              }
+            },
+            "gated": {
+              "n": 4,
+              "win_rate": 0.75,
+              "avg_ret_pct": 3.242,
+              "total_ret_pct": 12.29,
+              "profit_factor": 2.33,
+              "avg_hold_h": 10.8,
+              "exit_reasons": {
+                "target": 3,
+                "stop": 1
+              }
+            },
+            "inverse": {
+              "n": 2,
+              "win_rate": 0.5,
+              "avg_ret_pct": -0.309,
+              "total_ret_pct": -1.09,
+              "profit_factor": 0.91,
+              "avg_hold_h": 6.5,
+              "exit_reasons": {
+                "stop": 1,
+                "target": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2021,
+          "train_n": 83,
+          "test_n": 18,
+          "thr_p75": 0.5627,
+          "thr_p25": 0.3071,
+          "auc": 0.6296,
+          "pnl": {
+            "ungated": {
+              "n": 11,
+              "win_rate": 0.545,
+              "avg_ret_pct": -1.075,
+              "total_ret_pct": -23.86,
+              "profit_factor": 0.85,
+              "avg_hold_h": 7.9,
+              "exit_reasons": {
+                "stop": 5,
+                "target": 6
+              }
+            },
+            "gated": {
+              "n": 6,
+              "win_rate": 0.5,
+              "avg_ret_pct": -1.656,
+              "total_ret_pct": -20.52,
+              "profit_factor": 0.81,
+              "avg_hold_h": 10.8,
+              "exit_reasons": {
+                "stop": 3,
+                "target": 3
+              }
+            },
+            "inverse": {
+              "n": 1,
+              "win_rate": 1.0,
+              "avg_ret_pct": 10.307,
+              "total_ret_pct": 10.31,
+              "profit_factor": null,
+              "avg_hold_h": 4.0,
+              "exit_reasons": {
+                "target": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2022,
+          "train_n": 101,
+          "test_n": 20,
+          "thr_p75": 0.5401,
+          "thr_p25": 0.3191,
+          "auc": 0.4848,
+          "pnl": {
+            "ungated": {
+              "n": 13,
+              "win_rate": 0.462,
+              "avg_ret_pct": 0.347,
+              "total_ret_pct": -6.33,
+              "profit_factor": 1.06,
+              "avg_hold_h": 8.5,
+              "exit_reasons": {
+                "stop": 7,
+                "target": 6
+              }
+            },
+            "gated": {
+              "n": 6,
+              "win_rate": 0.5,
+              "avg_ret_pct": 2.177,
+              "total_ret_pct": 9.09,
+              "profit_factor": 1.49,
+              "avg_hold_h": 11.8,
+              "exit_reasons": {
+                "stop": 3,
+                "target": 3
+              }
+            },
+            "inverse": {
+              "n": 4,
+              "win_rate": 0.5,
+              "avg_ret_pct": -3.459,
+              "total_ret_pct": -17.29,
+              "profit_factor": 0.57,
+              "avg_hold_h": 9.0,
+              "exit_reasons": {
+                "stop": 2,
+                "target": 2
+              }
+            }
+          }
+        },
+        {
+          "year": 2023,
+          "train_n": 120,
+          "test_n": 22,
+          "thr_p75": 0.532,
+          "thr_p25": 0.3597,
+          "auc": 0.6833,
+          "pnl": {
+            "ungated": {
+              "n": 14,
+              "win_rate": 0.5,
+              "avg_ret_pct": 0.259,
+              "total_ret_pct": 1.69,
+              "profit_factor": 1.12,
+              "avg_hold_h": 7.5,
+              "exit_reasons": {
+                "target": 7,
+                "stop": 7
+              }
+            },
+            "gated": {
+              "n": 8,
+              "win_rate": 0.625,
+              "avg_ret_pct": 0.562,
+              "total_ret_pct": 3.92,
+              "profit_factor": 1.34,
+              "avg_hold_h": 5.1,
+              "exit_reasons": {
+                "target": 5,
+                "stop": 3
+              }
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.333,
+              "avg_ret_pct": -1.52,
+              "total_ret_pct": -5.0,
+              "profit_factor": 0.6,
+              "avg_hold_h": 6.3,
+              "exit_reasons": {
+                "stop": 2,
+                "target": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2024,
+          "train_n": 143,
+          "test_n": 13,
+          "thr_p75": 0.5729,
+          "thr_p25": 0.3755,
+          "auc": 0.619,
+          "pnl": {
+            "ungated": {
+              "n": 9,
+              "win_rate": 0.444,
+              "avg_ret_pct": -0.096,
+              "total_ret_pct": -3.58,
+              "profit_factor": 0.98,
+              "avg_hold_h": 9.4,
+              "exit_reasons": {
+                "target": 4,
+                "stop": 5
+              }
+            },
+            "gated": {
+              "n": 1,
+              "win_rate": 1.0,
+              "avg_ret_pct": 6.791,
+              "total_ret_pct": 6.79,
+              "profit_factor": null,
+              "avg_hold_h": 3.0,
+              "exit_reasons": {
+                "target": 1
+              }
+            },
+            "inverse": {
+              "n": 2,
+              "win_rate": 0.5,
+              "avg_ret_pct": -0.368,
+              "total_ret_pct": -1.07,
+              "profit_factor": 0.88,
+              "avg_hold_h": 9.5,
+              "exit_reasons": {
+                "target": 1,
+                "stop": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2025,
+          "train_n": 154,
+          "test_n": 16,
+          "thr_p75": 0.5788,
+          "thr_p25": 0.3852,
+          "auc": 0.9744,
+          "pnl": {
+            "ungated": {
+              "n": 11,
+              "win_rate": 0.273,
+              "avg_ret_pct": -3.971,
+              "total_ret_pct": -39.17,
+              "profit_factor": 0.42,
+              "avg_hold_h": 9.3,
+              "exit_reasons": {
+                "stop": 8,
+                "target": 3
+              }
+            },
+            "gated": {
+              "n": 0
+            },
+            "inverse": {
+              "n": 7,
+              "win_rate": 0.0,
+              "avg_ret_pct": -8.651,
+              "total_ret_pct": -47.22,
+              "profit_factor": 0.0,
+              "avg_hold_h": 5.4,
+              "exit_reasons": {
+                "stop": 7
+              }
+            }
+          }
+        },
+        {
+          "year": 2026,
+          "train_n": 172,
+          "test_n": 6,
+          "thr_p75": 0.5575,
+          "thr_p25": 0.3304,
+          "auc": 0.0,
+          "pnl": {
+            "ungated": {
+              "n": 4,
+              "win_rate": 0.25,
+              "avg_ret_pct": -0.038,
+              "total_ret_pct": -1.12,
+              "profit_factor": 0.99,
+              "avg_hold_h": 8.8,
+              "exit_reasons": {
+                "stop": 3,
+                "target": 1
+              }
+            },
+            "gated": {
+              "n": 0
+            },
+            "inverse": {
+              "n": 1,
+              "win_rate": 1.0,
+              "avg_ret_pct": 12.311,
+              "total_ret_pct": 12.31,
+              "profit_factor": null,
+              "avg_hold_h": 5.0,
+              "exit_reasons": {
+                "target": 1
+              }
+            }
+          }
+        }
+      ],
+      "pooled": {
+        "auc": 0.6517,
+        "auc_n_events": 130,
+        "ungated": {
+          "n": 85,
+          "win_rate": 0.435,
+          "avg_ret_pct": -0.731,
+          "total_ret_pct": -66.54,
+          "profit_factor": 0.84,
+          "avg_hold_h": 8.5,
+          "exit_reasons": {
+            "stop": 48,
+            "target": 37
+          }
+        },
+        "gated": {
+          "n": 30,
+          "win_rate": 0.633,
+          "avg_ret_pct": 2.248,
+          "total_ret_pct": 56.44,
+          "profit_factor": 1.61,
+          "avg_hold_h": 9.2,
+          "exit_reasons": {
+            "target": 19,
+            "stop": 11
+          }
+        },
+        "inverse": {
+          "n": 23,
+          "win_rate": 0.304,
+          "avg_ret_pct": -3.439,
+          "total_ret_pct": -59.76,
+          "profit_factor": 0.43,
+          "avg_hold_h": 6.7,
+          "exit_reasons": {
+            "stop": 16,
+            "target": 7
+          }
+        },
+        "gated_close_stop": {
+          "n": 28,
+          "win_rate": 0.643,
+          "avg_ret_pct": 3.34,
+          "total_ret_pct": 117.91,
+          "profit_factor": 2.09,
+          "avg_hold_h": 12.8,
+          "exit_reasons": {
+            "target": 18,
+            "stop_close": 10
+          }
+        },
+        "gated_flip": {
+          "n": 23,
+          "win_rate": 0.565,
+          "avg_ret_pct": 8.204,
+          "total_ret_pct": 178.41,
+          "profit_factor": 3.56,
+          "avg_hold_h": 25.6,
+          "exit_reasons": {
+            "flip": 22,
+            "time": 1
+          }
+        }
+      },
+      "final_fold_model": {
+        "year": 2026,
+        "train_n": 172,
+        "intercept": -0.2004,
+        "weights_std_space": {
+          "clv": 0.223,
+          "range_atr": 0.8134,
+          "vol_z": -0.4619,
+          "shock_recency": 0.0467,
+          "breadth": 0.4328,
+          "retest": 0.3008
+        },
+        "feature_means": {
+          "clv": 0.3061,
+          "range_atr": 1.0875,
+          "vol_z": -0.1286,
+          "shock_recency": 6.5581,
+          "breadth": 1.0814,
+          "retest": 0.6453
+        },
+        "feature_stds": {
+          "clv": 0.5331,
+          "range_atr": 0.4874,
+          "vol_z": 0.9117,
+          "shock_recency": 3.8477,
+          "breadth": 1.2029,
+          "retest": 0.4784
+        }
+      }
+    },
+    "ZEC/USD": {
+      "n_daily_candles": 3441,
+      "n_setups": 169,
+      "n_labeled": 169,
+      "folds": [
+        {
+          "year": 2016,
+          "train_n": 0,
+          "test_n": 3,
+          "skipped": "insufficient_train"
+        },
+        {
+          "year": 2017,
+          "train_n": 3,
+          "test_n": 18,
+          "skipped": "insufficient_train"
+        },
+        {
+          "year": 2018,
+          "train_n": 21,
+          "test_n": 19,
+          "skipped": "insufficient_train"
+        },
+        {
+          "year": 2019,
+          "train_n": 39,
+          "test_n": 21,
+          "skipped": "insufficient_train"
+        },
+        {
+          "year": 2020,
+          "train_n": 61,
+          "test_n": 16,
+          "thr_p75": 0.5096,
+          "thr_p25": 0.3232,
+          "auc": 0.65,
+          "pnl": {
+            "ungated": {
+              "n": 12,
+              "win_rate": 0.583,
+              "avg_ret_pct": -0.454,
+              "total_ret_pct": -15.55,
+              "profit_factor": 0.92,
+              "avg_hold_h": 4.1,
+              "exit_reasons": {
+                "stop": 5,
+                "target": 7
+              }
+            },
+            "gated": {
+              "n": 4,
+              "win_rate": 0.75,
+              "avg_ret_pct": 0.681,
+              "total_ret_pct": 1.87,
+              "profit_factor": 1.27,
+              "avg_hold_h": 2.5,
+              "exit_reasons": {
+                "stop": 1,
+                "target": 3
+              }
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.333,
+              "avg_ret_pct": -6.348,
+              "total_ret_pct": -19.14,
+              "profit_factor": 0.26,
+              "avg_hold_h": 4.3,
+              "exit_reasons": {
+                "stop": 2,
+                "target": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2021,
+          "train_n": 77,
+          "test_n": 13,
+          "thr_p75": 0.5774,
+          "thr_p25": 0.3419,
+          "auc": 0.375,
+          "pnl": {
+            "ungated": {
+              "n": 9,
+              "win_rate": 0.444,
+              "avg_ret_pct": -2.785,
+              "total_ret_pct": -35.2,
+              "profit_factor": 0.7,
+              "avg_hold_h": 7.4,
+              "exit_reasons": {
+                "target": 4,
+                "stop": 5
+              }
+            },
+            "gated": {
+              "n": 1,
+              "win_rate": 0.0,
+              "avg_ret_pct": -26.74,
+              "total_ret_pct": -26.74,
+              "profit_factor": 0.0,
+              "avg_hold_h": 17.0,
+              "exit_reasons": {
+                "stop": 1
+              }
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.667,
+              "avg_ret_pct": 4.892,
+              "total_ret_pct": 13.01,
+              "profit_factor": 2.23,
+              "avg_hold_h": 7.0,
+              "exit_reasons": {
+                "target": 2,
+                "stop": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2022,
+          "train_n": 89,
+          "test_n": 21,
+          "thr_p75": 0.5481,
+          "thr_p25": 0.3485,
+          "auc": 0.6633,
+          "pnl": {
+            "ungated": {
+              "n": 14,
+              "win_rate": 0.286,
+              "avg_ret_pct": -8.772,
+              "total_ret_pct": -76.92,
+              "profit_factor": 0.22,
+              "avg_hold_h": 8.8,
+              "exit_reasons": {
+                "stop": 10,
+                "target": 4
+              }
+            },
+            "gated": {
+              "n": 2,
+              "win_rate": 0.0,
+              "avg_ret_pct": -15.375,
+              "total_ret_pct": -28.87,
+              "profit_factor": 0.0,
+              "avg_hold_h": 2.5,
+              "exit_reasons": {
+                "stop": 2
+              }
+            },
+            "inverse": {
+              "n": 4,
+              "win_rate": 0.0,
+              "avg_ret_pct": -15.707,
+              "total_ret_pct": -52.35,
+              "profit_factor": 0.0,
+              "avg_hold_h": 17.5,
+              "exit_reasons": {
+                "stop": 4
+              }
+            }
+          }
+        },
+        {
+          "year": 2023,
+          "train_n": 111,
+          "test_n": 23,
+          "thr_p75": 0.5125,
+          "thr_p25": 0.3031,
+          "auc": 0.7197,
+          "pnl": {
+            "ungated": {
+              "n": 18,
+              "win_rate": 0.556,
+              "avg_ret_pct": 0.354,
+              "total_ret_pct": 1.43,
+              "profit_factor": 1.12,
+              "avg_hold_h": 6.2,
+              "exit_reasons": {
+                "target": 10,
+                "stop": 8
+              }
+            },
+            "gated": {
+              "n": 8,
+              "win_rate": 0.75,
+              "avg_ret_pct": 3.697,
+              "total_ret_pct": 31.0,
+              "profit_factor": 3.53,
+              "avg_hold_h": 7.2,
+              "exit_reasons": {
+                "target": 6,
+                "stop": 2
+              }
+            },
+            "inverse": {
+              "n": 3,
+              "win_rate": 0.333,
+              "avg_ret_pct": -3.051,
+              "total_ret_pct": -8.95,
+              "profit_factor": 0.01,
+              "avg_hold_h": 3.7,
+              "exit_reasons": {
+                "stop": 2,
+                "target": 1
+              }
+            }
+          }
+        },
+        {
+          "year": 2024,
+          "train_n": 134,
+          "test_n": 11,
+          "thr_p75": 0.5277,
+          "thr_p25": 0.3326,
+          "auc": 0.6429,
+          "pnl": {
+            "ungated": {
+              "n": 7,
+              "win_rate": 0.143,
+              "avg_ret_pct": -6.368,
+              "total_ret_pct": -37.56,
+              "profit_factor": 0.06,
+              "avg_hold_h": 6.3,
+              "exit_reasons": {
+                "stop": 6,
+                "target": 1
+              }
+            },
+            "gated": {
+              "n": 1,
+              "win_rate": 0.0,
+              "avg_ret_pct": -11.309,
+              "total_ret_pct": -11.31,
+              "profit_factor": 0.0,
+              "avg_hold_h": 9.0,
+              "exit_reasons": {
+                "stop": 1
+              }
+            },
+            "inverse": {
+              "n": 2,
+              "win_rate": 0.0,
+              "avg_ret_pct": -6.16,
+              "total_ret_pct": -11.99,
+              "profit_factor": 0.0,
+              "avg_hold_h": 6.0,
+              "exit_reasons": {
+                "stop": 2
+              }
+            }
+          }
+        },
+        {
+          "year": 2025,
+          "train_n": 145,
+          "test_n": 21,
+          "thr_p75": 0.5305,
+          "thr_p25": 0.3257,
+          "auc": 0.5481,
+          "pnl": {
+            "ungated": {
+              "n": 14,
+              "win_rate": 0.571,
+              "avg_ret_pct": 6.657,
+              "total_ret_pct": 94.31,
+              "profit_factor": 2.36,
+              "avg_hold_h": 8.6,
+              "exit_reasons": {
+                "stop": 6,
+                "target": 8
+              }
+            },
+            "gated": {
+              "n": 3,
+              "win_rate": 0.667,
+              "avg_ret_pct": 6.611,
+              "total_ret_pct": 18.33,
+              "profit_factor": 3.09,
+              "avg_hold_h": 12.3,
+              "exit_reasons": {
+                "stop": 1,
+                "target": 2
+              }
+            },
+            "inverse": {
+              "n": 6,
+              "win_rate": 0.5,
+              "avg_ret_pct": 4.867,
+              "total_ret_pct": 21.26,
+              "profit_factor": 1.84,
+              "avg_hold_h": 8.2,
+              "exit_reasons": {
+                "stop": 3,
+                "target": 3
+              }
+            }
+          }
+        },
+        {
+          "year": 2026,
+          "train_n": 166,
+          "test_n": 3,
+          "thr_p75": 0.5481,
+          "thr_p25": 0.3432,
+          "auc": 0.5,
+          "pnl": {
+            "ungated": {
+              "n": 3,
+              "win_rate": 0.333,
+              "avg_ret_pct": -1.713,
+              "total_ret_pct": -10.3,
+              "profit_factor": 0.82,
+              "avg_hold_h": 5.7,
+              "exit_reasons": {
+                "stop": 2,
+                "target": 1
+              }
+            },
+            "gated": {
+              "n": 0
+            },
+            "inverse": {
+              "n": 0
+            }
+          }
+        }
+      ],
+      "pooled": {
+        "auc": 0.6082,
+        "auc_n_events": 108,
+        "ungated": {
+          "n": 77,
+          "win_rate": 0.455,
+          "avg_ret_pct": -1.344,
+          "total_ret_pct": -86.06,
+          "profit_factor": 0.8,
+          "avg_hold_h": 6.9,
+          "exit_reasons": {
+            "stop": 42,
+            "target": 35
+          }
+        },
+        "gated": {
+          "n": 19,
+          "win_rate": 0.579,
+          "avg_ret_pct": -0.877,
+          "total_ret_pct": -27.02,
+          "profit_factor": 0.83,
+          "avg_hold_h": 7.2,
+          "exit_reasons": {
+            "stop": 8,
+            "target": 11
+          }
+        },
+        "inverse": {
+          "n": 21,
+          "win_rate": 0.333,
+          "avg_ret_pct": -2.832,
+          "total_ret_pct": -57.69,
+          "profit_factor": 0.62,
+          "avg_hold_h": 8.4,
+          "exit_reasons": {
+            "stop": 14,
+            "target": 7
+          }
+        },
+        "gated_close_stop": {
+          "n": 19,
+          "win_rate": 0.684,
+          "avg_ret_pct": 1.217,
+          "total_ret_pct": 8.25,
+          "profit_factor": 1.28,
+          "avg_hold_h": 8.5,
+          "exit_reasons": {
+            "stop_close": 6,
+            "target": 13
+          }
+        },
+        "gated_flip": {
+          "n": 18,
+          "win_rate": 0.389,
+          "avg_ret_pct": -1.765,
+          "total_ret_pct": -34.21,
+          "profit_factor": 0.6,
+          "avg_hold_h": 17.3,
+          "exit_reasons": {
+            "flip": 18
+          }
+        }
+      },
+      "final_fold_model": {
+        "year": 2026,
+        "train_n": 166,
+        "intercept": -0.1158,
+        "weights_std_space": {
+          "clv": 0.0996,
+          "range_atr": 0.6691,
+          "vol_z": 0.1469,
+          "shock_recency": -0.1477,
+          "breadth": -0.1939,
+          "retest": 0.2217
+        },
+        "feature_means": {
+          "clv": 0.3596,
+          "range_atr": 1.1511,
+          "vol_z": 0.2671,
+          "shock_recency": 6.5602,
+          "breadth": 1.2048,
+          "retest": 0.6928
+        },
+        "feature_stds": {
+          "clv": 0.5506,
+          "range_atr": 0.6178,
+          "vol_z": 1.8909,
+          "shock_recency": 4.0575,
+          "breadth": 1.1848,
+          "retest": 0.4613
+        }
+      }
+    }
+  },
+  "verdict": {
+    "criterion_1_pooled_auc": {
+      "value": 0.6166,
+      "threshold": ">= 0.60",
+      "pass": true,
+      "per_asset": {
+        "BTC/USD": 0.5977,
+        "ETH/USD": 0.6517,
+        "ZEC/USD": 0.6082
+      }
+    },
+    "criterion_2_gated_expectancy_pos": {
+      "value": {
+        "BTC/USD": 1.032,
+        "ETH/USD": 2.248,
+        "ZEC/USD": -0.877
+      },
+      "threshold": "> 0 %/trade net of fees on >= 2 of 3 assets",
+      "per_asset_pass": {
+        "BTC/USD": true,
+        "ETH/USD": true,
+        "ZEC/USD": false
+      },
+      "pass": true
+    },
+    "criterion_3_inverse_worse_than_ungated": {
+      "value": {
+        "BTC/USD": {
+          "inverse": -1.035,
+          "ungated": -1.359
+        },
+        "ETH/USD": {
+          "inverse": -3.439,
+          "ungated": -0.731
+        },
+        "ZEC/USD": {
+          "inverse": -2.832,
+          "ungated": -1.344
+        }
+      },
+      "pooled_cross_asset": {
+        "inverse_avg_pct": -2.142,
+        "ungated_avg_pct": -1.153
+      },
+      "threshold": "inverse avg/trade < ungated avg/trade",
+      "per_asset_pass": {
+        "BTC/USD": false,
+        "ETH/USD": true,
+        "ZEC/USD": true
+      },
+      "pass_pooled_reading": true,
+      "pass_majority_reading": true,
+      "pass_strict_all_assets_reading": false,
+      "primary_reading": "pooled",
+      "pass": true
+    },
+    "PROMOTE": true,
+    "PROMOTE_under_strict_c3_reading": false
+  },
+  "caveats": [
+    "ZEC/USD 1h history has a hard gap 2026-01-01..2026-04-20; the ZEC 2026 fold spans it (ATR/returns distorted at the boundary bar).",
+    "BTC pre-2016 daily training history is thin; BTC folds run with >=10 resolved training events (stated, not swept).",
+    "Yearly P&L folds simulate independently; a trade entered in late year Y holds past Jan 1 (same convention as bounce_geometry_study).",
+    "POWER: gated arms hold ~19-30 trades per asset over 7-11 test years (~2-4/yr). The registered criteria carry no trade-count floor, so the verdict is computed as registered, but per the bakeoff skill this sample is thin \u2014 treat any PROMOTE as provisional pending a shadow/paper confirmation window.",
+    "Arm pools sequence one-position-at-a-time; a filtered pool can therefore log MORE trades than its superset in a year (skipped entries free the slot) \u2014 harness convention, not a bug."
+  ],
+  "pooled_auc_overall": 0.6166,
+  "pooled_auc_overall_n": 385
+}

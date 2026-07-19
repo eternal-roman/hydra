@@ -97,3 +97,51 @@ def test_fill_gaps_no_op_when_caught_up(tmp_path):
                            max_pages=10, sleep_sec=0)
     assert n == 0
     assert len(cli.calls) == 0
+
+
+def test_refresh_skips_forming_candle(tmp_path):
+    """Kraken's last OHLC row is the still-forming candle; upserting it
+    freezes a partial row under the tier policy (trade-tape audit found
+    frozen rows with volume ~10x low). Only completed candles may land."""
+    store = HistoryStore(str(tmp_path / "h.sqlite"))
+    now = int(time.time())
+    complete_ts = (now // 3600 - 1) * 3600   # last fully closed hour
+    forming_ts = (now // 3600) * 3600        # current, still-forming hour
+    cli = _StubCli([
+        {"timestamp": complete_ts, "open": 10, "high": 11, "low": 9,
+         "close": 10.5, "volume": 5.0},
+        {"timestamp": forming_ts, "open": 10.5, "high": 10.6, "low": 10.4,
+         "close": 10.55, "volume": 0.3},
+    ])
+    n = refresh_pair(store, "BTC/USD", grain_sec=3600, cli=cli)
+    assert n == 1
+    rows = list(store.fetch("BTC/USD", 3600, 0, 9_999_999_999))
+    assert [r.ts for r in rows] == [complete_ts]
+
+
+def test_fill_gaps_skips_forming_candle(tmp_path):
+    """Same forming-candle rule on the gap-fill paging path."""
+    store = HistoryStore(str(tmp_path / "h.sqlite"))
+    now = int(time.time())
+    seed_ts = (now // 3600 - 3) * 3600
+    store.upsert_candles([CandleRow("BTC/USD", 3600, seed_ts,
+                                    1, 1, 1, 1, 1, "kraken_rest")])
+
+    class _FormingStubCli:
+        calls = 0
+
+        def ohlc_paged(self, pair, interval=60, since=0):
+            self.calls += 1
+            if self.calls > 1:
+                return [], 0
+            forming = (int(time.time()) // 3600) * 3600
+            return ([{"timestamp": forming - 3600, "open": 1, "high": 1,
+                      "low": 1, "close": 2.0, "volume": 1.0},
+                     {"timestamp": forming, "open": 1, "high": 1, "low": 1,
+                      "close": 3.0, "volume": 0.1}], forming)
+
+    n = fill_gaps_for_pair(store, "BTC/USD", 3600, cli=_FormingStubCli(),
+                           sleep_sec=0)
+    assert n == 1
+    stored_ts = [r.ts for r in store.fetch("BTC/USD", 3600, 0, 9_999_999_999)]
+    assert (int(time.time()) // 3600) * 3600 not in stored_ts

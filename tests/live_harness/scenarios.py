@@ -1183,6 +1183,66 @@ def _hydra_root() -> str:
 # Scenario registry
 # ═════════════════════════════════════════════════════════════════
 
+def scenario_S3SH1_shadow_no_orders(h: Harness):
+    """S3 shadow phase: a gated entryable_b1 signal logs exactly one
+    ledger proposal and places ZERO orders (journal untouched)."""
+    import dataclasses
+    import importlib.util
+    import tempfile
+    from pathlib import Path as _P
+
+    agent = h.new_agent(pairs=["BTC/USD"], paper=True, initial_balance=200.0)
+    s3 = getattr(agent, "s3", None)
+    assert s3 is not None, "S3 adapter missing on agent"
+
+    root = _P(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "_s3b_fixture_harness", root / "s3bounce" / "tests" / "test_setups.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    day0, rows = 20000, []
+    for i in range(100):
+        rows.append({"ts": float((day0 + i) * 86400), "open": 100.0,
+                     "high": 101.2, "low": 99.8,
+                     "close": 100 + 0.2 * (i % 3), "volume": 100.0})
+    for j, b in enumerate(mod.down_leg_bars()):
+        rows.append({"ts": float((day0 + 100 + j) * 86400), "open": b.open,
+                     "high": b.high, "low": b.low, "close": b.close,
+                     "volume": 100.0})
+    for asset in s3.strategy.universe:
+        s3.strategy.seed(asset, rows)
+    # walk the fold clock back to the entryable_b1 cut
+    m = s3.strategy.artifact.models["BTC/USD"]
+    s3.strategy.artifact.models["BTC/USD"] = dataclasses.replace(m, threshold=0.0)
+    cut = None
+    for back in range(12, -1, -1):
+        now = rows[-1]["ts"] + 86400 - back * 86400
+        sig = s3.strategy.evaluate("BTC/USD", now)
+        if sig.stage == "entryable_b1" and sig.gated:
+            cut = now
+            s3._last_signal["BTC/USD"] = sig
+            break
+    assert cut is not None, "synthetic tape produced no gated entryable cut"
+    for asset in s3.strategy.universe:
+        s3._fold_clock[asset] = cut
+
+    with tempfile.TemporaryDirectory() as d:
+        s3.ledger_dir = d
+        journal_before = len(agent.order_journal)
+        os.environ["HYDRA_S3_STRATEGY"] = "1"
+        try:
+            ev = s3.shadow_step("BTC/USD", 100.0)
+        finally:
+            os.environ.pop("HYDRA_S3_STRATEGY", None)
+        assert ev is not None, "expected a shadow proposal"
+        assert len(agent.order_journal) == journal_before, \
+            "shadow phase touched the order journal"
+        assert s3.ledger().open, "no shadow arm positions opened"
+        events = (_P(d) / "events.jsonl").read_text().strip().splitlines()
+        assert len(events) == 1, f"expected exactly 1 event, got {len(events)}"
+
+
 ALL_SCENARIOS: list[Scenario] = [
     # Category H — happy paths
     Scenario("H1", "Paper BUY SOL/USDC -> FILLED", "H", MOCK, scenario_H1_paper_buy),
@@ -1235,6 +1295,9 @@ ALL_SCENARIOS: list[Scenario] = [
     Scenario("W6", "WS duplicate terminal not re-emitted", "W", MOCK, scenario_W6_ws_duplicate_terminal_not_re_emitted),
     Scenario("W7", "_compute_pair_realized_pnl uses lifecycle.vol_exec", "W", MOCK, scenario_W7_journal_pnl_uses_vol_exec),
 
+    # Category S3 — shadow strategy surface (mock)
+    Scenario("S3SH1", "S3 shadow: gated proposal, ZERO orders", "H", MOCK,
+             scenario_S3SH1_shadow_no_orders),
     # Category L — live only
     Scenario("L1", "Live ticker SOL/USDC", "L", LIVE, scenario_L1_live_ticker_SOLUSDC),
     Scenario("L2", "Live --validate buy SOL/USDC", "L", LIVE, scenario_L2_live_validate_buy_SOLUSDC),

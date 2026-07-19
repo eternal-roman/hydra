@@ -1,0 +1,1028 @@
+{
+  "generated_at": "2026-07-19T18:31:13Z",
+  "registration": "heartbeat/evidence/bakeoffs/s3_exit_policy_REGISTRATION.md",
+  "fee_per_side": 0.0026,
+  "assets": {
+    "BTC/USD": {
+      "n_setups": 182,
+      "n_labeled": 181,
+      "folds_run": [
+        {
+          "year": 2016,
+          "train_n": 34,
+          "thr_p75": 0.5575
+        },
+        {
+          "year": 2017,
+          "train_n": 39,
+          "thr_p75": 0.5113
+        },
+        {
+          "year": 2018,
+          "train_n": 44,
+          "thr_p75": 0.5549
+        },
+        {
+          "year": 2019,
+          "train_n": 60,
+          "thr_p75": 0.5022
+        },
+        {
+          "year": 2020,
+          "train_n": 71,
+          "thr_p75": 0.4672
+        },
+        {
+          "year": 2021,
+          "train_n": 82,
+          "thr_p75": 0.4772
+        },
+        {
+          "year": 2022,
+          "train_n": 100,
+          "thr_p75": 0.509
+        },
+        {
+          "year": 2023,
+          "train_n": 117,
+          "thr_p75": 0.5266
+        },
+        {
+          "year": 2024,
+          "train_n": 136,
+          "thr_p75": 0.5736
+        },
+        {
+          "year": 2025,
+          "train_n": 152,
+          "thr_p75": 0.5831
+        },
+        {
+          "year": 2026,
+          "train_n": 169,
+          "thr_p75": 0.5677
+        }
+      ],
+      "arms": {
+        "X0_incumbent": {
+          "n": 23,
+          "win_rate": 0.652,
+          "avg_ret_pct": 1.032,
+          "total_ret_pct": 19.77,
+          "profit_factor": 1.44,
+          "avg_hold_h": 8.4,
+          "exit_reasons": {
+            "target": 15,
+            "stop": 8
+          },
+          "worst_trade_pct": -15.954,
+          "p10_trade_pct": -5.783,
+          "share_le_m15": 0.043,
+          "median_hold": 5
+        },
+        "X1_close_stop": {
+          "n": 23,
+          "win_rate": 0.696,
+          "avg_ret_pct": 1.165,
+          "total_ret_pct": 22.55,
+          "profit_factor": 1.46,
+          "avg_hold_h": 10.4,
+          "exit_reasons": {
+            "target": 16,
+            "stop_close": 7
+          },
+          "worst_trade_pct": -16.493,
+          "p10_trade_pct": -8.802,
+          "share_le_m15": 0.043,
+          "median_hold": 6
+        },
+        "X2_flip": {
+          "n": 21,
+          "win_rate": 0.381,
+          "avg_ret_pct": 18.67,
+          "total_ret_pct": 167.47,
+          "profit_factor": 6.21,
+          "avg_hold_h": 21.3,
+          "exit_reasons": {
+            "time": 1,
+            "flip": 20
+          },
+          "worst_trade_pct": -24.741,
+          "p10_trade_pct": -11.235,
+          "share_le_m15": 0.095,
+          "median_hold": 1
+        },
+        "X3_hybrid": {
+          "n": 21,
+          "win_rate": 0.381,
+          "avg_ret_pct": 19.778,
+          "total_ret_pct": 253.61,
+          "profit_factor": 8.99,
+          "avg_hold_h": 20.7,
+          "exit_reasons": {
+            "time": 1,
+            "stop_close": 3,
+            "flip": 17
+          },
+          "worst_trade_pct": -12.051,
+          "p10_trade_pct": -8.802,
+          "share_le_m15": 0.0,
+          "median_hold": 1
+        },
+        "T_5": {
+          "n": 23,
+          "win_rate": 0.739,
+          "avg_ret_pct": 1.731,
+          "total_ret_pct": 40.99,
+          "profit_factor": 2.13,
+          "avg_hold_h": 5.0,
+          "exit_reasons": {
+            "time": 23
+          },
+          "worst_trade_pct": -11.235,
+          "p10_trade_pct": -8.802,
+          "share_le_m15": 0.0,
+          "median_hold": 5
+        },
+        "T_10": {
+          "n": 22,
+          "win_rate": 0.591,
+          "avg_ret_pct": 2.314,
+          "total_ret_pct": 52.12,
+          "profit_factor": 2.01,
+          "avg_hold_h": 10.0,
+          "exit_reasons": {
+            "time": 22
+          },
+          "worst_trade_pct": -14.931,
+          "p10_trade_pct": -7.53,
+          "share_le_m15": 0.0,
+          "median_hold": 10.0
+        },
+        "T_20": {
+          "n": 21,
+          "win_rate": 0.667,
+          "avg_ret_pct": 2.605,
+          "total_ret_pct": 39.14,
+          "profit_factor": 1.65,
+          "avg_hold_h": 20.0,
+          "exit_reasons": {
+            "time": 21
+          },
+          "worst_trade_pct": -28.414,
+          "p10_trade_pct": -16.342,
+          "share_le_m15": 0.143,
+          "median_hold": 20
+        },
+        "T_30": {
+          "n": 19,
+          "win_rate": 0.579,
+          "avg_ret_pct": 7.159,
+          "total_ret_pct": 152.08,
+          "profit_factor": 2.35,
+          "avg_hold_h": 29.6,
+          "exit_reasons": {
+            "time": 18,
+            "eod": 1
+          },
+          "worst_trade_pct": -30.59,
+          "p10_trade_pct": -17.094,
+          "share_le_m15": 0.158,
+          "median_hold": 30
+        },
+        "T_50": {
+          "n": 18,
+          "win_rate": 0.722,
+          "avg_ret_pct": 9.909,
+          "total_ret_pct": 190.55,
+          "profit_factor": 2.4,
+          "avg_hold_h": 48.4,
+          "exit_reasons": {
+            "time": 17,
+            "eod": 1
+          },
+          "worst_trade_pct": -49.12,
+          "p10_trade_pct": -29.151,
+          "share_le_m15": 0.167,
+          "median_hold": 50.0
+        }
+      }
+    },
+    "ETH/USD": {
+      "n_setups": 178,
+      "n_labeled": 178,
+      "folds_run": [
+        {
+          "year": 2019,
+          "train_n": 48,
+          "thr_p75": 0.4845
+        },
+        {
+          "year": 2020,
+          "train_n": 73,
+          "thr_p75": 0.4912
+        },
+        {
+          "year": 2021,
+          "train_n": 83,
+          "thr_p75": 0.5627
+        },
+        {
+          "year": 2022,
+          "train_n": 101,
+          "thr_p75": 0.5401
+        },
+        {
+          "year": 2023,
+          "train_n": 120,
+          "thr_p75": 0.532
+        },
+        {
+          "year": 2024,
+          "train_n": 143,
+          "thr_p75": 0.5729
+        },
+        {
+          "year": 2025,
+          "train_n": 154,
+          "thr_p75": 0.5788
+        },
+        {
+          "year": 2026,
+          "train_n": 172,
+          "thr_p75": 0.5575
+        }
+      ],
+      "arms": {
+        "X0_incumbent": {
+          "n": 30,
+          "win_rate": 0.633,
+          "avg_ret_pct": 2.248,
+          "total_ret_pct": 56.44,
+          "profit_factor": 1.61,
+          "avg_hold_h": 9.2,
+          "exit_reasons": {
+            "target": 19,
+            "stop": 11
+          },
+          "worst_trade_pct": -36.595,
+          "p10_trade_pct": -9.332,
+          "share_le_m15": 0.033,
+          "median_hold": 7.0
+        },
+        "X1_close_stop": {
+          "n": 28,
+          "win_rate": 0.643,
+          "avg_ret_pct": 3.34,
+          "total_ret_pct": 117.91,
+          "profit_factor": 2.09,
+          "avg_hold_h": 12.8,
+          "exit_reasons": {
+            "target": 18,
+            "stop_close": 10
+          },
+          "worst_trade_pct": -14.95,
+          "p10_trade_pct": -9.753,
+          "share_le_m15": 0.0,
+          "median_hold": 9.0
+        },
+        "X2_flip": {
+          "n": 23,
+          "win_rate": 0.565,
+          "avg_ret_pct": 8.204,
+          "total_ret_pct": 178.41,
+          "profit_factor": 3.56,
+          "avg_hold_h": 25.6,
+          "exit_reasons": {
+            "flip": 22,
+            "time": 1
+          },
+          "worst_trade_pct": -30.881,
+          "p10_trade_pct": -9.473,
+          "share_le_m15": 0.043,
+          "median_hold": 1
+        },
+        "X3_hybrid": {
+          "n": 24,
+          "win_rate": 0.5,
+          "avg_ret_pct": 7.458,
+          "total_ret_pct": 153.81,
+          "profit_factor": 3.27,
+          "avg_hold_h": 20.9,
+          "exit_reasons": {
+            "flip": 19,
+            "time": 1,
+            "stop_close": 4
+          },
+          "worst_trade_pct": -30.881,
+          "p10_trade_pct": -8.873,
+          "share_le_m15": 0.042,
+          "median_hold": 1.0
+        },
+        "T_5": {
+          "n": 31,
+          "win_rate": 0.613,
+          "avg_ret_pct": 1.976,
+          "total_ret_pct": 71.1,
+          "profit_factor": 2.16,
+          "avg_hold_h": 5.0,
+          "exit_reasons": {
+            "time": 31
+          },
+          "worst_trade_pct": -12.401,
+          "p10_trade_pct": -5.438,
+          "share_le_m15": 0.0,
+          "median_hold": 5
+        },
+        "T_10": {
+          "n": 28,
+          "win_rate": 0.571,
+          "avg_ret_pct": 4.726,
+          "total_ret_pct": 205.76,
+          "profit_factor": 2.86,
+          "avg_hold_h": 10.0,
+          "exit_reasons": {
+            "time": 28
+          },
+          "worst_trade_pct": -14.95,
+          "p10_trade_pct": -7.935,
+          "share_le_m15": 0.0,
+          "median_hold": 10.0
+        },
+        "T_20": {
+          "n": 24,
+          "win_rate": 0.625,
+          "avg_ret_pct": 9.127,
+          "total_ret_pct": 407.98,
+          "profit_factor": 3.56,
+          "avg_hold_h": 20.0,
+          "exit_reasons": {
+            "time": 24
+          },
+          "worst_trade_pct": -42.418,
+          "p10_trade_pct": -8.37,
+          "share_le_m15": 0.042,
+          "median_hold": 20.0
+        },
+        "T_30": {
+          "n": 23,
+          "win_rate": 0.609,
+          "avg_ret_pct": 6.889,
+          "total_ret_pct": 116.81,
+          "profit_factor": 1.95,
+          "avg_hold_h": 30.0,
+          "exit_reasons": {
+            "time": 23
+          },
+          "worst_trade_pct": -45.384,
+          "p10_trade_pct": -27.14,
+          "share_le_m15": 0.174,
+          "median_hold": 30
+        },
+        "T_50": {
+          "n": 18,
+          "win_rate": 0.611,
+          "avg_ret_pct": 9.555,
+          "total_ret_pct": 169.74,
+          "profit_factor": 2.21,
+          "avg_hold_h": 50.0,
+          "exit_reasons": {
+            "time": 18
+          },
+          "worst_trade_pct": -41.811,
+          "p10_trade_pct": -25.802,
+          "share_le_m15": 0.222,
+          "median_hold": 50.0
+        }
+      }
+    },
+    "ZEC/USD": {
+      "n_setups": 169,
+      "n_labeled": 169,
+      "folds_run": [
+        {
+          "year": 2020,
+          "train_n": 61,
+          "thr_p75": 0.5096
+        },
+        {
+          "year": 2021,
+          "train_n": 77,
+          "thr_p75": 0.5774
+        },
+        {
+          "year": 2022,
+          "train_n": 89,
+          "thr_p75": 0.5481
+        },
+        {
+          "year": 2023,
+          "train_n": 111,
+          "thr_p75": 0.5125
+        },
+        {
+          "year": 2024,
+          "train_n": 134,
+          "thr_p75": 0.5277
+        },
+        {
+          "year": 2025,
+          "train_n": 145,
+          "thr_p75": 0.5305
+        },
+        {
+          "year": 2026,
+          "train_n": 166,
+          "thr_p75": 0.5481
+        }
+      ],
+      "arms": {
+        "X0_incumbent": {
+          "n": 19,
+          "win_rate": 0.579,
+          "avg_ret_pct": -0.877,
+          "total_ret_pct": -27.02,
+          "profit_factor": 0.83,
+          "avg_hold_h": 7.2,
+          "exit_reasons": {
+            "stop": 8,
+            "target": 11
+          },
+          "worst_trade_pct": -26.74,
+          "p10_trade_pct": -11.309,
+          "share_le_m15": 0.105,
+          "median_hold": 4
+        },
+        "X1_close_stop": {
+          "n": 19,
+          "win_rate": 0.684,
+          "avg_ret_pct": 1.217,
+          "total_ret_pct": 8.25,
+          "profit_factor": 1.28,
+          "avg_hold_h": 8.5,
+          "exit_reasons": {
+            "stop_close": 6,
+            "target": 13
+          },
+          "worst_trade_pct": -26.74,
+          "p10_trade_pct": -10.268,
+          "share_le_m15": 0.105,
+          "median_hold": 6
+        },
+        "X2_flip": {
+          "n": 18,
+          "win_rate": 0.389,
+          "avg_ret_pct": -1.765,
+          "total_ret_pct": -34.21,
+          "profit_factor": 0.6,
+          "avg_hold_h": 17.3,
+          "exit_reasons": {
+            "flip": 18
+          },
+          "worst_trade_pct": -15.473,
+          "p10_trade_pct": -12.147,
+          "share_le_m15": 0.056,
+          "median_hold": 1.0
+        },
+        "X3_hybrid": {
+          "n": 18,
+          "win_rate": 0.389,
+          "avg_ret_pct": -2.857,
+          "total_ret_pct": -48.23,
+          "profit_factor": 0.48,
+          "avg_hold_h": 13.4,
+          "exit_reasons": {
+            "stop_close": 6,
+            "flip": 12
+          },
+          "worst_trade_pct": -28.403,
+          "p10_trade_pct": -10.268,
+          "share_le_m15": 0.111,
+          "median_hold": 1.0
+        },
+        "T_5": {
+          "n": 19,
+          "win_rate": 0.421,
+          "avg_ret_pct": -3.159,
+          "total_ret_pct": -51.41,
+          "profit_factor": 0.35,
+          "avg_hold_h": 5.0,
+          "exit_reasons": {
+            "time": 19
+          },
+          "worst_trade_pct": -35.605,
+          "p10_trade_pct": -9.494,
+          "share_le_m15": 0.105,
+          "median_hold": 5
+        },
+        "T_10": {
+          "n": 19,
+          "win_rate": 0.526,
+          "avg_ret_pct": -0.126,
+          "total_ret_pct": -17.98,
+          "profit_factor": 0.98,
+          "avg_hold_h": 10.0,
+          "exit_reasons": {
+            "time": 19
+          },
+          "worst_trade_pct": -25.241,
+          "p10_trade_pct": -12.73,
+          "share_le_m15": 0.105,
+          "median_hold": 10
+        },
+        "T_20": {
+          "n": 16,
+          "win_rate": 0.5,
+          "avg_ret_pct": -2.339,
+          "total_ret_pct": -52.62,
+          "profit_factor": 0.77,
+          "avg_hold_h": 20.0,
+          "exit_reasons": {
+            "time": 16
+          },
+          "worst_trade_pct": -34.484,
+          "p10_trade_pct": -25.963,
+          "share_le_m15": 0.375,
+          "median_hold": 20.0
+        },
+        "T_30": {
+          "n": 15,
+          "win_rate": 0.467,
+          "avg_ret_pct": 2.139,
+          "total_ret_pct": -9.43,
+          "profit_factor": 1.24,
+          "avg_hold_h": 30.0,
+          "exit_reasons": {
+            "time": 15
+          },
+          "worst_trade_pct": -29.347,
+          "p10_trade_pct": -26.12,
+          "share_le_m15": 0.333,
+          "median_hold": 30
+        },
+        "T_50": {
+          "n": 14,
+          "win_rate": 0.5,
+          "avg_ret_pct": 3.29,
+          "total_ret_pct": 10.44,
+          "profit_factor": 1.42,
+          "avg_hold_h": 50.0,
+          "exit_reasons": {
+            "time": 14
+          },
+          "worst_trade_pct": -38.758,
+          "p10_trade_pct": -26.764,
+          "share_le_m15": 0.214,
+          "median_hold": 50.0
+        }
+      }
+    }
+  },
+  "verdict": {
+    "X0_pooled_avg_pct": 1.72,
+    "candidates": {
+      "X1_close_stop": {
+        "pooled_avg_pct": 2.359,
+        "C1_expectancy": {
+          "value": 2.359,
+          "threshold": ">= X0 (1.72) + 0.5",
+          "pass": true
+        },
+        "C2_fold_consistency": {
+          "wins": 8,
+          "folds": 13,
+          "share": 0.615,
+          "threshold": ">= 0.60",
+          "detail": {
+            "BTC_2020": {
+              "arm": 3.61,
+              "x0": 3.61,
+              "win": true
+            },
+            "BTC_2021": {
+              "arm": -2.93,
+              "x0": 0.82,
+              "win": false
+            },
+            "BTC_2022": {
+              "arm": 11.96,
+              "x0": 11.96,
+              "win": true
+            },
+            "BTC_2023": {
+              "arm": -1.48,
+              "x0": -1.48,
+              "win": true
+            },
+            "BTC_2024": {
+              "arm": 7.86,
+              "x0": 7.86,
+              "win": true
+            },
+            "BTC_2025": {
+              "arm": -4.47,
+              "x0": -0.15,
+              "win": false
+            },
+            "BTC_2026": {
+              "arm": 12.26,
+              "x0": 1.12,
+              "win": true
+            },
+            "ETH_2019": {
+              "arm": 37.08,
+              "x0": 40.06,
+              "win": false
+            },
+            "ETH_2020": {
+              "arm": 12.97,
+              "x0": 12.97,
+              "win": true
+            },
+            "ETH_2021": {
+              "arm": 27.67,
+              "x0": -9.94,
+              "win": true
+            },
+            "ETH_2022": {
+              "arm": 12.48,
+              "x0": 13.06,
+              "win": false
+            },
+            "ETH_2023": {
+              "arm": -3.48,
+              "x0": 4.5,
+              "win": false
+            },
+            "ETH_2024": {
+              "arm": 6.79,
+              "x0": 6.79,
+              "win": true
+            }
+          },
+          "pass": true
+        },
+        "C4_tail": {
+          "worst_pct": -16.493,
+          "x0_worst_pct": -36.595,
+          "share_le_m15": 0.02,
+          "x0_share_le_m15": 0.038,
+          "threshold": "worst >= X0_worst - 10pp AND share<=-15% <= X0 + 0.10",
+          "pass": true
+        },
+        "pass": true
+      },
+      "X2_flip": {
+        "pooled_avg_pct": 13.199,
+        "C1_expectancy": {
+          "value": 13.199,
+          "threshold": ">= X0 (1.72) + 0.5",
+          "pass": true
+        },
+        "C2_fold_consistency": {
+          "wins": 5,
+          "folds": 13,
+          "share": 0.385,
+          "threshold": ">= 0.60",
+          "detail": {
+            "BTC_2020": {
+              "arm": 458.84,
+              "x0": 3.61,
+              "win": true
+            },
+            "BTC_2021": {
+              "arm": -56.97,
+              "x0": 0.82,
+              "win": false
+            },
+            "BTC_2022": {
+              "arm": -5.49,
+              "x0": 11.96,
+              "win": false
+            },
+            "BTC_2023": {
+              "arm": -1.76,
+              "x0": -1.48,
+              "win": false
+            },
+            "BTC_2024": {
+              "arm": -0.06,
+              "x0": 7.86,
+              "win": false
+            },
+            "BTC_2025": {
+              "arm": 1.68,
+              "x0": -0.15,
+              "win": true
+            },
+            "BTC_2026": {
+              "arm": -4.15,
+              "x0": 1.12,
+              "win": false
+            },
+            "ETH_2019": {
+              "arm": 45.78,
+              "x0": 40.06,
+              "win": true
+            },
+            "ETH_2020": {
+              "arm": 168.6,
+              "x0": 12.97,
+              "win": true
+            },
+            "ETH_2021": {
+              "arm": -5.26,
+              "x0": -9.94,
+              "win": true
+            },
+            "ETH_2022": {
+              "arm": -17.03,
+              "x0": 13.06,
+              "win": false
+            },
+            "ETH_2023": {
+              "arm": -5.86,
+              "x0": 4.5,
+              "win": false
+            },
+            "ETH_2024": {
+              "arm": 2.47,
+              "x0": 6.79,
+              "win": false
+            }
+          },
+          "pass": false
+        },
+        "C3_info_over_exposure": {
+          "median_hold": 1.0,
+          "k_star": 5,
+          "control_avg_pct": 1.871,
+          "threshold": ">= T_5 (1.871) + 0.5",
+          "pass": true
+        },
+        "C4_tail": {
+          "worst_pct": -30.881,
+          "x0_worst_pct": -36.595,
+          "share_le_m15": 0.068,
+          "x0_share_le_m15": 0.038,
+          "threshold": "worst >= X0_worst - 10pp AND share<=-15% <= X0 + 0.10",
+          "pass": true
+        },
+        "pass": false
+      },
+      "X3_hybrid": {
+        "pooled_avg_pct": 13.207,
+        "C1_expectancy": {
+          "value": 13.207,
+          "threshold": ">= X0 (1.72) + 0.5",
+          "pass": true
+        },
+        "C2_fold_consistency": {
+          "wins": 5,
+          "folds": 13,
+          "share": 0.385,
+          "threshold": ">= 0.60",
+          "detail": {
+            "BTC_2020": {
+              "arm": 458.84,
+              "x0": 3.61,
+              "win": true
+            },
+            "BTC_2021": {
+              "arm": -33.69,
+              "x0": 0.82,
+              "win": false
+            },
+            "BTC_2022": {
+              "arm": -5.49,
+              "x0": 11.96,
+              "win": false
+            },
+            "BTC_2023": {
+              "arm": -1.76,
+              "x0": -1.48,
+              "win": false
+            },
+            "BTC_2024": {
+              "arm": -0.06,
+              "x0": 7.86,
+              "win": false
+            },
+            "BTC_2025": {
+              "arm": 1.68,
+              "x0": -0.15,
+              "win": true
+            },
+            "BTC_2026": {
+              "arm": -4.15,
+              "x0": 1.12,
+              "win": false
+            },
+            "ETH_2019": {
+              "arm": 45.78,
+              "x0": 40.06,
+              "win": true
+            },
+            "ETH_2020": {
+              "arm": 168.6,
+              "x0": 12.97,
+              "win": true
+            },
+            "ETH_2021": {
+              "arm": -5.26,
+              "x0": -9.94,
+              "win": true
+            },
+            "ETH_2022": {
+              "arm": -17.03,
+              "x0": 13.06,
+              "win": false
+            },
+            "ETH_2023": {
+              "arm": -15.57,
+              "x0": 4.5,
+              "win": false
+            },
+            "ETH_2024": {
+              "arm": 2.47,
+              "x0": 6.79,
+              "win": false
+            }
+          },
+          "pass": false
+        },
+        "C3_info_over_exposure": {
+          "median_hold": 1,
+          "k_star": 5,
+          "control_avg_pct": 1.871,
+          "threshold": ">= T_5 (1.871) + 0.5",
+          "pass": true
+        },
+        "C4_tail": {
+          "worst_pct": -30.881,
+          "x0_worst_pct": -36.595,
+          "share_le_m15": 0.022,
+          "x0_share_le_m15": 0.038,
+          "threshold": "worst >= X0_worst - 10pp AND share<=-15% <= X0 + 0.10",
+          "pass": true
+        },
+        "pass": false
+      }
+    },
+    "passing": [
+      "X1_close_stop"
+    ],
+    "ADOPT": "X1_close_stop"
+  },
+  "caveats": [
+    "Registration was NOT blind: pooled exploratory numbers for X1/X2 analogues were seen before criteria were frozen (disclosed in the registration; the deciding measurements \u2014 fold consistency, T_K controls, tail bounds, X3 \u2014 were unseen).",
+    "Same-bar close fills on all close-decided exits, uniform across arms including the incumbent's stop fill.",
+    "Yearly fold pools simulate independently; late-year entries hold past Jan 1 (existing convention).",
+    "ZEC/USD reported only; its 2026 fold spans the known 1h gap 2026-01-01..2026-04-20.",
+    "POWER: gated pools carry ~19-30 trades/asset over the full archive; the shadow window remains the final authority on any adopted exit."
+  ],
+  "pooled_btc_eth": {
+    "X0_incumbent": {
+      "n": 53,
+      "win_rate": 0.642,
+      "avg_ret_pct": 1.72,
+      "total_ret_pct": 87.38,
+      "profit_factor": 1.55,
+      "avg_hold_h": 8.9,
+      "exit_reasons": {
+        "target": 34,
+        "stop": 19
+      },
+      "worst_trade_pct": -36.595,
+      "p10_trade_pct": -9.332,
+      "share_le_m15": 0.038,
+      "median_hold": 6
+    },
+    "X1_close_stop": {
+      "n": 51,
+      "win_rate": 0.667,
+      "avg_ret_pct": 2.359,
+      "total_ret_pct": 167.03,
+      "profit_factor": 1.83,
+      "avg_hold_h": 11.7,
+      "exit_reasons": {
+        "target": 34,
+        "stop_close": 17
+      },
+      "worst_trade_pct": -16.493,
+      "p10_trade_pct": -9.753,
+      "share_le_m15": 0.02,
+      "median_hold": 8
+    },
+    "X2_flip": {
+      "n": 44,
+      "win_rate": 0.477,
+      "avg_ret_pct": 13.199,
+      "total_ret_pct": 644.67,
+      "profit_factor": 4.89,
+      "avg_hold_h": 23.6,
+      "exit_reasons": {
+        "time": 2,
+        "flip": 42
+      },
+      "worst_trade_pct": -30.881,
+      "p10_trade_pct": -11.235,
+      "share_le_m15": 0.068,
+      "median_hold": 1.0
+    },
+    "X3_hybrid": {
+      "n": 45,
+      "win_rate": 0.444,
+      "avg_ret_pct": 13.207,
+      "total_ret_pct": 797.5,
+      "profit_factor": 5.54,
+      "avg_hold_h": 20.8,
+      "exit_reasons": {
+        "time": 2,
+        "stop_close": 7,
+        "flip": 36
+      },
+      "worst_trade_pct": -30.881,
+      "p10_trade_pct": -8.873,
+      "share_le_m15": 0.022,
+      "median_hold": 1
+    },
+    "T_5": {
+      "n": 54,
+      "win_rate": 0.667,
+      "avg_ret_pct": 1.871,
+      "total_ret_pct": 141.24,
+      "profit_factor": 2.15,
+      "avg_hold_h": 5.0,
+      "exit_reasons": {
+        "time": 54
+      },
+      "worst_trade_pct": -12.401,
+      "p10_trade_pct": -7.513,
+      "share_le_m15": 0.0,
+      "median_hold": 5.0
+    },
+    "T_10": {
+      "n": 50,
+      "win_rate": 0.58,
+      "avg_ret_pct": 3.664,
+      "total_ret_pct": 365.13,
+      "profit_factor": 2.51,
+      "avg_hold_h": 10.0,
+      "exit_reasons": {
+        "time": 50
+      },
+      "worst_trade_pct": -14.95,
+      "p10_trade_pct": -7.935,
+      "share_le_m15": 0.0,
+      "median_hold": 10.0
+    },
+    "T_20": {
+      "n": 45,
+      "win_rate": 0.644,
+      "avg_ret_pct": 6.083,
+      "total_ret_pct": 606.78,
+      "profit_factor": 2.61,
+      "avg_hold_h": 20.0,
+      "exit_reasons": {
+        "time": 45
+      },
+      "worst_trade_pct": -42.418,
+      "p10_trade_pct": -11.137,
+      "share_le_m15": 0.089,
+      "median_hold": 20
+    },
+    "T_30": {
+      "n": 42,
+      "win_rate": 0.595,
+      "avg_ret_pct": 7.011,
+      "total_ret_pct": 446.55,
+      "profit_factor": 2.1,
+      "avg_hold_h": 29.8,
+      "exit_reasons": {
+        "time": 41,
+        "eod": 1
+      },
+      "worst_trade_pct": -45.384,
+      "p10_trade_pct": -27.14,
+      "share_le_m15": 0.167,
+      "median_hold": 30.0
+    },
+    "T_50": {
+      "n": 36,
+      "win_rate": 0.667,
+      "avg_ret_pct": 9.732,
+      "total_ret_pct": 683.74,
+      "profit_factor": 2.3,
+      "avg_hold_h": 49.2,
+      "exit_reasons": {
+        "time": 35,
+        "eod": 1
+      },
+      "worst_trade_pct": -49.12,
+      "p10_trade_pct": -26.936,
+      "share_le_m15": 0.194,
+      "median_hold": 50.0
+    }
+  }
+}

@@ -1,0 +1,3 @@
+synth tape: 148231 trades, 85 injected events (45 reversal / 40 fake) -> data/BTC_USD/1h/tape/part-01700000036000000000-000.parquet
+synth tape: 144087 trades, 84 injected events (33 reversal / 51 fake) -> data/ETH_USD/1h/tape/part-01700000047368421120-000.parquet
+synth tape: 144944 trades, 84 injected events (32 reversal / 52 fake) -> data/ZEC_USD/1h/tape/part-01700000048648648704-000.parquet

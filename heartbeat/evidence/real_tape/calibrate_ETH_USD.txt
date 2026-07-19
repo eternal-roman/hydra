@@ -1,0 +1,12 @@
+
+== ETH/USD 1h: 77 events (38 reversal / 39 fake)
+fold              train range               test range    n   AUC+1   AUC+2   AUC+3 overlap
+   2   2026-04-21..2026-05-18   2026-05-18..2026-06-02   15  0.6071  0.6429  0.7321 NONE
+   3   2026-04-21..2026-06-02   2026-06-02..2026-06-17   15  0.6071   0.625  0.7679 NONE
+   4   2026-04-21..2026-06-17   2026-06-19..2026-07-17   17  0.5417  0.6667  0.6944 NONE
+final weights (fit on all 77 events) -> data\reports\weights_ETH_USD_1h.json
+                 clv: +0.8852
+                 ofi: +0.0330
+        ofi_momentum: +0.4723
+           range_atr: +0.1383
+               vol_z: +0.0466

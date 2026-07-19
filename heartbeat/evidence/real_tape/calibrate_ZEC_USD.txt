@@ -1,0 +1,12 @@
+
+== ZEC/USD 1h: 75 events (33 reversal / 42 fake)
+fold              train range               test range    n   AUC+1   AUC+2   AUC+3 overlap
+   2   2026-04-23..2026-05-28   2026-05-29..2026-06-10   15  0.6429   0.625  0.6071 NONE
+   3   2026-04-23..2026-06-10   2026-06-12..2026-06-28   15    0.68    0.68    0.76 NONE
+   4   2026-04-23..2026-06-28   2026-06-30..2026-07-18   15  0.4815  0.4444   0.463 NONE
+final weights (fit on all 75 events) -> data\reports\weights_ZEC_USD_1h.json
+                 clv: +0.3188
+                 ofi: -0.1305
+        ofi_momentum: +0.2124
+           range_atr: +0.2650
+               vol_z: -0.0138

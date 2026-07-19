@@ -25,10 +25,17 @@ def refresh_pair(store: HistoryStore, pair: str, grain_sec: int,
         from hydra_kraken_cli import KrakenCLI
         cli = KrakenCLI
     rows = cli.ohlc(pair, interval=grain_sec // 60) or []
+    now = int(_time.time())
     out: List[CandleRow] = []
     for r in rows:
         ts = int(float(r.get("timestamp", 0)))
         if ts <= 0:
+            continue
+        if ts + grain_sec > now:
+            # Kraken's last OHLC row is the still-forming candle. Freezing
+            # it poisons the store: the row is final under the tier policy
+            # and never revisited (trade-tape audit found frozen rows with
+            # volume ~10x low). Skip; the completed candle lands next run.
             continue
         out.append(CandleRow(
             pair=pair, grain_sec=grain_sec, ts=ts,
@@ -85,6 +92,8 @@ def fill_gaps_for_pair(store: HistoryStore, pair: str, grain_sec: int,
             ts = int(float(r.get("timestamp", 0)))
             if ts <= 0:
                 continue
+            if ts + grain_sec > now:
+                continue  # forming candle — same poisoning as refresh_pair
             rows.append(CandleRow(
                 pair=pair, grain_sec=grain_sec, ts=ts,
                 open=float(r.get("open", 0)), high=float(r.get("high", 0)),

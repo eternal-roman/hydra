@@ -1,0 +1,346 @@
+{
+  "pair": "ETH/USD",
+  "tf": "1h",
+  "events_total": 77,
+  "events_tainted_excluded": 0,
+  "metrics": {
+    "checkpoints": {
+      "bounce+1": {
+        "n": 77,
+        "auc": 0.5621,
+        "brier": 0.4139,
+        "separation": 0.0089,
+        "calibration": [
+          {
+            "bin": "0.0-0.1",
+            "n": 2,
+            "mean_pred": 0.0838,
+            "obs_freq": 0.0
+          },
+          {
+            "bin": "0.1-0.2",
+            "n": 1,
+            "mean_pred": 0.1565,
+            "obs_freq": 1.0
+          },
+          {
+            "bin": "0.2-0.3",
+            "n": 2,
+            "mean_pred": 0.244,
+            "obs_freq": 0.5
+          },
+          {
+            "bin": "0.3-0.4",
+            "n": 5,
+            "mean_pred": 0.3486,
+            "obs_freq": 0.6
+          },
+          {
+            "bin": "0.4-0.5",
+            "n": 4,
+            "mean_pred": 0.4698,
+            "obs_freq": 0.25
+          },
+          {
+            "bin": "0.5-0.6",
+            "n": 2,
+            "mean_pred": 0.5259,
+            "obs_freq": 0.5
+          },
+          {
+            "bin": "0.6-0.7",
+            "n": 2,
+            "mean_pred": 0.6378,
+            "obs_freq": 0.5
+          },
+          {
+            "bin": "0.7-0.8",
+            "n": 3,
+            "mean_pred": 0.7565,
+            "obs_freq": 0.3333
+          },
+          {
+            "bin": "0.8-0.9",
+            "n": 3,
+            "mean_pred": 0.8616,
+            "obs_freq": 0.6667
+          },
+          {
+            "bin": "0.9-1.0",
+            "n": 53,
+            "mean_pred": 0.983,
+            "obs_freq": 0.5094
+          }
+        ]
+      },
+      "bounce+2": {
+        "n": 77,
+        "auc": 0.587,
+        "brier": 0.4072,
+        "separation": 0.0076,
+        "calibration": [
+          {
+            "bin": "0.0-0.1",
+            "n": 2,
+            "mean_pred": 0.0688,
+            "obs_freq": 0.0
+          },
+          {
+            "bin": "0.1-0.2",
+            "n": 0,
+            "mean_pred": null,
+            "obs_freq": null
+          },
+          {
+            "bin": "0.2-0.3",
+            "n": 6,
+            "mean_pred": 0.2537,
+            "obs_freq": 0.5
+          },
+          {
+            "bin": "0.3-0.4",
+            "n": 2,
+            "mean_pred": 0.3522,
+            "obs_freq": 1.0
+          },
+          {
+            "bin": "0.4-0.5",
+            "n": 4,
+            "mean_pred": 0.4635,
+            "obs_freq": 0.25
+          },
+          {
+            "bin": "0.5-0.6",
+            "n": 2,
+            "mean_pred": 0.5255,
+            "obs_freq": 0.0
+          },
+          {
+            "bin": "0.6-0.7",
+            "n": 2,
+            "mean_pred": 0.6434,
+            "obs_freq": 1.0
+          },
+          {
+            "bin": "0.7-0.8",
+            "n": 3,
+            "mean_pred": 0.7442,
+            "obs_freq": 0.3333
+          },
+          {
+            "bin": "0.8-0.9",
+            "n": 0,
+            "mean_pred": null,
+            "obs_freq": null
+          },
+          {
+            "bin": "0.9-1.0",
+            "n": 56,
+            "mean_pred": 0.9812,
+            "obs_freq": 0.5179
+          }
+        ]
+      },
+      "bounce+3": {
+        "n": 77,
+        "auc": 0.5911,
+        "brier": 0.4075,
+        "separation": 0.0161,
+        "calibration": [
+          {
+            "bin": "0.0-0.1",
+            "n": 1,
+            "mean_pred": 0.0702,
+            "obs_freq": 0.0
+          },
+          {
+            "bin": "0.1-0.2",
+            "n": 0,
+            "mean_pred": null,
+            "obs_freq": null
+          },
+          {
+            "bin": "0.2-0.3",
+            "n": 7,
+            "mean_pred": 0.2549,
+            "obs_freq": 0.5714
+          },
+          {
+            "bin": "0.3-0.4",
+            "n": 5,
+            "mean_pred": 0.369,
+            "obs_freq": 0.4
+          },
+          {
+            "bin": "0.4-0.5",
+            "n": 2,
+            "mean_pred": 0.4906,
+            "obs_freq": 0.0
+          },
+          {
+            "bin": "0.5-0.6",
+            "n": 2,
+            "mean_pred": 0.5567,
+            "obs_freq": 0.5
+          },
+          {
+            "bin": "0.6-0.7",
+            "n": 0,
+            "mean_pred": null,
+            "obs_freq": null
+          },
+          {
+            "bin": "0.7-0.8",
+            "n": 2,
+            "mean_pred": 0.7969,
+            "obs_freq": 0.0
+          },
+          {
+            "bin": "0.8-0.9",
+            "n": 5,
+            "mean_pred": 0.8713,
+            "obs_freq": 0.6
+          },
+          {
+            "bin": "0.9-1.0",
+            "n": 53,
+            "mean_pred": 0.9821,
+            "obs_freq": 0.5283
+          }
+        ]
+      },
+      "progress_2atr": {
+        "n": 73,
+        "auc": 0.4805,
+        "brier": 0.4283,
+        "separation": 0.0169,
+        "calibration": [
+          {
+            "bin": "0.0-0.1",
+            "n": 1,
+            "mean_pred": 0.0954,
+            "obs_freq": 0.0
+          },
+          {
+            "bin": "0.1-0.2",
+            "n": 1,
+            "mean_pred": 0.1277,
+            "obs_freq": 0.0
+          },
+          {
+            "bin": "0.2-0.3",
+            "n": 3,
+            "mean_pred": 0.2341,
+            "obs_freq": 0.6667
+          },
+          {
+            "bin": "0.3-0.4",
+            "n": 3,
+            "mean_pred": 0.3349,
+            "obs_freq": 1.0
+          },
+          {
+            "bin": "0.4-0.5",
+            "n": 3,
+            "mean_pred": 0.4727,
+            "obs_freq": 0.3333
+          },
+          {
+            "bin": "0.5-0.6",
+            "n": 1,
+            "mean_pred": 0.5492,
+            "obs_freq": 1.0
+          },
+          {
+            "bin": "0.6-0.7",
+            "n": 1,
+            "mean_pred": 0.6165,
+            "obs_freq": 1.0
+          },
+          {
+            "bin": "0.7-0.8",
+            "n": 4,
+            "mean_pred": 0.7455,
+            "obs_freq": 0.25
+          },
+          {
+            "bin": "0.8-0.9",
+            "n": 2,
+            "mean_pred": 0.8436,
+            "obs_freq": 1.0
+          },
+          {
+            "bin": "0.9-1.0",
+            "n": 54,
+            "mean_pred": 0.9808,
+            "obs_freq": 0.5
+          }
+        ]
+      }
+    },
+    "lead_time": null,
+    "n_events": 77,
+    "n_reversal": 38,
+    "n_fake": 39
+  },
+  "min_events_required": 60,
+  "sufficient_events": true,
+  "promote_criterion": "AUC >= 0.7 by bounce+3, walk-forward",
+  "worst_events": [
+    {
+      "low_ts": "2026-06-02 19:00",
+      "low_ts_epoch": 1780426800,
+      "label": "fake",
+      "p_up_at_cp": 0.9998,
+      "error": 0.9998,
+      "low_price": 1879.61,
+      "atr": 12.305,
+      "tainted": false,
+      "tape_hint": "candles [1052..1055]"
+    },
+    {
+      "low_ts": "2026-05-04 20:00",
+      "low_ts_epoch": 1777924800,
+      "label": "fake",
+      "p_up_at_cp": 0.9997,
+      "error": 0.9997,
+      "low_price": 2347.27,
+      "atr": 15.345,
+      "tainted": false,
+      "tape_hint": "candles [357..360]"
+    },
+    {
+      "low_ts": "2026-05-05 09:00",
+      "low_ts_epoch": 1777971600,
+      "label": "fake",
+      "p_up_at_cp": 0.9995,
+      "error": 0.9995,
+      "low_price": 2366.83,
+      "atr": 12.245,
+      "tainted": false,
+      "tape_hint": "candles [370..377]"
+    },
+    {
+      "low_ts": "2026-06-02 23:00",
+      "low_ts_epoch": 1780441200,
+      "label": "fake",
+      "p_up_at_cp": 0.9994,
+      "error": 0.9994,
+      "low_price": 1836.76,
+      "atr": 17.99,
+      "tainted": false,
+      "tape_hint": "candles [1056..1060]"
+    },
+    {
+      "low_ts": "2026-06-05 19:00",
+      "low_ts_epoch": 1780686000,
+      "label": "fake",
+      "p_up_at_cp": 0.999,
+      "error": 0.999,
+      "low_price": 1539.72,
+      "atr": 31.875,
+      "tainted": false,
+      "tape_hint": "candles [1124..1133]"
+    }
+  ]
+}

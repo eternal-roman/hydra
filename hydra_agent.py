@@ -293,6 +293,20 @@ class HydraAgent:
             if self.trackers[pair].update_count > 0:
                 print(f"  [TUNER] {pair}: loaded tuned params (update #{self.trackers[pair].update_count})")
 
+        # ─── S3 bounce signal surface (s3bounce package via hydra_s3) ───
+        # Read-only signal input + env-gated shadow strategy; any init
+        # failure leaves the agent unaffected (surface stays absent).
+        # Kill switch: HYDRA_S3_DISABLED=1 (read per call inside adapter).
+        self.s3 = None
+        try:
+            from hydra_s3 import S3Adapter
+            self.s3 = S3Adapter(list(pairs), interval_min=candle_interval)
+            if self.s3.asset_by_pair:
+                print(f"  [S3] signal surface active for "
+                      f"{sorted(self.s3.asset_by_pair)}")
+        except Exception as e:
+            print(f"  [WARN] S3 surface unavailable: {e}")
+
         # Dashboard broadcaster
         self.broadcaster = DashboardBroadcaster(port=ws_port)
 
@@ -692,6 +706,15 @@ class HydraAgent:
         # v2.16.0: RM engine-internal features. Kill switch read live.
         if os.environ.get("HYDRA_RM_FEATURES_DISABLED") != "1":
             self._add_rm_features(pair, engine, quant_indicators)
+
+        # v2.30: S3 bounce signal surface (read-only; R10 tracks a fixed
+        # whitelist so this nested block can never trip the blackout).
+        # getattr: harness/test stubs construct agents without full init.
+        s3 = getattr(self, "s3", None)
+        if s3 is not None:
+            s3_block = s3.indicator_block(pair)
+            if s3_block:
+                quant_indicators["s3"] = s3_block
 
         if quant_indicators:
             state["quant_indicators"] = quant_indicators
@@ -1223,7 +1246,15 @@ class HydraAgent:
                     print(f"  [HYDRA] {pair}: {min(len(candles), 200)} candles loaded, last price: ${price:,.4f}")
                 else:
                     print(f"  [WARN] {pair}: no historical data")
+                if self.s3 is not None:
+                    self.s3.seed_boot(pair, daily or [], candles or [])
                 time.sleep(2)  # Respect rate limits
+
+            # S3 breadth universe: seed members with no running engine
+            # (their daily bars feed the breadth feature only).
+            if self.s3 is not None:
+                self.s3.seed_absent_members(
+                    lambda a: KrakenCLI.ohlc(a, interval=1440))
 
             # Fetch live account balance and initialize engines from real funds
             print("\n  [HYDRA] Checking account balance...")
@@ -1671,6 +1702,24 @@ class HydraAgent:
                                 engine.restore_position(state["_pre_trade_snapshot"])
                                 print(f"  [ROLLBACK] {pair}: engine state rolled back after failed placement")
 
+                # Phase 2.6: S3 shadow strategy (HYDRA_S3_STRATEGY=1).
+                # Paper proposals + per-arm shadow position marking only —
+                # structurally no order path (see tests/test_s3_shadow.py
+                # grep guard). Also keeps absent breadth members fresh
+                # (one CLI daily fetch per member per UTC day).
+                s3 = getattr(self, "s3", None)
+                if s3 is not None:
+                    try:
+                        s3.refresh_absent_members(
+                            lambda a: KrakenCLI.ohlc(a, interval=1440),
+                            time.time())
+                        for pair in self.pairs:
+                            state = all_states.get(pair)
+                            mark = state.get("price", 0.0) if state else 0.0
+                            s3.shadow_step(pair, mark)
+                    except Exception as e:
+                        print(f"  [WARN] S3 shadow phase error (ignored): {e}")
+
                 # Phase 3: Execute coordinated swaps, then check regime transitions
                 if pending_swaps:
                     for swap in pending_swaps:
@@ -1907,10 +1956,12 @@ class HydraAgent:
         """
         engine = self.engines[pair]
         candle_ingested = False
+        fed_candle = None          # same dict the engine saw, for the S3 feed
 
         # Offline demo: always synthesize a fresh bar (no exchange I/O).
         if getattr(self, "demo", False):
-            engine.ingest_candle(self._make_synthetic_candle(pair, advance=True))
+            fed_candle = self._make_synthetic_candle(pair, advance=True)
+            engine.ingest_candle(fed_candle)
             candle_ingested = True
         else:
             # Try WS candle stream first (no API call, no rate-limit sleep)
@@ -1932,14 +1983,15 @@ class HydraAgent:
                     ts = float(ts_raw)
                 else:
                     ts = time.time()
-                engine.ingest_candle({
+                fed_candle = {
                     "open": ws_candle.get("open", 0),
                     "high": ws_candle.get("high", 0),
                     "low": ws_candle.get("low", 0),
                     "close": ws_candle.get("close", 0),
                     "volume": ws_candle.get("volume", 0),
                     "timestamp": ts,
-                })
+                }
+                engine.ingest_candle(fed_candle)
                 candle_ingested = True
 
             # Paper streams short-circuit healthy=True but never push candles.
@@ -1948,7 +2000,8 @@ class HydraAgent:
                 candles = KrakenCLI.ohlc(pair, interval=self.candle_interval)
                 if candles:
                     # Prefer the newest bar; re-ingest updates in place by ts.
-                    engine.ingest_candle(candles[-1])
+                    fed_candle = candles[-1]
+                    engine.ingest_candle(fed_candle)
                     candle_ingested = True
                 time.sleep(KRAKEN_REST_FLOOR_S)
 
@@ -1956,6 +2009,12 @@ class HydraAgent:
             # Live: CandleStream unavailable — skip tick for this pair.
             # Engine retains previous candle data from warmup / prior ticks.
             return None
+
+        # S3 daily-bar feed: same candle the engine ingested (adapter is
+        # inert on error and folds only on close-confirmation).
+        s3 = getattr(self, "s3", None)
+        if s3 is not None and fed_candle is not None:
+            s3.on_candle(pair, fed_candle)
 
         # Always generate_only so coordinator can mutate the signal before
         # phase-2.5 execute_signal. Pre-trade snapshots are taken in phase 2.5
@@ -4206,7 +4265,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.29.0",
+            "version": "2.30.0",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

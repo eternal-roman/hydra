@@ -1,0 +1,14 @@
+{
+  "pair": "SOL/USD",
+  "tf": "1h",
+  "tape_candles": 2159,
+  "db_hours": 44516,
+  "overlap_hours": 2159,
+  "bad_hours": 0,
+  "bad_fraction": 0.0,
+  "max_price_rel": 0.0,
+  "median_vol_rel": 0.0,
+  "max_vol_rel": 0.0,
+  "verdict": "PASS",
+  "worst_examples": []
+}
