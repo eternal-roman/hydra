@@ -439,6 +439,109 @@ class TestShellInjection:
         assert "'$(cat /etc/passwd)'" in bash_str
 
 
+class TestPaperArgv:
+    """v2.32: `kraken paper buy|sell` takes VOLUME positionally.
+
+    Hydra previously sent `--volume <V>`, which the CLI rejects (unexpected
+    argument + missing required positional), so every paper order failed at
+    the CLI boundary. Nothing caught it because the whole suite — and the
+    live harness — stubs `KrakenCLI._run`, i.e. above the argv construction.
+    These tests assert on the argv itself, which is the contract that
+    actually has to match upstream (agents/tool-catalog.json).
+    """
+
+    def test_volume_is_positional_not_a_flag(self):
+        args = KrakenCLI._paper_args("buy", "BTC/USD", 0.01, "limit", 50000.0)
+        assert "--volume" not in args, f"--volume is not an upstream flag: {args}"
+        # pair then volume, both positional, immediately after the subcommand
+        assert args[:3] == ["paper", "buy", "BTC/USD"], args
+        assert float(args[3]) == 0.01, args
+
+    def test_limit_order_carries_price(self):
+        args = KrakenCLI._paper_args("sell", "BTC/USD", 0.5, "limit", 70000.0)
+        assert "--type" in args and args[args.index("--type") + 1] == "limit"
+        # upstream rejects --type limit with no --price
+        assert "--price" in args, args
+        assert float(args[args.index("--price") + 1]) == 70000.0
+
+    def test_limit_without_price_degrades_to_market(self):
+        # Rather than emit a guaranteed-invalid `--type limit` with no price.
+        args = KrakenCLI._paper_args("buy", "BTC/USD", 0.01, "limit", None)
+        assert args[args.index("--type") + 1] == "market"
+        assert "--price" not in args, args
+
+    def test_paper_buy_end_to_end_argv(self):
+        _, stub = _with_stub({"status": "success"},
+                             lambda: KrakenCLI.paper_buy("BTC/USD", 0.01,
+                                                         price=50000.0))
+        sent = stub.calls[0]
+        assert "--volume" not in sent, sent
+        assert sent[3] == f"{0.01:.8f}", sent
+
+
+class TestErrorEnvelope:
+    """kraken-cli returns {"error": "<category>", ...} where `error` is a
+    CATEGORY SLUG (AGENTS.md), not a sentence. Hydra must be able to tell a
+    retryable transport blip from a hard validation rejection."""
+
+    def test_upstream_category_marked_retryable(self):
+        from hydra_kraken_cli import _normalize_error
+        out = _normalize_error({"error": "rate_limit", "message": "slow down"})
+        assert out["error"] == "rate_limit"          # unchanged for old callers
+        assert out["error_category"] == "rate_limit"
+        assert out["retryable"] is True
+
+    def test_validation_is_not_retryable(self):
+        from hydra_kraken_cli import _normalize_error
+        out = _normalize_error({"error": "validation", "message": "bad price"})
+        assert out["retryable"] is False
+
+    def test_explicit_retryable_wins_over_category_default(self):
+        from hydra_kraken_cli import _normalize_error
+        out = _normalize_error({"error": "network", "retryable": False})
+        assert out["retryable"] is False
+
+    def test_describe_error_keeps_the_actionable_message(self):
+        from hydra_kraken_cli import _normalize_error, describe_error
+        text = describe_error(_normalize_error(
+            {"error": "validation", "message": "price has too many decimals"}))
+        assert "validation" in text and "too many decimals" in text
+
+    def test_order_placement_is_never_auto_retried(self):
+        # An ambiguous timeout on a placement can double-place; only
+        # read-only commands may be retried.
+        assert KrakenCLI._is_retry_safe(["order", "buy", "BTC/USD", "1"]) is False
+        assert KrakenCLI._is_retry_safe(["order", "cancel", "TX1"]) is False
+        assert KrakenCLI._is_retry_safe(["paper", "buy", "BTC/USD", "1"]) is False
+        assert KrakenCLI._is_retry_safe(["ticker", "BTC/USD"]) is True
+        assert KrakenCLI._is_retry_safe(["balance"]) is True
+        assert KrakenCLI._is_retry_safe(["futures", "tickers"]) is True
+
+
+class TestFreeBalance:
+    """Gross balance counts funds locked behind our own resting post-only
+    orders; sizing against it re-spends committed money."""
+
+    def test_held_is_netted_out(self):
+        data = {"USD": {"balance": "100.0", "hold_trade": "40.0"}}
+        _, _ = _with_stub(data, lambda: None)
+        assert KrakenCLI._extract_free(data["USD"]) == 60.0
+
+    def test_unknown_shape_fails_open_to_none(self):
+        assert KrakenCLI._extract_free({"credit": "5"}) is None
+        assert KrakenCLI._extract_free(None) is None
+
+    def test_plain_scalar_balance_still_parses(self):
+        assert KrakenCLI._extract_free("12.5") == 12.5
+
+    def test_hold_exceeding_balance_floors_at_zero(self):
+        assert KrakenCLI._extract_free({"balance": "1.0", "hold_trade": "5.0"}) == 0.0
+
+    def test_free_balance_returns_empty_on_cli_error(self):
+        result, _ = _with_stub({"error": "auth"}, KrakenCLI.free_balance)
+        assert result == {}
+
+
 # ═══════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════
@@ -459,6 +562,9 @@ def run_tests():
         TestSystemStatus,
         TestFeeTierExtraction,
         TestShellInjection,
+        TestPaperArgv,
+        TestErrorEnvelope,
+        TestFreeBalance,
     ]
 
     for cls in test_classes:

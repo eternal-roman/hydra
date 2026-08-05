@@ -88,7 +88,7 @@ jobs:
         run: python tests/test_covariance.py
 
       - name: Run companion mode-label scrub tests (prevent internal labels leaking to users)
-        run: python tests/test_companion_mode_scrub.py
+        run: python -m pytest tests/test_companion_mode_scrub.py -v
 
       - name: Run backtest engine tests
         run: python -m pytest tests/test_backtest_engine.py -v
@@ -198,6 +198,14 @@ jobs:
 
       - name: Run portfolio-edge tests (bridge drain policy, auto pairs, per-quote pools)
         run: python -m pytest tests/test_bridge_policy.py tests/test_portfolio_auto.py tests/test_candle_relay.py tests/test_trend_overlay.py -v
+
+      # Catch-all. The named steps above are a hand-maintained list, so any
+      # test file not added to it was invisible to CI — that silently excluded
+      # the grep-guards enforcing "research surfaces never place orders"
+      # (test_s3_shadow.py, test_heartbeat_surface.py) among others. This step
+      # runs the whole tree so a new test file is covered by default.
+      - name: Run full test suite (catch-all — every file under tests/)
+        run: python -m pytest tests/ -q
 
       - name: Run go-live plumbing gates (sqlite required; skip if absent)
         run: |

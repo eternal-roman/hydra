@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python C:/Users/elamj/Dev/Hydra/.claude/hooks/post-edit.py"
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post-edit.py\""
           }
         ]
       }

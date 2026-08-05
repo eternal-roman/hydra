@@ -67,7 +67,7 @@ try:
 except ImportError:
     HAS_BRAIN = False
 
-from hydra_kraken_cli import KrakenCLI
+from hydra_kraken_cli import KrakenCLI, describe_error
 from hydra_pair_registry import STABLE_QUOTES
 from hydra_config import TradingTriangle
 from hydra_ws_server import DashboardBroadcaster
@@ -1292,6 +1292,21 @@ class HydraAgent:
                 # until the first tick's _refresh_tradable_flags() self-corrected.
                 self._cached_balance = bal
 
+                # Spendable (hold-netted) view, used only for sizing decisions.
+                # `_cached_balance` stays GROSS because equity, peak-equity and
+                # drawdown must count funds locked in resting orders as ours.
+                if not self.paper:
+                    self._cached_free_balance = KrakenCLI.free_balance()
+                    if self._cached_free_balance:
+                        held = {
+                            a: bal.get(a, 0.0) - self._cached_free_balance.get(a, 0.0)
+                            for a in bal
+                            if bal.get(a, 0.0) - self._cached_free_balance.get(a, 0.0) > 0
+                        }
+                        if held:
+                            print(f"  [HYDRA]   held in open orders: "
+                                  + ", ".join(f"{a} {v:.8f}" for a, v in held.items()))
+
                 if not self.paper:
                     # Compute tradable USD balance (excludes staked/bonded assets)
                     breakdown = self._compute_balance_usd(bal)
@@ -2295,6 +2310,27 @@ class HydraAgent:
                             quant_output=quant_out_for_rules,
                             quant_indicators=state.get("quant_indicators") or None,
                         )
+                        # The rules were re-scored for the NEW direction, so
+                        # the new size multiplier REPLACES the old one — the
+                        # old value was computed for the opposite side and is
+                        # meaningless here. Previously only force_hold was
+                        # consumed and rr2.size_multiplier was dropped, so an
+                        # engine SELL that the brain OVERRODE to BUY executed
+                        # at the SELL's multiplier: e.g. R8's contrarian ×1.15
+                        # instead of R3×R5's ×0.35 for a short squeeze in
+                        # euphoric contango — 3.3x the size the rules mandate,
+                        # buying into exactly the setup they were guarding.
+                        rules_size_mult = rr2.size_multiplier
+                        rules_triggered = [{
+                            "rule_id": f.rule_id, "name": f.name,
+                            "effect": f.effect, "size_mult": f.size_mult,
+                            "reason": f.reason,
+                        } for f in rr2.triggered]
+                        final_size_multiplier = max(
+                            0.0, min(1.5, brain_size * rules_size_mult))
+                        state["ai_decision"]["size_multiplier"] = final_size_multiplier
+                        state["ai_decision"]["size_multiplier_rules"] = rules_size_mult
+                        state["ai_decision"]["rules_triggered"] = rules_triggered
                         if rr2.force_hold:
                             rules_force_hold = True
                             rules_force_hold_reason = rr2.force_hold_reason
@@ -2304,18 +2340,11 @@ class HydraAgent:
                                 f"[QUANT RULES FORCE_HOLD post-OVERRIDE] "
                                 f"{rr2.force_hold_reason}"
                             )
-                            for f in rr2.triggered:
-                                rules_triggered.append({
-                                    "rule_id": f.rule_id, "name": f.name,
-                                    "effect": f.effect, "size_mult": f.size_mult,
-                                    "reason": f.reason,
-                                })
                             state["ai_decision"]["rules_force_hold"] = True
                             state["ai_decision"]["rules_force_hold_reason"] = (
                                 rr2.force_hold_reason
                             )
                             state["ai_decision"]["size_multiplier"] = 0.0
-                            state["ai_decision"]["rules_triggered"] = rules_triggered
                     except Exception as re2:
                         print(f"  [QUANT RULES] post-OVERRIDE re-apply error "
                               f"({type(re2).__name__}: {re2})")
@@ -2848,6 +2877,10 @@ class HydraAgent:
         action_upper = trade["action"].upper()
         action = action_upper.lower()
         entry = self._build_journal_entry(pair, trade, state)
+        # Resolved up front: `kraken paper buy|sell --type limit` requires
+        # --price upstream, so the price has to reach the CLI call, not just
+        # the synthetic fill below.
+        limit_price = entry["intent"]["limit_price"] or float(trade.get("price") or 0)
 
         if getattr(self, "demo", False):
             print(f"  [DEMO] Placing {action_upper} {amount:.8f} {pair} (synthetic fill)...")
@@ -2855,11 +2888,14 @@ class HydraAgent:
             time.sleep(KRAKEN_REST_FLOOR_S)
             print(f"  [PAPER] Placing {action_upper} {amount:.8f} {pair} (paper limit)...")
             if action == "buy":
-                result = KrakenCLI.paper_buy(pair, amount, order_type="limit")
+                result = KrakenCLI.paper_buy(pair, amount, order_type="limit",
+                                             price=limit_price)
             else:
-                result = KrakenCLI.paper_sell(pair, amount, order_type="limit")
+                result = KrakenCLI.paper_sell(pair, amount, order_type="limit",
+                                              price=limit_price)
             if "error" in result:
-                print(f"  [PAPER] FAILED: {result['error']}")
+                detail = describe_error(result) or str(result.get("error"))
+                print(f"  [PAPER] FAILED: {detail}")
                 self._finalize_failed_entry(
                     entry, terminal_reason=f"paper_failed:{result['error']}",
                 )
@@ -2882,7 +2918,6 @@ class HydraAgent:
             engine_ref=self.engines[pair],
             pre_trade_snapshot=state.get("_pre_trade_snapshot") if isinstance(state, dict) else None,
         )
-        limit_price = entry["intent"]["limit_price"] or float(trade.get("price") or 0)
         # Paper fee-true (v2.27): inject Kraken base maker tier (16 bps) so
         # paper PnL matches live/backtest accounting instead of fee-free fills.
         notional = float(amount) * float(limit_price or 0.0)
@@ -3669,15 +3704,31 @@ class HydraAgent:
         return prices
 
     def _get_real_quote_balance(self, quote: str) -> Optional[float]:
-        """Return the actual exchange balance for a quote currency.
+        """Return the SPENDABLE exchange balance for a quote currency.
 
-        Prefers the real-time BalanceStream; falls back to the cached REST
-        balance from startup.  Returns None only if no balance data is
-        available at all (should not happen after warmup).
+        Source order: real-time BalanceStream (already hold-netted) → the
+        hold-netted REST snapshot from startup → the gross REST snapshot.
+        Returns None only if no balance data is available at all (should not
+        happen after warmup).
+
+        "Spendable" means net of funds locked behind our own resting
+        post-only orders. Gross balance double-counts them, which is what
+        drove the `PLACEMENT_FAILED: insufficient_<quote>_balance` loop: the
+        sizer re-committed money an unfilled order already owned. Equity and
+        drawdown deliberately do NOT use this — they read `_cached_balance`,
+        because held funds are still ours.
+
+        Falling through to the gross snapshot is intentional: an unavailable
+        hold feed reproduces pre-v2.32 behavior rather than blocking trading.
         """
         bal = None
         if not self.paper and self.balance_stream.healthy:
-            bal = self.balance_stream.latest_balances()
+            # FREE view: gross minus funds held in resting orders.
+            bal = self.balance_stream.latest_free_balances()
+            if not bal:
+                bal = self.balance_stream.latest_balances()
+        if not bal:
+            bal = getattr(self, "_cached_free_balance", None)
         if not bal:
             bal = getattr(self, "_cached_balance", None)
         if not bal:

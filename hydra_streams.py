@@ -468,6 +468,7 @@ class BalanceStream(BaseStream):
     def __init__(self, paper: bool = False):
         super().__init__(paper=paper)
         self._balances: Dict[str, float] = {}
+        self._free: Dict[str, float] = {}
 
     def _build_cmd(self) -> str:
         return "exec kraken ws balances -o json --snapshot true"
@@ -506,16 +507,47 @@ class BalanceStream(BaseStream):
                 # Malformed balance value — skip this entry rather than crash
                 # the reader thread (which would force a stream restart).
                 continue
+            # `balance` is GROSS: it still counts quote currency locked behind
+            # our own resting post-only orders. Track the hold separately so
+            # callers can pick the right one — equity/drawdown need GROSS
+            # (held funds are still ours), sizing needs FREE (held funds are
+            # already committed). Absent/unparseable hold ⇒ free == gross.
+            free = bal
+            for _hk in KrakenCLI._HELD_KEYS:
+                if _hk in entry:
+                    try:
+                        free = max(0.0, bal - max(0.0, float(entry[_hk])))
+                    except (TypeError, ValueError):
+                        free = bal
+                    break
             with self._lock:
                 if bal > 0:
                     self._balances[normalized] = bal
                 else:
                     self._balances.pop(normalized, None)
+                if free > 0:
+                    self._free[normalized] = free
+                else:
+                    self._free.pop(normalized, None)
 
     def latest_balances(self) -> Dict[str, float]:
-        """Return {asset: amount} for non-zero currency balances."""
+        """Return {asset: amount} for non-zero GROSS currency balances.
+
+        Gross on purpose: equity, peak equity and the portfolio drawdown
+        breaker must count funds locked in resting orders as ours. Use
+        `latest_free_balances()` for anything that decides how much to spend.
+        """
         with self._lock:
             return dict(self._balances)
+
+    def latest_free_balances(self) -> Dict[str, float]:
+        """Return {asset: spendable} — gross minus funds held in open orders.
+
+        Empty when the feed has pushed nothing yet; callers fall back to the
+        gross view, which is the pre-v2.32 behavior.
+        """
+        with self._lock:
+            return dict(self._free)
 
 
 # ═══════════════════════════════════════════════════════════════

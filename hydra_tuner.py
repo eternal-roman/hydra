@@ -310,7 +310,14 @@ class ParameterTracker:
             tuner's own observation-driven updates. External bumps are
             tracked per-apply via the returned dict.
         """
-        self._param_history.append(dict(self.current_params))
+        # Snapshot BEFORE mutating, but do not commit it to the history deque
+        # until we know something was applied. `_param_history` has maxlen=1,
+        # so appending up front EVICTED the previous snapshot; the pop() in the
+        # nothing-applied branch below then left the deque empty and
+        # rollback_to_previous() returned False with params stuck at the last
+        # applied value. A no-op call (unknown key, empty dict) destroyed the
+        # rollback point it was never supposed to touch.
+        prev_params = dict(self.current_params)
 
         applied: Dict[str, float] = {}
         skipped: List[str] = []
@@ -332,11 +339,9 @@ class ParameterTracker:
             applied[key] = clamped
 
         if applied:
+            self._param_history.append(prev_params)
             self._save()
-        else:
-            # Nothing applied — don't bloat history with a dead snapshot
-            if self._param_history:
-                self._param_history.pop()
+        # Nothing applied — leave the existing rollback point untouched.
 
         return {
             "applied": applied,
