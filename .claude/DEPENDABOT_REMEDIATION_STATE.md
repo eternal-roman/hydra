@@ -38,8 +38,8 @@ a stashed baseline if unsure.
 | 176 | websockets `>=16.1` → `>=16.1.1` | pip | SAFE | **MERGED** `a972947` |
 | 179 | anthropic `>=0.116.0` → `>=0.120.2` | pip | SAFE | **MERGED** `eb098e8` |
 | 181 | openai `>=2.46.0` → **`>=2.52.0`** | pip | SAFE | **MERGED** `40acffa` |
-| 177 | bcrypt `<4.0` → `<5.0` | pip | SAFE (comment fix + manual conflict resolve `220bfb1`) | conflict resolved, CI running, NEEDS RE-APPROVAL |
-| 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | SAFE | PENDING |
+| 177 | bcrypt `<4.0` → `<5.0` | pip | SAFE (comment fix + manual conflict resolve) | **MERGED** `eb5c3e7` |
+| 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | SAFE | approved, branch refreshed, CI running |
 | 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — **merge before 171** | PENDING |
 | 171 | react 19.2.7 → 19.2.8 | npm | needs rebase after 174 | PENDING |
 | 180 | eslint 10.7.0 → 10.8.0 | npm dev | SAFE | PENDING |
