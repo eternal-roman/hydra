@@ -40,10 +40,28 @@ a stashed baseline if unsure.
 | 181 | openai `>=2.46.0` → **`>=2.52.0`** | pip | SAFE | **MERGED** `40acffa` |
 | 177 | bcrypt `<4.0` → `<5.0` | pip | SAFE (comment fix + manual conflict resolve) | **MERGED** `eb5c3e7` |
 | 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | SAFE | **MERGED** `ffffeb2` |
-| 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — **merge before 171** | approved, branch refreshed, CI running |
-| 171 | react 19.2.7 → 19.2.8 | npm | needs rebase after 174 | PENDING |
-| 180 | eslint 10.7.0 → 10.8.0 | npm dev | SAFE | PENDING |
+| 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — merged before 171 | **MERGED** `6a4201e` |
+| 171 | react 19.2.7 → 19.2.8 | npm | superseded by 174 | **CLOSED by Dependabot** (not merged) — see below |
+| 180 | eslint 10.7.0 → 10.8.0 | npm dev | SAFE | approved, branch refreshed, CI running |
 | 182 | globals 17.7.0 → 17.8.0 | npm dev | SAFE | PENDING |
+
+### PR 171 outcome — closed, not merged (this is correct)
+
+Dependabot auto-closed 171 at 23:18:59, seconds after 174 merged, having
+detected it was superseded. Confirmed on `origin/main`:
+
+```
+package-lock.json: node_modules/react 19.2.8, node_modules/react-dom 19.2.8  ✅ coherent
+package.json:      "react": "^19.2.4",  "react-dom": "^19.2.8"              ⚠ floors differ
+```
+
+react 19.2.8 IS in main — it arrived inside 174's lockfile, which is exactly
+why 174 had to go first. **No action needed for correctness**; the `^19.2.4`
+caret already resolves 19.2.8.
+
+Residual cosmetic nit: the two declared floors disagree. Tidied on the audit
+branch (`react` → `^19.2.8`) so a future reader doesn't think react is pinned
+a patch behind react-dom.
 
 ### Merge mechanics (learned the hard way — read before resuming)
 
