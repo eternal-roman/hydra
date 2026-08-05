@@ -1,10 +1,16 @@
 # Runtime + CI pins for HYDRA (stdlib-first engine; these are agent/dashboard deps).
-# bcrypt<4.0 — passlib 1.7.4 reads bcrypt.__about__ which was removed in bcrypt 4.x.
-anthropic>=0.116.0,<1.0
-openai>=2.46.0,<3.0
+# bcrypt<5.0 — passlib 1.7.4 is unmaintained and DIES on bcrypt 5.x: its
+# detect_wrap_bug() probe at backend init raises "ValueError: password cannot
+# be longer than 72 bytes", so the first CryptContext hash/verify fails and
+# auth is dead. The <5.0 ceiling is LOAD-BEARING — do not raise it without
+# replacing passlib. (On bcrypt 4.x passlib also logs a trapped
+# "error reading bcrypt version" from the removed __about__ attribute; that
+# one is harmless and is NOT the reason for the pin.)
+anthropic>=0.120.2,<1.0
+openai>=2.52.0,<3.0
 pytest>=9.1.1
 PyJWT>=2.13.0
 cryptography>=49.0.0
 passlib[bcrypt]>=1.7.4
-bcrypt<4.0
-websockets>=16.1
+bcrypt<5.0
+websockets>=16.1.1
