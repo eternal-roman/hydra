@@ -245,9 +245,16 @@ jobs:
         with:
           node-version: "22"
 
+      # `npm ci`, not `npm install`: install RE-RESOLVES from the package.json
+      # ranges, so a stale or internally inconsistent package-lock.json still
+      # builds green and CI can never detect it. That is exactly how a
+      # react-without-react-dom bump could have gone green here while
+      # `npm run dev` threw "Incompatible React versions" — the lockfile was
+      # incoherent but install quietly re-resolved past it. `npm ci` installs
+      # the lockfile verbatim and fails if it disagrees with package.json.
       - name: Install dependencies
         working-directory: dashboard
-        run: npm install
+        run: npm ci
 
       - name: Build dashboard
         working-directory: dashboard

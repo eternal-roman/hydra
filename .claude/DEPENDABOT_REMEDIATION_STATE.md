@@ -43,7 +43,38 @@ a stashed baseline if unsure.
 | 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — merged before 171 | **MERGED** `6a4201e` |
 | 171 | react 19.2.7 → 19.2.8 | npm | superseded by 174 | **CLOSED by Dependabot** (not merged) — see below |
 | 180 | eslint 10.7.0 → 10.8.0 | npm dev | SAFE | **MERGED** `4e8ea9d` |
-| 182 | globals 17.7.0 → 17.8.0 | npm dev | SAFE | approved, branch refreshed, CI running — LAST ONE |
+| 182 | globals 17.7.0 → **17.9.0** | npm dev | SAFE | **MERGED** `37f624f` |
+
+## ✅ COMPLETE — all 10 resolved (9 merged, 1 correctly closed as superseded)
+
+Final `origin/main` state, verified:
+
+```
+requirements.txt: anthropic>=0.120.2  openai>=2.52.0  bcrypt<5.0  websockets>=16.1.1
+package-lock:     react 19.2.8  react-dom 19.2.8  eslint 10.8.0  globals 17.9.0
+                  @vitejs/plugin-react 6.0.4
+```
+
+Post-merge verification on the audit branch (main merged in):
+- `pip install -r requirements.txt` → resolves anthropic 0.120.2, openai 2.53.0,
+  bcrypt 4.3.0, websockets 17.0.1, PyYAML 6.0.1
+- `pytest tests/` → **1435 passed, 2 skipped, 0 failed**
+- `harness --mode mock` → **36/36, exit 0**; `--mode smoke` → exit 0
+- `npm ci` → exit 0 · `npm run build` → exit 0 · `npm run lint` → exit 0
+- `check_release_alignment.py` → `OK: all sites aligned`
+
+**There were never any CI failures.** All 10 PRs were green on all 4 required
+checks from the start. The real blockers were governance (code-owner review)
+and staleness (up-to-date-branch enforcement), plus two genuine content issues
+found by review: the misleading bcrypt rationale and the react/react-dom
+ordering hazard.
+
+### Two PRs silently changed scope mid-flight
+Dependabot refreshed both while the sequence was running, so the merged version
+differs from the PR title. The merge commits record the REAL version:
+- **181**: title says openai `>=2.49.0`; actually merged **`>=2.52.0`**
+- **182**: title says globals `17.8.0`; actually merged **`17.9.0`**
+Always re-read the branch before merging; do not trust the PR title.
 
 ### PR 171 outcome — closed, not merged (this is correct)
 
