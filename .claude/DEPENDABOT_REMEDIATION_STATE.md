@@ -51,8 +51,19 @@ a stashed baseline if unsure.
   every npm PR edits `dashboard/package.json` + `package-lock.json`. After each
   merge the remaining same-ecosystem PRs go stale/conflicted. Expect to trigger
   a dependabot rebase (`@dependabot rebase`) or resolve manually.
-- **react + react-dom must move together** (171 + 174) — mismatched versions are
-  a runtime hazard.
+- **react + react-dom: CORRECTED.** An earlier note here claimed they "cannot
+  land mismatched". That is WRONG and a reviewer trusting it would wave PR 171
+  through alone. `npm install` happily accepts react 19.2.8 against react-dom
+  19.2.7's `^19.2.7` peer. PR 171's own lockfile leaves react-dom at 19.2.7,
+  so merging 171 FIRST yields an incoherent tree that throws "Incompatible
+  React versions" in `npm run dev` — while CI stays GREEN, because
+  `.github/workflows/ci.yml` `dashboard-build` runs `npm install` (which
+  re-resolves from ranges) rather than `npm ci` (which honours the lockfile).
+  ⇒ Merge **174 before 171**. 174's lockfile carries react 19.2.8 with it, so
+  one merge lands both coherently.
+  ⇒ Separate follow-up worth doing: change `dashboard-build` to `npm ci` so CI
+  can actually detect a stale/incoherent lockfile. This is the structural gap
+  the split PR exposed.
 - **My audit branch also edits `requirements.txt`** (adds PyYAML). It will need a
   merge from main after these land.
 
@@ -95,8 +106,56 @@ a stashed baseline if unsure.
 - [x] **Fixed 2 pre-existing lint errors** (`App.jsx` optional catch binding,
       `catch (_)` → `catch`). Present at eslint 10.7.0 too, so not caused by
       PR 180; lint is not in CI, but it is now green either way.
-- [ ] Await parallel per-dependency assessment workflow (changelog/breaking-change review)
-- [ ] Merge in sequence
+- [x] **CI status checked on ALL 10 PRs — every one is GREEN.** 4/4 real checks
+      pass on each (`Engine Tests (Python)` 3.10/3.11/3.12 + `Dashboard Build
+      (Node)`). `CodeQL` reports `neutral` on all of them, which is "nothing to
+      analyse" for a deps-only diff, not a failure. **There were no CI failures
+      to repair.**
+      Caveat: those runs used main's ci.yml, which does NOT yet contain the
+      catch-all `pytest tests/` step or `pyyaml` (both on the audit branch).
+- [ ] Await parallel per-dependency assessment workflow (changelog review;
+      the one genuine open risk is setup-python v7 vs the 3.10/3.11/3.12 matrix)
+- [ ] **BLOCKED ON USER — merge cannot proceed.**
+      `POST /pulls/176/merge` → `405 Waiting on code owner review from
+      eternal-roman`. `.github/CODEOWNERS` is `* @eternal-roman` and branch
+      protection enforces code-owner review. The session token's identity IS
+      `eternal-roman` (verified via get_me), so an approving review COULD be
+      submitted — but that would be Claude self-approving as the sole code
+      owner, defeating the exact control the owner configured. Asked the user
+      to either approve the PRs themselves or explicitly authorise Claude to
+      submit the approvals. **Do not self-approve without that authorisation.**
+
+## APPROVED MERGE ORDER (all assessments complete — every PR verdict SAFE)
+
+Execute top to bottom. Each step: confirm CI green, merge (squash), move on.
+
+| # | PR | Why here |
+|---|---|---|
+| 1 | **172** setup-python v6→v7 | Only GH-Actions PR; shares no files with any other, cannot conflict. First so every later PR's CI exercises v7. v7 supports 3.10/3.11/3.12 — matrix safe. |
+| 2 | **176** websockets | pip, isolated line in requirements.txt. |
+| 3 | **179** anthropic | pip. Verified: SDK surface used is client ctor, messages.create, content/stop_reason/usage — all intact in 0.120.2; changelog range is purely additive. |
+| 4 | **181** openai | pip. Used only as an OpenAI-compatible client for xAI/Grok via custom base_url; nothing in 2.46→2.49 touches it. |
+| 5 | **177** bcrypt `<5.0` | pip. **Push the comment correction to the branch BEFORE merging** (see below). |
+| 6 | **173** @vitejs/plugin-react | npm, fully independent of the react pair; land before the react conflicts start. |
+| 7 | **174** react-dom | **load-bearing** — its lockfile carries react 19.2.8 too, so this one merge lands both coherently. |
+| 8 | **171** react | **ONLY after 174**, and it will conflict → comment `@dependabot rebase`. Post-rebase it is cosmetic (caret floor ^19.2.4 → ^19.2.8). If Dependabot closes it as superseded, that is fine. |
+| 9 | **180** eslint | npm devDep. |
+| 10 | **182** globals | npm devDep; adjacent to 180 to minimise rebase churn. |
+
+Every pip PR edits requirements.txt on a DIFFERENT line, so 176/179/181/177
+should auto-merge without conflict. The npm PRs all edit package-lock.json and
+WILL go stale after each merge — expect `@dependabot rebase` on each survivor.
+
+### Required edit before merging PR 177
+
+`requirements.txt` currently reads:
+`# bcrypt<4.0 — passlib 1.7.4 reads bcrypt.__about__ which was removed in bcrypt 4.x`
+That reason is now WRONG (the `__about__` error is trapped and harmless) and it
+would mislead a reviewer into approving a future `<6.0` bump. Replace with:
+`# bcrypt<5.0 — passlib 1.7.4 is unmaintained and DIES on bcrypt 5.x:`
+`# its detect_wrap_bug() probe at backend init raises`
+`# "ValueError: password cannot be longer than 72 bytes". The <5.0 ceiling is`
+`# load-bearing — do not raise it without replacing passlib.`
 
 ## Local env setup needed to reproduce (fresh container)
 
