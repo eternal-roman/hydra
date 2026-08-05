@@ -42,8 +42,8 @@ a stashed baseline if unsure.
 | 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | SAFE | **MERGED** `ffffeb2` |
 | 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — merged before 171 | **MERGED** `6a4201e` |
 | 171 | react 19.2.7 → 19.2.8 | npm | superseded by 174 | **CLOSED by Dependabot** (not merged) — see below |
-| 180 | eslint 10.7.0 → 10.8.0 | npm dev | SAFE | approved, branch refreshed, CI running |
-| 182 | globals 17.7.0 → 17.8.0 | npm dev | SAFE | PENDING |
+| 180 | eslint 10.7.0 → 10.8.0 | npm dev | SAFE | **MERGED** `4e8ea9d` |
+| 182 | globals 17.7.0 → 17.8.0 | npm dev | SAFE | approved, branch refreshed, CI running — LAST ONE |
 
 ### PR 171 outcome — closed, not merged (this is correct)
 
@@ -94,10 +94,13 @@ Side effect of that rebase: 181 now bumps openai to **`>=2.52.0`**, not the
 that branch — 14 fewer than main's 1435 only because the audit branch's new
 tests aren't there).
 
-**ANY push to a PR branch dismisses the approval.** Stale-review dismissal is
-enabled, so after a Dependabot rebase OR after you push your own commit, the
-merge fails with `405 Waiting on code owner review`. **Re-approve after the
-final push, then merge.** Hit this on both 181 and 177.
+**ANY new commit on a PR branch dismisses the approval** — including the merge
+commit that `update_pull_request_branch` itself creates, not just Dependabot
+rebases or your own pushes. Stale-review dismissal is enabled, so the merge
+fails with `405 Waiting on code owner review`. Hit this on 181, 177 and 180.
+**Simplest reliable order: refresh branch → wait for CI → approve → merge.**
+(Approving first sometimes survives and sometimes doesn't, depending on how
+long the refresh takes; approving last always works.)
 
 **Once you push your own commit to a Dependabot branch, Dependabot stops
 rebasing it** — 177 carried a hand-written comment-fix commit, so its conflict
