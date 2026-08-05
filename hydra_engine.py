@@ -2561,8 +2561,35 @@ class HydraEngine:
         self.loss_count = int(snapshot.get("loss_count", 0))
         self.total_trades = int(snapshot.get("total_trades", 0))
         self.tick_count = int(snapshot.get("tick_count", 0))
+        # Circuit-breaker halt survives --resume by design (a breach is not
+        # erased by a restart), but it is a ONE-WAY RATCHET: nothing outside
+        # __init__ ever sets it back to False. Production runs
+        # `--mode competition --resume` (start_hydra.bat), so a single 15%
+        # drawdown silently disabled all new BUYs across every future session
+        # forever, with no log line saying why and no documented way out.
+        # SELL/flatten kept working, so the operator saw a bot that had quietly
+        # stopped entering rather than an obviously broken one.
+        #
+        # HYDRA_RESET_CIRCUIT_BREAKER=1 is that way out — a deliberate,
+        # explicit operator act, read once at resume. It clears the halt flag
+        # ONLY; peak_equity and max_drawdown are untouched above, so the
+        # drawdown record is preserved and the breaker re-arms immediately if
+        # the account is still underwater. Auto-clearing on resume would silently
+        # re-enable risk after a breach, which is the one thing the breaker exists
+        # to prevent.
         self.halted = bool(snapshot.get("halted", False))
         self.halt_reason = str(snapshot.get("halt_reason", ""))
+        if self.halted and os.environ.get("HYDRA_RESET_CIRCUIT_BREAKER") == "1":
+            print(f"  [ENGINE] {self.asset}: circuit breaker CLEARED by "
+                  f"HYDRA_RESET_CIRCUIT_BREAKER=1 (was: {self.halt_reason[:60]}). "
+                  f"Drawdown history preserved; breaker re-arms on the next breach.")
+            self.halted = False
+            self.halt_reason = ""
+        elif self.halted:
+            print(f"  [ENGINE] {self.asset}: RESUMED STILL HALTED — new BUYs "
+                  f"blocked, SELL/flatten still allowed. Reason: "
+                  f"{self.halt_reason[:80]}. Set HYDRA_RESET_CIRCUIT_BREAKER=1 "
+                  f"to clear once you have reviewed the drawdown.")
         self.gross_profit = float(snapshot.get("gross_profit", 0.0))
         self.gross_loss = float(snapshot.get("gross_loss", 0.0))
         self.equity_history = list(snapshot.get("equity_history", []))

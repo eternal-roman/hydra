@@ -6,6 +6,98 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.32.0] — 2026-08-05
+
+Resilience release. Five defects that each ended with the agent quietly not
+trading — or trading on corrupted numbers — while looking healthy in the log.
+All were found by the 7-way audit sweep and verified before fixing.
+
+### Fixed — the agent silently stops working
+
+- **A dead CandleStream permanently wedged the tick loop.**
+  `_fetch_and_tick` returns `None` in live mode when the candle stream is
+  unhealthy, and the caller stores that `None` under the pair key.
+  `_build_portfolio_review_state` read it with `engine_states.get(pair, {})` —
+  which does NOT apply its default, because the key exists — and raised
+  `AttributeError` on the next `.get()`. That was not a one-tick blip: the
+  crash fired *before* the stream `ensure_healthy()` block later in the same
+  try body, so the dead stream was never restarted and every subsequent tick
+  died at the same line. No signals, no placements, and **no exits** — not even
+  circuit-breaker flattens. Fixed with `or {}`, and stream recovery moved into
+  the tick's `finally` so it can never again be gated on the rest of the tick
+  succeeding (each `ensure_healthy()` individually wrapped so one stream's
+  failure cannot block the others).
+- **The 15% circuit breaker was a permanent one-way ratchet.** `halted`
+  restores from the snapshot and nothing outside `__init__` ever cleared it;
+  `_portfolio_max_drawdown_pct` is a running max, so the portfolio halt
+  re-armed on every future resume. Production runs `--mode competition
+  --resume`, so a single breach disabled all new BUYs across every future
+  session forever, with no log line explaining why — SELL kept working, so the
+  bot looked alive while it had quietly stopped entering. CLAUDE.md described
+  this as "for session". Both halts now print a RESUMED-STILL-HALTED banner at
+  boot and are cleared by an explicit `HYDRA_RESET_CIRCUIT_BREAKER=1`, which
+  clears the flag only — the drawdown record is preserved so the breaker
+  re-arms immediately if still underwater. Deliberately NOT auto-cleared:
+  that would silently re-enable risk after a breach.
+
+### Fixed — corrupted execution accounting
+
+- **ExecutionStream double-folded replayed fills after a subprocess restart.**
+  The stream runs with `--snap-trades true` and `_on_start_reset` deliberately
+  preserves `_known_orders` so in-flight orders can still finalize. Those two
+  correct behaviours combined into double-counting: a 0.4 fill replayed after a
+  restart pushed `vol_exec_running` to 0.8, so a fully-filled 1.0 order
+  reported 1.4 — classified `PARTIALLY_FILLED` instead of `FILLED` (tolerance
+  is 1e-6), booked more inventory than was bought via
+  `reconcile_partial_fill`, produced a garbage cost-weighted `avg_fill_price`,
+  and debited roughly double the real fee from engine cash. Now deduped on
+  `exec_id` (Kraken's per-execution primary key), with a clamp to
+  `placed_amount` for entries that carry no `exec_id`.
+- **Unsellable dust looped forever and stranded inventory.** When the exchange
+  balance for a base asset fell below `ordermin`, the SELL preflight journalled
+  a failure and rolled the engine back — leaving the engine still believing it
+  held a sellable position, so every subsequent tick rebuilt the entry,
+  re-failed, and appended another `PLACEMENT_FAILED`, indefinitely. PR-C's
+  `write_off_dust()` never fired here because it keys off the *engine's* book,
+  not the engine-vs-exchange divergence that actually detects this. Now written
+  off so the engine returns to flat. **Staked holdings are excluded**:
+  `_get_real_quote_balance` skips staked assets by design, so a fully-staked
+  position reads 0.0 and would otherwise have been written off as dust —
+  destroying a real, recoverable position from our books. New
+  `_get_staked_balance` tells the two apart and surfaces the staked case
+  instead.
+
+### Fixed — guardrails that were not guarding
+
+- **R1-R11 and QFE did not run at all without an LLM key.** `hydra_quant_rules`
+  describes itself as "the guardrails the LLMs cannot talk around", but every
+  call to `apply_rules` / `evaluate_qfe` lived inside `_apply_brain`, which
+  returns immediately when `self.brain is None`. So on any deployment with an
+  unset or expired `ANTHROPIC_API_KEY` — or a `HydraBrain` constructor that
+  raised and was swallowed — the entire deterministic stack was inert while the
+  DerivativesStream kept feeding live funding/OI/CVD to the dashboard. Funding
+  could sit at +140 bps with R1 never firing; the feed could go dark entirely
+  and R10's blackout never fire. Nothing printed to say so. Added
+  `_apply_quant_guardrails`, a brain-free path called from the tick loop for
+  any actionable signal when no brain is configured. Deliberately additive —
+  the brain-present path is untouched. `positioning_bias` is `""`, so R8's
+  contrarian boost cannot fire (the same degradation already documented for the
+  fallback path), and `HYDRA_QUANT_INDICATORS_DISABLED=1` still skips it. Boot
+  now prints which guardrail layer is live.
+
+### Tests
+
+`tests/test_guardrails_resilience.py` — 15 cases, each paired with a negative
+control where one exists (benign funding must still let a BUY through; only the
+exact `=1` opt-in clears the halt; distinct `exec_id`s must still accumulate).
+The audit that produced these fixes also found tests that could not fail, so
+these were written to be falsifiable.
+
+Verified: `pytest tests/` **1450 passed, 0 failed**; `harness --mode mock`
+**36/36**; dashboard build + lint exit 0.
+
+---
+
 ## [Unreleased]
 
 kraken-cli contract re-alignment plus the money-path fixes found by the

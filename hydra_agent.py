@@ -393,6 +393,19 @@ class HydraAgent:
                 print(f"  [QUANT] DerivativesStream init failed ({type(e).__name__}: {e}); quant indicators disabled")
                 self.derivatives_stream = None
 
+        # State the guardrail posture out loud at boot. Running without an LLM
+        # is a supported configuration, but before v2.32 it ALSO silently
+        # disabled R1-R11 and QFE (they only ran inside _apply_brain), and
+        # nothing said so. An operator watching live funding/OI scroll past on
+        # the dashboard had every reason to assume the rules keyed off those
+        # numbers were active. They now are — say which layer is live.
+        if os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1":
+            print("  [QUANT] R1-R11 + QFE DISABLED via HYDRA_QUANT_INDICATORS_DISABLED=1")
+        elif not self.brain:
+            print("  [QUANT] R1-R11 + QFE active (deterministic guardrails only — "
+                  "no LLM configured; R8 contrarian boost needs positioning_bias "
+                  "and will not fire)")
+
         # ─── Companion subsystem (v2.10.3+) ────────────────────────────
         # Strictly additive. Off unless HYDRA_COMPANION_ENABLED=1.
         # Kill switch: HYDRA_COMPANION_DISABLED=1 wins over all.
@@ -1089,9 +1102,28 @@ class HydraAgent:
                 self._portfolio_max_drawdown_pct = float(pdd.get("max_pct", 0.0))
                 # Re-arm sticky portfolio BUY halt if session already breached 15%.
                 # getattr: tests may construct via __new__ without __init__.
+                #
+                # `_portfolio_max_drawdown_pct` is MONOTONE (a running max), so
+                # once it crosses the breaker it can never fall back below it —
+                # this re-arm therefore fires on every future resume forever.
+                # Same one-way ratchet as the per-engine halt; same escape hatch,
+                # read once here. The drawdown record itself is never reset, so
+                # the breaker re-arms on the next real breach.
                 cb = float(getattr(self, "PORTFOLIO_CIRCUIT_BREAKER_PCT", 15.0))
                 if self._portfolio_max_drawdown_pct >= cb:
-                    self._portfolio_buy_halted = True
+                    if os.environ.get("HYDRA_RESET_CIRCUIT_BREAKER") == "1":
+                        print(f"  [HYDRA] Portfolio circuit breaker CLEARED by "
+                              f"HYDRA_RESET_CIRCUIT_BREAKER=1 (recorded max DD "
+                              f"{self._portfolio_max_drawdown_pct:.2f}% >= {cb:.1f}%). "
+                              f"Drawdown history preserved.")
+                        self._portfolio_buy_halted = False
+                    else:
+                        self._portfolio_buy_halted = True
+                        print(f"  [HYDRA] RESUMED WITH PORTFOLIO BUY HALT ACTIVE — "
+                              f"recorded max DD {self._portfolio_max_drawdown_pct:.2f}% "
+                              f">= {cb:.1f}%. New BUYs blocked portfolio-wide; SELL "
+                              f"still allowed. Set HYDRA_RESET_CIRCUIT_BREAKER=1 to "
+                              f"clear once reviewed.")
             except (TypeError, ValueError):
                 self._portfolio_peak_usd = 0.0
                 self._portfolio_max_drawdown_pct = 0.0
@@ -1651,6 +1683,19 @@ class HydraAgent:
                     if state:
                         if state["signal"]["action"] != "HOLD" and self.brain:
                             brain_pairs.append((pair, state))
+                        elif state["signal"]["action"] != "HOLD":
+                            # Actionable signal but NO brain configured. The
+                            # deterministic guardrails still have to run —
+                            # they are the layer that is supposed to hold when
+                            # the LLMs are unavailable, not the layer that
+                            # disappears with them. Previously this branch fell
+                            # through to the cached-decision replay below and
+                            # R1-R11/QFE never executed at all.
+                            try:
+                                self._apply_quant_guardrails(pair, state)
+                            except Exception as e:
+                                print(f"  [QUANT RULES] guardrail pass failed for "
+                                      f"{pair}: {type(e).__name__}: {e}")
                         else:
                             # Inject cached brain decision for dashboard persistence.
                             # v2.14.1: tag the replay with cached_at_tick so the
@@ -1873,14 +1918,6 @@ class HydraAgent:
                 for term in self.execution_stream.drain_events():
                     self._apply_execution_event(term)
 
-                # Market data stream health — auto-restart if dead.
-                # No transition logging needed; REST fallback is seamless.
-                if not self.paper:
-                    self.candle_stream.ensure_healthy()
-                    self.ticker_stream.ensure_healthy()
-                    self.balance_stream.ensure_healthy()
-                    self.book_stream.ensure_healthy()
-
                 # Rolling save — persist the order journal every tick so
                 # no data is lost on crash. Atomic write (.tmp + os.replace)
                 # so a crash mid-write cannot corrupt the file into
@@ -1917,6 +1954,31 @@ class HydraAgent:
                         f.write(traceback.format_exc())
                 except Exception as e:
                     import logging; logging.warning(f"Ignored exception: {e}")  # if error log write fails, at least we printed to stdout
+
+            finally:
+                # Market data stream health — auto-restart if dead.
+                #
+                # MUST run in `finally`. This used to sit near the end of the
+                # try body, which made recovery conditional on the whole tick
+                # succeeding — and the most common reason a tick crashes is a
+                # dead stream. That is a self-sustaining wedge: the stream dies,
+                # the tick crashes before reaching recovery, so the stream is
+                # never restarted, so the next tick crashes identically. The
+                # agent stops trading permanently while looking merely "noisy"
+                # in the log. Recovery is exactly the work that must still
+                # happen when everything else failed.
+                #
+                # ensure_healthy() is individually try/except-wrapped so one
+                # stream's restart failure cannot stop the others from
+                # recovering, and cannot escape the finally.
+                if not self.paper:
+                    for _stream_name in ("candle_stream", "ticker_stream",
+                                         "balance_stream", "book_stream"):
+                        try:
+                            getattr(self, _stream_name).ensure_healthy()
+                        except Exception as _se:
+                            print(f"  [WARN] {_stream_name}.ensure_healthy() failed: "
+                                  f"{type(_se).__name__}: {_se}")
 
             # HF-004 fix: snapshot immediately if the journal grew this tick,
             # so a subsequent crash does not lose the newly-appended entries.
@@ -2071,6 +2133,118 @@ class HydraAgent:
         # phase-2.5 execute_signal. Pre-trade snapshots are taken in phase 2.5
         # immediately before execute (not here).
         state = engine.tick(generate_only=True)
+        return state
+
+    def _apply_quant_guardrails(self, pair: str, state: dict) -> dict:
+        """Apply R1-R11 + QFE with NO brain. Mutates state in place.
+
+        `hydra_quant_rules` describes itself as "the non-negotiable guardrails
+        in Python … the guardrail LLMs cannot talk around", but every call to
+        `apply_rules` and `evaluate_qfe` lived inside `_apply_brain`, which
+        returns immediately when `self.brain is None`. So on any deployment
+        without an LLM key — an expired/unset ANTHROPIC_API_KEY, or a
+        HydraBrain constructor that raised and was swallowed — the entire
+        deterministic rule stack silently did not run, while the
+        DerivativesStream kept feeding live funding/OI/CVD to the dashboard.
+        Funding could sit at +140 bps and R1 would never fire; the feed could
+        go dark entirely and R10's blackout would never fire either. Nothing
+        printed to say the guardrails were inactive, and the documented kill
+        switch (HYDRA_QUANT_INDICATORS_DISABLED) was the only thing operators
+        knew could turn them off.
+
+        This is the brain-free path. It is deliberately ADDITIVE — the
+        brain-present path in `_apply_brain` is untouched — and mirrors its
+        semantics exactly, minus the two inputs that only an LLM can supply:
+        `positioning_bias` is "" (so R8's contrarian boost cannot fire, the
+        same documented degradation as the fallback path) and there is no
+        brain size multiplier, so the final multiplier is the rule stack alone.
+        """
+        if os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1":
+            return state
+
+        engine_action = state["signal"]["action"]
+        rules_triggered: list = []
+        rules_force_hold = False
+        rules_force_hold_reason = ""
+        rules_size_mult = 1.0
+
+        try:
+            from hydra_quant_rules import apply_rules as _apply_quant_rules
+            rule_result = _apply_quant_rules(
+                engine_action=engine_action,
+                quant_output={"positioning_bias": "", "force_hold": False},
+                quant_indicators=state.get("quant_indicators") or None,
+            )
+            rules_triggered = [
+                {"rule_id": f.rule_id, "name": f.name, "effect": f.effect,
+                 "size_mult": f.size_mult, "reason": f.reason}
+                for f in rule_result.triggered
+            ]
+            rules_force_hold = rule_result.force_hold
+            rules_force_hold_reason = rule_result.force_hold_reason
+            rules_size_mult = rule_result.size_multiplier
+        except Exception as re:
+            print(f"  [QUANT RULES] apply_rules error ({type(re).__name__}: {re})")
+            return state
+
+        final_size_multiplier = max(0.0, min(1.5, rules_size_mult))
+        if rules_force_hold:
+            final_size_multiplier = 0.0
+            state["signal"]["action"] = "HOLD"
+            state["signal"]["reason"] = (
+                f"[QUANT RULES FORCE_HOLD] {rules_force_hold_reason}"
+            )
+            print(f"  [QUANT RULES] {pair}: force_hold — {rules_force_hold_reason}")
+
+        # R11/QFE — rescue a profitable exit that the rules just blocked.
+        # Same contract as the brain path: exit-only, profit-only,
+        # squeeze-filtered, and it can only ever rewrite an existing SELL.
+        qfe_active = False
+        qfe_reason = ""
+        qfe_trigger_values: dict = {}
+        if engine_action == "SELL" and state["signal"]["action"] == "HOLD":
+            pos = state.get("position", {}) or {}
+            pos_size = pos.get("size", 0)
+            avg_entry = pos.get("avg_entry", 0)
+            current_price = state.get("price", 0)
+            if pos_size > 0 and avg_entry > 0:
+                pnl_pct = (current_price - avg_entry) / avg_entry * 100
+                try:
+                    from hydra_quant_rules import evaluate_qfe as _evaluate_qfe
+                    qfe_result = _evaluate_qfe(
+                        position_size=pos_size,
+                        unrealized_pnl_pct=pnl_pct,
+                        quant_indicators=state.get("quant_indicators"),
+                        positioning_bias="",
+                    )
+                    if qfe_result.force_exit:
+                        qfe_active = True
+                        qfe_reason = qfe_result.force_exit_reason
+                        qfe_trigger_values = qfe_result.trigger_values
+                        state["signal"]["action"] = "SELL"
+                        state["signal"]["reason"] = f"[QFE PROFIT EXIT] {qfe_reason}"
+                        final_size_multiplier = 1.0
+                        print(f"  [QFE] {pair}: force_exit overrides force_hold — "
+                              f"P&L {pnl_pct:+.2f}%, no squeeze catalyst")
+                except Exception as qe:
+                    print(f"  [QFE] evaluate_qfe error ({type(qe).__name__}: {qe})")
+
+        state["ai_decision"] = {
+            "action": "RULES_ONLY",
+            "size_multiplier": final_size_multiplier,
+            "size_multiplier_brain": 1.0,
+            "size_multiplier_rules": rules_size_mult,
+            "rules_triggered": rules_triggered,
+            "rules_force_hold": rules_force_hold,
+            "rules_force_hold_reason": rules_force_hold_reason,
+            "qfe_active": qfe_active,
+            "qfe_reason": qfe_reason,
+            "qfe_trigger_values": qfe_trigger_values,
+            "combined_summary": (
+                "Deterministic guardrails only — no LLM configured."
+            ),
+            "brain_available": False,
+        }
         return state
 
     def _apply_brain(self, pair: str, state: dict, all_engine_states: dict) -> dict:
@@ -2539,12 +2713,27 @@ class HydraAgent:
         }
 
     def _build_portfolio_review_state(self, engine_states: dict) -> dict:
-        """Build enriched portfolio state for Grok portfolio review."""
+        """Build enriched portfolio state for Grok portfolio review.
+
+        `engine_states` maps EVERY pair to its tick result, and that result is
+        explicitly `None` when the pair was skipped this tick (live mode with
+        an unhealthy CandleStream — see `_fetch_and_tick`). `dict.get(pair, {})`
+        does NOT help there: the key EXISTS with value None, so the default is
+        never applied and every `state.get(...)` below raised AttributeError.
+
+        That crash was a permanent wedge, not a one-tick blip: it is raised
+        before the stream `ensure_healthy()` block later in the tick body, so
+        the dead CandleStream that caused it was never restarted, and the next
+        tick died at the same line. The agent stopped signalling, stopped
+        placing, and — critically — stopped EXITING, including circuit-breaker
+        flattens. `or {}` is the fix; the guard below already tolerates a
+        missing engine.
+        """
         ps = dict(self._current_portfolio_summary)
         pair_details = []
         for pair in self.pairs:
             engine = self.engines.get(pair)
-            state = engine_states.get(pair, {})
+            state = engine_states.get(pair) or {}
             if not engine:
                 continue
             pair_details.append({
@@ -2748,9 +2937,48 @@ class HydraAgent:
             if real_base_bal is not None:
                 min_size = PositionSizer.MIN_ORDER_SIZE.get(base, 0.02)
                 if real_base_bal < min_size:
-                    print(f"  [TRADE] Insufficient {base} balance "
-                          f"({real_base_bal:.8f}) for {pair} SELL — "
-                          f"below ordermin ({min_size}) — skipping")
+                    # The EXCHANGE holding is below ordermin, so this SELL can
+                    # never succeed — not this tick, not any tick. Previously
+                    # we only journalled a failure and rolled the engine back,
+                    # leaving the engine still believing it held a sellable
+                    # position: every subsequent tick that generated a SELL
+                    # rebuilt the entry, re-failed, and appended another
+                    # PLACEMENT_FAILED, forever. The position also blocked all
+                    # future entry logic because the engine was never flat.
+                    #
+                    # PR-C's write-off is the right resolution, but
+                    # `write_off_dust()` keys off the ENGINE's book, so it never
+                    # fired for the case that actually detects unsellable dust:
+                    # a divergence between engine size and exchange balance.
+                    # Write off here so the engine reaches a terminal, flat
+                    # state and stops looping.
+                    #
+                    # Staked/bonded holdings are the important exception —
+                    # `_get_real_quote_balance` deliberately skips staked assets
+                    # (see KrakenCLI._is_staked), so a fully-staked ZEC position
+                    # reads 0.0 while the coins are real and recoverable by
+                    # unstaking. Writing THAT off would silently discard a live
+                    # position from our books, so it is surfaced instead.
+                    eng = self.engines.get(pair)
+                    staked_bal = self._get_staked_balance(base)
+                    if staked_bal > 0:
+                        print(f"  [TRADE] {pair} SELL: spendable {base} "
+                              f"({real_base_bal:.8f}) below ordermin "
+                              f"({min_size}) but {staked_bal:.8f} {base} is "
+                              f"STAKED — not dust. Unstake to trade it; "
+                              f"engine position left intact.")
+                    elif eng is not None and eng.position.size > 0:
+                        written = eng.write_off_dust(
+                            reason="exchange_balance_below_ordermin")
+                        print(f"  [TRADE] {pair} SELL: exchange {base} balance "
+                              f"({real_base_bal:.8f}) below ordermin "
+                              f"({min_size}) — wrote off {written:.8f} unsellable "
+                              f"dust so the engine returns to flat instead of "
+                              f"retrying every tick.")
+                    else:
+                        print(f"  [TRADE] Insufficient {base} balance "
+                              f"({real_base_bal:.8f}) for {pair} SELL — "
+                              f"below ordermin ({min_size}) — skipping")
                     self._finalize_failed_entry(
                         entry, terminal_reason=f"insufficient_{base}_balance",
                     )
@@ -3703,6 +3931,37 @@ class HydraAgent:
                     prices["BTC"] = prices["SOL"] / sol_per_btc
         return prices
 
+    def _get_staked_balance(self, asset: str) -> float:
+        """Return the STAKED/bonded holding of `asset` (0.0 if none).
+
+        The counterpart to `_get_real_quote_balance`, which deliberately
+        EXCLUDES staked assets because they cannot be sold without unstaking
+        first. That exclusion means a fully-staked position reads as a zero
+        balance, which is indistinguishable from genuine unsellable dust — and
+        writing it off would silently drop a real, recoverable position from
+        our books. Callers use this to tell the two apart.
+
+        Reads the gross balance view (staked coins are still owned) and fails
+        soft to 0.0 when no balance data is available at all.
+        """
+        bal = None
+        if not self.paper and self.balance_stream.healthy:
+            bal = self.balance_stream.latest_balances()
+        if not bal:
+            bal = getattr(self, "_cached_balance", None)
+        if not bal:
+            return 0.0
+        total = 0.0
+        for raw_asset, amount in bal.items():
+            if not KrakenCLI._is_staked(raw_asset):
+                continue
+            if KrakenCLI._normalize_asset(raw_asset) == asset:
+                try:
+                    total += float(amount)
+                except (TypeError, ValueError):
+                    continue
+        return total
+
     def _get_real_quote_balance(self, quote: str) -> Optional[float]:
         """Return the SPENDABLE exchange balance for a quote currency.
 
@@ -4352,7 +4611,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.31.0",
+            "version": "2.32.0",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

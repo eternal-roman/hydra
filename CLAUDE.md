@@ -72,7 +72,7 @@ regression bug, not a style issue.
   hurdle were calibrated on 1h tape; 15m ran them off-calibration.
   `--candle-interval` still accepts 1/5/15/30/60; snapshot resume drops
   candle history on interval mismatch (positions/journal restore).
-- **Version pin:** v2.31.0
+- **Version pin:** v2.32.0
 
 ## Defaults (inherited)
 
@@ -95,6 +95,9 @@ regression bug, not a style issue.
 - **No REST for market data** — all Kraken market data flows through the WebSocket streams or the `kraken` CLI (WSL Ubuntu). New data sources must use CLI or WS.
 - **2s REST floor** — Kraken throttles or bans below this
 - **15% drawdown sticky-halts new BUYs for session** — SELL flatten still allowed when `position.size > 0` (PR-A); both `tick()` and `_maybe_execute` check
+- **The circuit-breaker halt is a one-way ratchet, cleared only by an explicit operator act (v2.32)** — `halted` restores from the snapshot and `_portfolio_max_drawdown_pct` is a running max that re-arms the portfolio halt, so "for session" above really meant *forever* under `--resume` (which is what production runs). Both now print a loud RESUMED-STILL-HALTED banner at boot and are cleared only by `HYDRA_RESET_CIRCUIT_BREAKER=1`. The reset clears the FLAG only — peak equity and max drawdown are preserved, so the breaker re-arms immediately if still underwater. Never auto-clear on resume: that silently re-enables risk after a breach.
+- **Deterministic guardrails must not depend on the LLM layer (v2.32)** — `apply_rules` / `evaluate_qfe` used to be reachable only from inside `_apply_brain`, so with no LLM key configured the entire R1-R11 + QFE stack silently did not run while the derivatives feed kept streaming to the dashboard. `HydraAgent._apply_quant_guardrails` is the brain-free path (positioning_bias `""`, so R8 cannot fire); the tick loop calls it for any actionable signal when `self.brain` is None, and boot prints which guardrail layer is live. Anything that makes rules conditional on the brain again is a HIGH regression.
+- **Stream recovery runs in `finally` (v2.32)** — `ensure_healthy()` for the candle/ticker/balance/book streams sits in the tick body's `finally`, never the try body. A dead stream is the most common cause of a tick crash, so gating recovery on tick success is self-sustaining: crash → no restart → identical crash next tick, permanently, including no exits. Related: `engine_states[pair]` is explicitly `None` for a skipped pair, so consumers must use `.get(pair) or {}` — `.get(pair, {})` does NOT apply its default when the key exists.
 - **RSI/ATR = Wilder exponential smoothing, NOT SMA** (Bollinger = population variance)
 - **SKIP ≠ BLOCK** — a soft restriction skips an action for the tick; BLOCK is reserved for hard rules (the 15% drawdown breaker)
 - **`HYDRA_COMPANION_LIVE_EXECUTION` default OFF** — proposals are paper until opted in
@@ -216,6 +219,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | `HYDRA_S3_HEARTBEAT_STATUS_DIR` | s3 + heartbeat surface | Directory of heartbeat status files (`heartbeat_status_<PAIR>.json`). Default `heartbeat/data`. Missing/stale(>300s)/tainted ⇒ `no_opinion` (never fabricate 0.5). Used by S3 shadow confirmer and dashboard surface. |
 | `HYDRA_HEARTBEAT_SURFACE` | agent/dashboard | **Default ON.** `=0` removes `quant_indicators["heartbeat"]` (P(up) display). Read-only — no order path. Requires separate `heartbeat run` process for live values. |
 | `HYDRA_FEE_DEDUCTION_DISABLED` | agent | `=1` reverts fee-true accounting (v2.27): confirmed fills debit `lifecycle.fee_quote` from the engine's quote balance exactly once (idempotent via `lifecycle.fee_applied`). Default off (fees deducted) — pre-v2.27 live P&L was overstated ~16 bps/fill vs the backtest, which always deducted fees. |
+| `HYDRA_RESET_CIRCUIT_BREAKER` | engine/agent | `=1` clears a persisted 15% circuit-breaker halt once, at resume — both the per-engine `halted` flag and the portfolio-wide BUY halt. Default unset (a breach persists across `--resume`, which is the safe direction). Clears the FLAG only: `peak_equity` / `max_drawdown` / `_portfolio_max_drawdown_pct` are preserved, so the breaker re-arms on the next breach. Use after reviewing the drawdown, not as a routine flag. |
 | `HYDRA_CLI_LEGACY_SECRET_EXPORT` | cli | `=1` restores the pre-v2.32 behavior of interpolating `KRAKEN_API_KEY`/`KRAKEN_API_SECRET` into the `bash -c` string. Default off: secrets are passed through the child process ENVIRONMENT and forwarded via `WSLENV`, keeping them out of the `wsl` process argv (readable via `ps`/procfs by any local user). Only affects the multi-tenant path where the keys are already in Hydra's own environment. |
 
 ## Build / run

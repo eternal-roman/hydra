@@ -835,6 +835,24 @@ class ExecutionStream(BaseStream):
             # snapshot). Trust last_qty + last_price to detect a real fill.
             last_qty = entry.get("last_qty")
             last_price = entry.get("last_price")
+            # Idempotency guard. `--snap-trades true` means a stream restart
+            # REPLAYS fills we have already folded, and `_on_start_reset`
+            # deliberately preserves `_known_orders` across restarts so
+            # in-flight orders can still be finalized. Without a dedupe those
+            # two correct behaviours combine into double-counting: a 0.4 fill
+            # replayed after a subprocess restart pushed vol_exec_running to
+            # 0.8, so a fully-filled 1.0 order reported 1.4 — classified
+            # PARTIALLY_FILLED instead of FILLED (FILL_TOLERANCE is 1e-6),
+            # booked MORE inventory than was bought via
+            # reconcile_partial_fill, produced a garbage cost-weighted
+            # avg_fill_price, and debited roughly double the real fee from
+            # engine cash. exec_id is Kraken's per-execution primary key, so
+            # membership is the exact test. Entries with no exec_id fall
+            # through to the clamp on the terminal path below.
+            exec_id = entry.get("exec_id")
+            if (isinstance(exec_id, str) and exec_id
+                    and exec_id in known["exec_ids"]):
+                last_qty = None  # already folded — skip accumulation
             if isinstance(last_qty, (int, float)) and last_qty > 0:
                 last_qty_f = float(last_qty)
                 last_price_f = float(last_price) if isinstance(last_price, (int, float)) else 0.0
@@ -851,9 +869,21 @@ class ExecutionStream(BaseStream):
                 known["vol_exec_running"] += last_qty_f
                 known["cost_running"] += cost_f
                 known["fee_running"] += fee_delta
-                exec_id = entry.get("exec_id")
                 if isinstance(exec_id, str) and exec_id:
                     known["exec_ids"].append(exec_id)
+                else:
+                    # No exec_id to dedupe on. Belt-and-braces: a replayed
+                    # anonymous fill cannot push the running total above what
+                    # we actually placed. Clamping vol_exec (and scaling cost
+                    # with it, so avg_fill_price stays a true average) is
+                    # strictly safer than over-booking inventory.
+                    placed = known.get("placed_amount")
+                    if isinstance(placed, (int, float)) and placed > 0 \
+                            and known["vol_exec_running"] > placed:
+                        scale = placed / known["vol_exec_running"]
+                        known["cost_running"] *= scale
+                        known["fee_running"] *= scale
+                        known["vol_exec_running"] = float(placed)
 
             # Only emit a terminal event once the order reaches a terminal
             # order_status. exec_type alone is not enough — a "trade" exec
