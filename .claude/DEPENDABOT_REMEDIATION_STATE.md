@@ -32,18 +32,33 @@ a stashed baseline if unsure.
 
 ## PR inventory (10 open, all dependabot[bot], all base=main)
 
-| PR | Bump | Ecosystem | Risk | Status |
+| PR | Bump | Ecosystem | Verdict | Status |
 |---|---|---|---|---|
-| 177 | bcrypt `<4.0` → `<5.0` | pip | **HIGH** — requirements.txt pin comment says passlib 1.7.4 reads `bcrypt.__about__`, removed in bcrypt 4.x | PENDING |
-| 179 | anthropic `>=0.116.0` → `>=0.120.2` | pip | MED — brain client surface | PENDING |
-| 181 | openai `>=2.46.0` → `>=2.49.0` | pip | MED — Grok strategist path | PENDING |
-| 176 | websockets `>=16.1` → `>=16.1.1` | pip | LOW | PENDING |
-| 171 | react 19.2.7 → 19.2.8 | npm | LOW | PENDING |
-| 174 | react-dom 19.2.7 → 19.2.8 | npm | LOW — must land with 171 | PENDING |
-| 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | LOW | PENDING |
-| 180 | eslint 10.7.0 → 10.8.0 | npm dev | MED — new rules can fail lint | PENDING |
-| 182 | globals 17.7.0 → 17.8.0 | npm dev | LOW | PENDING |
-| 172 | actions/setup-python 6 → 7 | gh actions | MED — CI-wide | PENDING |
+| 172 | actions/setup-python 6 → 7 | gh actions | SAFE | **MERGED** `4d49304` |
+| 176 | websockets `>=16.1` → `>=16.1.1` | pip | SAFE | **MERGED** `a972947` |
+| 179 | anthropic `>=0.116.0` → `>=0.120.2` | pip | SAFE | approved, branch refreshed, CI running |
+| 181 | openai `>=2.46.0` → `>=2.49.0` | pip | SAFE | PENDING |
+| 177 | bcrypt `<4.0` → `<5.0` | pip | SAFE (comment fix pushed `8296adf`) | PENDING |
+| 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | SAFE | PENDING |
+| 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — **merge before 171** | PENDING |
+| 171 | react 19.2.7 → 19.2.8 | npm | needs rebase after 174 | PENDING |
+| 180 | eslint 10.7.0 → 10.8.0 | npm dev | SAFE | PENDING |
+| 182 | globals 17.7.0 → 17.8.0 | npm dev | SAFE | PENDING |
+
+### Merge mechanics (learned the hard way — read before resuming)
+
+Branch protection enforces BOTH:
+1. **Code-owner review** (`* @eternal-roman`). The user authorised Claude to
+   submit these approvals on 2026-08-05. Approve via
+   `pull_request_review_write` `method=create, event=APPROVE` before merging.
+2. **Branch up to date with base.** Every merge invalidates all remaining PRs
+   with `405: 4 of 4 required status checks are expected`. Fix: call
+   `update_pull_request_branch`, wait ~2-3 min for the fresh CI run, then merge.
+
+So the loop per PR is: approve → `update_pull_request_branch` → poll
+`get_check_runs` until all complete → `merge_pull_request` (squash).
+Note the refreshed runs also execute the three real `Analyze (…)` CodeQL jobs
+(8 checks total, not 5) — all have passed so far.
 
 ## Known hazards
 
