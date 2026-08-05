@@ -39,8 +39,8 @@ a stashed baseline if unsure.
 | 179 | anthropic `>=0.116.0` → `>=0.120.2` | pip | SAFE | **MERGED** `eb098e8` |
 | 181 | openai `>=2.46.0` → **`>=2.52.0`** | pip | SAFE | **MERGED** `40acffa` |
 | 177 | bcrypt `<4.0` → `<5.0` | pip | SAFE (comment fix + manual conflict resolve) | **MERGED** `eb5c3e7` |
-| 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | SAFE | approved, branch refreshed, CI running |
-| 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — **merge before 171** | PENDING |
+| 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | SAFE | **MERGED** `ffffeb2` |
+| 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — **merge before 171** | approved, branch refreshed, CI running |
 | 171 | react 19.2.7 → 19.2.8 | npm | needs rebase after 174 | PENDING |
 | 180 | eslint 10.7.0 → 10.8.0 | npm dev | SAFE | PENDING |
 | 182 | globals 17.7.0 → 17.8.0 | npm dev | SAFE | PENDING |
@@ -109,6 +109,11 @@ after every checkout before merging.
   re-resolves from ranges) rather than `npm ci` (which honours the lockfile).
   ⇒ Merge **174 before 171**. 174's lockfile carries react 19.2.8 with it, so
   one merge lands both coherently.
+  **Verified directly from the branch lockfiles** (not just inferred):
+  | PR | `node_modules/react` | `node_modules/react-dom` | root `dependencies` |
+  |---|---|---|---|
+  | 174 | 19.2.8 | 19.2.8 ✅ | react `^19.2.4`, react-dom `^19.2.8` |
+  | 171 | 19.2.8 | **19.2.7** ❌ | react `^19.2.8`, react-dom `^19.2.4` |
   ⇒ Separate follow-up worth doing: change `dashboard-build` to `npm ci` so CI
   can actually detect a stale/incoherent lockfile. This is the structural gap
   the split PR exposed.
