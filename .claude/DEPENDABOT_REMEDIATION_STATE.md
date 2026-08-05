@@ -36,8 +36,8 @@ a stashed baseline if unsure.
 |---|---|---|---|---|
 | 172 | actions/setup-python 6 → 7 | gh actions | SAFE | **MERGED** `4d49304` |
 | 176 | websockets `>=16.1` → `>=16.1.1` | pip | SAFE | **MERGED** `a972947` |
-| 179 | anthropic `>=0.116.0` → `>=0.120.2` | pip | SAFE | approved, branch refreshed, CI running |
-| 181 | openai `>=2.46.0` → `>=2.49.0` | pip | SAFE | PENDING |
+| 179 | anthropic `>=0.116.0` → `>=0.120.2` | pip | SAFE | **MERGED** `eb098e8` |
+| 181 | openai `>=2.46.0` → **`>=2.52.0`** | pip | SAFE | approved, rebased by dependabot, CI running |
 | 177 | bcrypt `<4.0` → `<5.0` | pip | SAFE (comment fix pushed `8296adf`) | PENDING |
 | 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | SAFE | PENDING |
 | 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — **merge before 171** | PENDING |
@@ -59,6 +59,22 @@ So the loop per PR is: approve → `update_pull_request_branch` → poll
 `get_check_runs` until all complete → `merge_pull_request` (squash).
 Note the refreshed runs also execute the three real `Analyze (…)` CodeQL jobs
 (8 checks total, not 5) — all have passed so far.
+
+**All 8 remaining PRs are already APPROVED** (done in one batch), so a resuming
+session only needs the refresh → CI → merge half of the loop.
+
+**Dependabot self-rebases — check before resolving by hand.** `update-branch`
+on 181 returned `422 merge conflict between base and head` (the anthropic and
+openai lines are ADJACENT in requirements.txt, so #179 landing collided). I
+resolved it manually, but while I did, Dependabot force-pushed its own rebase
+and my push was rejected non-fast-forward. Its resolution was byte-identical
+to mine, so I discarded mine. **On a 422, first `git fetch` the branch and
+re-read the file — Dependabot has often already fixed it.** Only resolve
+manually if it hasn't after a minute or two.
+Side effect of that rebase: 181 now bumps openai to **`>=2.52.0`**, not the
+`>=2.49.0` in the PR title. Verified fine (suite 1421 passed / 0 failed on
+that branch — 14 fewer than main's 1435 only because the audit branch's new
+tests aren't there).
 
 ## Known hazards
 
