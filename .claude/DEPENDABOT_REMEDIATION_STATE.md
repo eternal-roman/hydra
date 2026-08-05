@@ -37,8 +37,8 @@ a stashed baseline if unsure.
 | 172 | actions/setup-python 6 → 7 | gh actions | SAFE | **MERGED** `4d49304` |
 | 176 | websockets `>=16.1` → `>=16.1.1` | pip | SAFE | **MERGED** `a972947` |
 | 179 | anthropic `>=0.116.0` → `>=0.120.2` | pip | SAFE | **MERGED** `eb098e8` |
-| 181 | openai `>=2.46.0` → **`>=2.52.0`** | pip | SAFE | approved, rebased by dependabot, CI running |
-| 177 | bcrypt `<4.0` → `<5.0` | pip | SAFE (comment fix pushed `8296adf`) | PENDING |
+| 181 | openai `>=2.46.0` → **`>=2.52.0`** | pip | SAFE | **MERGED** `40acffa` |
+| 177 | bcrypt `<4.0` → `<5.0` | pip | SAFE (comment fix + manual conflict resolve `220bfb1`) | conflict resolved, CI running, NEEDS RE-APPROVAL |
 | 173 | @vitejs/plugin-react 6.0.3 → 6.0.4 | npm | SAFE | PENDING |
 | 174 | react-dom 19.2.7 → 19.2.8 | npm | SAFE — **merge before 171** | PENDING |
 | 171 | react 19.2.7 → 19.2.8 | npm | needs rebase after 174 | PENDING |
@@ -75,6 +75,23 @@ Side effect of that rebase: 181 now bumps openai to **`>=2.52.0`**, not the
 `>=2.49.0` in the PR title. Verified fine (suite 1421 passed / 0 failed on
 that branch — 14 fewer than main's 1435 only because the audit branch's new
 tests aren't there).
+
+**ANY push to a PR branch dismisses the approval.** Stale-review dismissal is
+enabled, so after a Dependabot rebase OR after you push your own commit, the
+merge fails with `405 Waiting on code owner review`. **Re-approve after the
+final push, then merge.** Hit this on both 181 and 177.
+
+**Once you push your own commit to a Dependabot branch, Dependabot stops
+rebasing it** — 177 carried a hand-written comment-fix commit, so its conflict
+with main had to be resolved by hand (unlike 181, which Dependabot fixed
+itself). Resolve on a local branch, then
+`git push origin <local>:<dependabot-branch>`.
+
+**Commit or stash before `git checkout`.** A dirty state file aborted a
+checkout mid-sequence, so a subsequent `git merge origin/main` ran against the
+AUDIT branch instead of the intended Dependabot branch. Caught and
+`git merge --abort`ed, no damage — but verify `git rev-parse --abbrev-ref HEAD`
+after every checkout before merging.
 
 ## Known hazards
 
