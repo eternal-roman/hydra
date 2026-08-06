@@ -9,9 +9,24 @@ import os
 import math
 
 
-class SkipTest(Exception):
-    """Raised to skip a test (e.g. missing optional dependency)."""
-    pass
+try:  # pragma: no cover - trivial import shim
+    import pytest as _pytest
+
+    # Under pytest, the skip signal MUST be pytest's own exception type.
+    # This module previously defined a bare `class SkipTest(Exception)`, which
+    # its own run_tests() runner catches and reports as SKIP — but pytest does
+    # not recognise, so it surfaced as a hard FAILURE. The two runners then
+    # disagreed about the same source tree: `python tests/test_engine.py`
+    # (what several CI steps invoke) reported success while `pytest tests/`
+    # reported 8 failures, purely because the optional anthropic/openai SDKs
+    # resolve differently for the `pytest` console script's interpreter than
+    # for `python`. A missing OPTIONAL dependency must skip, not fail, under
+    # either runner.
+    SkipTest = _pytest.skip.Exception
+except ImportError:  # pytest absent — standalone runner path
+    class SkipTest(Exception):
+        """Raised to skip a test (e.g. missing optional dependency)."""
+        pass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hydra_engine import (

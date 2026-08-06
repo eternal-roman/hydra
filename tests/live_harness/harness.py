@@ -26,6 +26,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import sys
@@ -204,7 +205,14 @@ class Harness:
             del self._original_time_sleep
         # Restore stashed state files; remove anything the harness wrote in
         # their place so the operator's real files come back clean.
-        for path, stash in getattr(self, "_stashed_state_files", []):
+        # MUST be idempotent: this is now called from main()'s finally AND from
+        # an atexit hook, so it can legitimately run twice. Consuming the list
+        # is what makes that safe — a second pass over a non-empty list would
+        # see `path` restored and `stash` gone, and the `os.remove(path)` below
+        # would DELETE the operator's just-restored snapshot.
+        stashed = getattr(self, "_stashed_state_files", [])
+        self._stashed_state_files = []
+        for path, stash in stashed:
             try:
                 if os.path.exists(path):
                     os.remove(path)
@@ -498,8 +506,26 @@ def main() -> int:
         print(f"  [ERROR] {e}", file=sys.stderr)
         return 2
 
+    # isolate_environment() RENAMES the operator's real
+    # hydra_session_snapshot.json / hydra_order_journal.json /
+    # hydra_trades_live.json to *.harness_stash. Everything from here to the
+    # final restore must therefore be exception-safe: the mock/validate/live
+    # path previously had no try/finally, so a failure in the `scenarios`
+    # import (syntax error, bad top-level import) or a Ctrl-C during a long
+    # --mode validate run skipped restore_environment() and left live state
+    # stashed. A subsequent `hydra_agent.py --resume` would then start from
+    # nothing — CLAUDE.md Operating Rule 2 ("snapshot + journal must stay in
+    # sync") violated by the test tool itself.
     harness.isolate_environment()
+    atexit.register(harness.restore_environment)
+    try:
+        return _run_modes(harness, args)
+    finally:
+        harness.restore_environment()
 
+
+def _run_modes(harness: "Harness", args) -> int:
+    """Mode dispatch. Caller owns isolate/restore — see main()."""
     # Smoke mode: just import + construct an agent
     if args.mode == "smoke":
         try:
@@ -512,19 +538,16 @@ def main() -> int:
             assert agent.execution_stream.healthy
             print("  [SMOKE] Agent constructed, brain=None, engines ready, order_journal empty, stream healthy")
             print("  [SMOKE] OK")
-            harness.restore_environment()
             return 0
         except Exception as e:
             print(f"  [SMOKE] FAILED: {type(e).__name__}: {e}", file=sys.stderr)
             traceback.print_exc()
-            harness.restore_environment()
             return 1
 
     # Import scenarios lazily so smoke mode doesn't pay the cost
     from tests.live_harness import scenarios as scenarios_module
     results = harness.run_scenarios(scenarios_module.ALL_SCENARIOS,
                                       scenario_filter=args.scenario)
-    harness.restore_environment()
 
     Harness.print_summary(results)
 

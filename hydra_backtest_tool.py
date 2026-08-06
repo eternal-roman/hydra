@@ -712,6 +712,10 @@ class BacktestToolDispatcher:
         except KeyError as e:
             return _error(f"unknown preset: {e}")
 
+        # Route through the worker pool when mounted, exactly as
+        # _tool_run_backtest does. Without this the sweep ran inline on the
+        # caller's thread — and the caller is the brain's tool-use loop, i.e.
+        # the live tick thread (I1: never block the live tick).
         results = sweep_experiment(
             base_config=cfg,
             param=param,
@@ -720,7 +724,17 @@ class BacktestToolDispatcher:
             store=self.store,
             triggered_by=caller,
             tags=[f"preset:{preset}", f"caller:{caller}", f"param:{param}"],
+            pool=self.pool,
         )
+        if self.pool is not None:
+            return _ok({
+                "status": "queued",
+                "experiment_ids": [e.id for e in results],
+                "message": (
+                    "Sweep queued on BacktestWorkerPool; poll get_experiment "
+                    "for each id (I1: never block the live tick)."
+                ),
+            })
         return _ok([_summarize_experiment(e) for e in results])
 
     def _tool_get_equity_curve(

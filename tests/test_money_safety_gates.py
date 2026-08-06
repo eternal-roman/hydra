@@ -162,28 +162,84 @@ def test_execute_signal_fail_closed_buy_without_history():
 
 # ─── H2 agent quant kill-switch branch ─────────────────────────
 
+def _guardrail_agent():
+    """Minimal real HydraAgent for driving _apply_quant_guardrails."""
+    from hydra_agent import HydraAgent
+    from hydra_engine import HydraEngine
+    agent = HydraAgent.__new__(HydraAgent)
+    agent.brain = None
+    agent.engines = {"BTC/USD": HydraEngine(initial_balance=1000, asset="BTC/USD")}
+    return agent
+
+
+def _guardrail_state():
+    return {
+        "signal": {"action": "BUY", "confidence": 0.8, "reason": "momentum"},
+        "price": 100.0,
+        "position": {"size": 0.0, "avg_entry": 0.0},
+        "quant_indicators": {
+            "funding_bps_8h": 140.0, "oi_price_regime": "neutral",
+            "cvd_divergence_sigma": 0.1, "basis_apr_pct": 5.0,
+            "staleness_s": 10.0,
+        },
+    }
+
+
 def test_agent_quant_kill_switch_skips_apply_rules(monkeypatch):
-    """Real agent path: HYDRA_QUANT_INDICATORS_DISABLED=1 must not call apply_rules."""
+    """Real agent path: HYDRA_QUANT_INDICATORS_DISABLED=1 must not call apply_rules.
+
+    Rewritten in v2.32.1. The previous version re-implemented the gate inside
+    the test and asserted on its own simulation — `called == []` was
+    unfalsifiable and hydra_agent was never imported, so deleting the entire
+    kill-switch branch from production left this green. It now spies on the
+    real `hydra_quant_rules.apply_rules` and drives the real
+    `HydraAgent._apply_quant_guardrails`, with a POSITIVE CONTROL below so the
+    assertion can actually fail.
+    """
+    import hydra_quant_rules
     monkeypatch.setenv("HYDRA_QUANT_INDICATORS_DISABLED", "1")
-    # Simulate the agent gate (same predicate as hydra_agent.py).
-    _quant_rules_disabled = (
-        os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1"
-    )
+
     called = []
+    real = hydra_quant_rules.apply_rules
 
     def _spy(*a, **k):
         called.append(1)
-        return apply_rules(*a, **k)
+        return real(*a, **k)
 
-    if not _quant_rules_disabled:
-        _spy("BUY", {}, {"funding_bps_8h": None})
-    assert _quant_rules_disabled is True
-    assert called == []
+    monkeypatch.setattr(hydra_quant_rules, "apply_rules", _spy)
 
-    # Stronger: pin the agent-module predicate helper in source.
-    src = open(ROOT / "hydra_agent.py", encoding="utf-8").read()
-    assert 'HYDRA_QUANT_INDICATORS_DISABLED") == "1"' in src
-    assert "if not _quant_rules_disabled" in src
+    state = _guardrail_state()
+    _guardrail_agent()._apply_quant_guardrails("BTC/USD", state)
+
+    assert called == [], "kill switch set but apply_rules was still called"
+    # And the signal must be left untouched — no force_hold applied.
+    assert state["signal"]["action"] == "BUY"
+
+
+def test_agent_quant_rules_DO_run_when_switch_unset(monkeypatch):
+    """POSITIVE CONTROL for the test above — this is what makes it falsifiable.
+
+    With the switch unset the same path MUST call apply_rules and MUST act on
+    the result (funding at +140 bps trips R1 and force_holds the BUY).
+    """
+    import hydra_quant_rules
+    monkeypatch.delenv("HYDRA_QUANT_INDICATORS_DISABLED", raising=False)
+
+    called = []
+    real = hydra_quant_rules.apply_rules
+
+    def _spy(*a, **k):
+        called.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(hydra_quant_rules, "apply_rules", _spy)
+
+    state = _guardrail_state()
+    _guardrail_agent()._apply_quant_guardrails("BTC/USD", state)
+
+    assert called, "guardrails did not run with the kill switch unset"
+    assert state["signal"]["action"] == "HOLD"
+    assert state["ai_decision"]["rules_force_hold"] is True
 
 
 # ─── H3 QFE agent rewrite contract (pure + wiring shape) ───────

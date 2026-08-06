@@ -79,7 +79,21 @@ class DashboardBroadcaster:
             Path("dashboard/dist/index.html"),
     }
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8765):
+    # Loopback by default. Inbound COMMANDS require the per-process token, but
+    # the OUTBOUND path never did: `_handler` adds the socket to `self.clients`
+    # and immediately sends `latest_state` — which carries `balance`,
+    # `balance_usd.assets` (full per-asset holdings), portfolio drawdown, every
+    # open position and the last 20 order-journal entries. `_origin_allowed`
+    # returns True for a missing Origin header (non-browser clients), so any
+    # host that could reach :8765 got the whole account with no credential.
+    # The dashboard and Electron wrapper are local, so loopback costs nothing.
+    # Set HYDRA_WS_HOST=0.0.0.0 to deliberately expose it (e.g. behind a
+    # reverse proxy that terminates auth).
+    DEFAULT_HOST = os.environ.get("HYDRA_WS_HOST", "127.0.0.1")
+
+    def __init__(self, host: str = None, port: int = 8765):
+        if host is None:
+            host = self.DEFAULT_HOST
         self.host = host
         self.port = port
         self.clients = set()
@@ -409,7 +423,9 @@ if __name__ == "__main__":
     hydra_auth.init_db()
     
     port = int(os.environ.get("HYDRA_WS_PORT", 8765))
-    server = DashboardBroadcaster(host="0.0.0.0", port=port)
+    # Honour DEFAULT_HOST (loopback unless HYDRA_WS_HOST says otherwise)
+    # rather than hardcoding a public bind here.
+    server = DashboardBroadcaster(port=port)
     server.start()
     
     try:

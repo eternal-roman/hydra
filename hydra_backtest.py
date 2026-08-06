@@ -47,7 +47,7 @@ from hydra_engine import (
     SIZING_CONSERVATIVE,  # noqa: F401 — re-exported for callers
 )
 
-HYDRA_VERSION = "2.32.0"
+HYDRA_VERSION = "2.32.1"
 
 # Reasonable defaults; enforced at config construction and runtime.
 DEFAULT_MAX_TICKS = 200_000
@@ -714,6 +714,11 @@ class BacktestRunner:
             {p: make_candle_source(cfg) for p in cfg.pairs}
         )
         iterators = {p: iter(sources[p].iter_candles(p)) for p in cfg.pairs}
+        # One-candle lookahead buffer per pair, used to align on timestamp
+        # rather than index. A pair whose next bar is later than the
+        # frontier keeps it here until the frontier reaches it.
+        self._peeked: Dict[str, Candle] = {}
+        self._exhausted_pairs: set = set()
 
         tick = 0
         pair_sleep_seconds = (cfg.candle_interval * 60) / cfg.real_time_factor if cfg.real_time_factor > 0 else 0.0
@@ -723,16 +728,38 @@ class BacktestRunner:
                 result.status = "cancelled"
                 return
 
-            # Gather next candle per pair. If any source is exhausted, terminate.
-            current_candles: Dict[str, Candle] = {}
-            exhausted = False
+            # Gather next candle per pair, ALIGNED ON TIMESTAMP.
+            #
+            # This used to `next(it)` on every iterator unconditionally, i.e.
+            # zip by INDEX. SqliteSource only yields rows that exist and
+            # HistoryStore.coverage explicitly tracks gap_count/max_gap_sec, so
+            # gaps are expected in the real store — and the first missing bar in
+            # one pair permanently skewed every later bar of that pair against
+            # the others, with the skew accumulating. The CrossPairCoordinator
+            # then correlated BTC's regime at time T against another pair's at
+            # T-n, and _finalize_metrics summed per-pair equity curves standing
+            # at different wall-clock instants. tools/flywheel_validation.py
+            # writes exactly that output as the evidence gate
+            # engine_sleeve_allowed() reads.
+            #
+            # Advance only the pairs whose next candle sits at the earliest
+            # timestamp across pairs; a pair with no bar at that timestamp is
+            # simply absent this tick and keeps its candle for a later one.
             for pair, it in iterators.items():
+                if pair in self._peeked or pair in self._exhausted_pairs:
+                    continue
                 try:
-                    current_candles[pair] = next(it)
+                    self._peeked[pair] = next(it)
                 except StopIteration:
-                    exhausted = True
-                    break
-            if exhausted:
+                    self._exhausted_pairs.add(pair)
+            if not self._peeked:
+                break
+            frontier = min(float(c.timestamp) for c in self._peeked.values())
+            current_candles: Dict[str, Candle] = {}
+            for pair in [p for p, c in self._peeked.items()
+                         if float(c.timestamp) <= frontier]:
+                current_candles[pair] = self._peeked.pop(pair)
+            if not current_candles:
                 break
 
             # 1) Try to fill any pending orders against the *current* candle.
@@ -740,6 +767,11 @@ class BacktestRunner:
             # its first chance to fill (post-only semantics).
             for pair, order in list(self._pending.items()):
                 if order is None:
+                    continue
+                if pair not in current_candles:
+                    # No bar for this pair at the current frontier — the
+                    # order simply has no fill opportunity yet. Leave it
+                    # pending rather than filling against another pair's bar.
                     continue
                 fill = self.filler.try_fill(order, current_candles[pair])
                 engine = self.engines[pair]
@@ -798,6 +830,8 @@ class BacktestRunner:
             #    preserves the execute_signal seam used in live).
             engine_states: Dict[str, Dict[str, Any]] = {}
             for pair in cfg.pairs:
+                if pair not in current_candles:
+                    continue  # gap in this pair's series at this timestamp
                 engine = self.engines[pair]
                 engine.ingest_candle({
                     "open": current_candles[pair].open,

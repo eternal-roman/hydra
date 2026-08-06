@@ -302,6 +302,31 @@ class TestPersistence:
 # 7. ENGINE INTEGRATION
 # ═══════════════════════════════════════════════════════════════
 
+class _FrictionGateOff:
+    """Disable the v2.27 friction expectancy gate for the duration of a block.
+
+    These tests exercise params_at_entry bookkeeping, not entry economics. The
+    synthetic tape they build is too low-volatility to clear the 2.0% hurdle on
+    60m bars, so without this every BUY is vetoed. Uses os.environ directly
+    rather than pytest's monkeypatch because this module also runs under its
+    own run_tests() runner, where fixtures are unavailable.
+    """
+
+    _KEY = "HYDRA_FRICTION_GATE_DISABLED"
+
+    def __enter__(self):
+        self._prev = os.environ.get(self._KEY)
+        os.environ[self._KEY] = "1"
+        return self
+
+    def __exit__(self, *exc):
+        if self._prev is None:
+            os.environ.pop(self._KEY, None)
+        else:
+            os.environ[self._KEY] = self._prev
+        return False
+
+
 class TestEngineIntegration:
     def test_snapshot_params_returns_all_tunable(self):
         engine = HydraEngine(initial_balance=10000, asset="BTC/USD")
@@ -393,10 +418,21 @@ class TestEngineIntegration:
             action=SignalAction.BUY, confidence=0.8,
             reason="test", strategy=Strategy.MOMENTUM,
         )
-        trade = engine._maybe_execute(buy_signal)
-        if trade:
-            assert engine.position.params_at_entry is not None
-            assert "volatile_atr_mult" in engine.position.params_at_entry
+        with _FrictionGateOff():
+            trade = engine._maybe_execute(buy_signal)
+        # The assertions below used to sit under `if trade:`. Since the v2.27
+        # friction expectancy gate landed, this synthetic low-volatility tape
+        # never clears the hurdle, so `trade` was always None and the whole
+        # body was skipped — the test passed while asserting nothing, and
+        # params_at_entry set-on-entry went untested. Assert the precondition
+        # so a skipped BUY is a FAILURE, not a silent pass.
+        assert trade is not None, (
+            "BUY did not execute — precondition for this test. "
+            f"friction_skips={getattr(engine, 'friction_skips', 'n/a')}"
+        )
+        assert engine.position.size > 0
+        assert engine.position.params_at_entry is not None
+        assert "volatile_atr_mult" in engine.position.params_at_entry
 
     def test_params_at_entry_cleared_on_full_sell(self):
         """When position is fully closed, params_at_entry should be cleared."""
@@ -409,14 +445,18 @@ class TestEngineIntegration:
             })
 
         from hydra_engine import Signal, SignalAction, Strategy
-        buy = Signal(action=SignalAction.BUY, confidence=0.8, reason="test", strategy=Strategy.MOMENTUM)
-        engine._maybe_execute(buy)
+        with _FrictionGateOff():
+            buy = Signal(action=SignalAction.BUY, confidence=0.8, reason="test", strategy=Strategy.MOMENTUM)
+            engine._maybe_execute(buy)
 
-        if engine.position.size > 0:
+        # Same defect as above: this body was gated on a BUY that the friction
+        # gate always vetoed, so cleared-on-exit was never exercised either.
+        assert engine.position.size > 0, "BUY did not execute — precondition"
+        with _FrictionGateOff():
             sell = Signal(action=SignalAction.SELL, confidence=0.9, reason="test", strategy=Strategy.MOMENTUM)
             engine._maybe_execute(sell)
-            assert engine.position.size == 0.0
-            assert engine.position.params_at_entry is None
+        assert engine.position.size == 0.0
+        assert engine.position.params_at_entry is None
 
     def test_tuned_params_affect_regime_detection(self):
         """Changed trend_ema_ratio should produce a different regime than default."""

@@ -6,6 +6,125 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.32.1] — 2026-08-06
+
+Audit backlog closeout. Research-layer correctness, an unauthenticated data
+exposure, two dashboard defects, and four tests that could not fail.
+
+### Fixed — security
+
+- **Dashboard WS bound `0.0.0.0` and served account state with no credential.**
+  Inbound *commands* require the per-process token, but the OUTBOUND path never
+  did: `_handler` adds the socket to `self.clients` and immediately sends
+  `latest_state`, which carries `balance`, `balance_usd.assets` (full per-asset
+  holdings), portfolio drawdown, every open position and the last 20
+  order-journal entries. `_origin_allowed` returns True for a missing Origin
+  header, so any host that could reach :8765 got the whole account. Now binds
+  `127.0.0.1` by default; `HYDRA_WS_HOST=0.0.0.0` re-exposes it deliberately.
+
+### Fixed — research layer
+
+- **Monte Carlo inflated Sharpe by ~93x.** `monte_carlo_resample` annualized
+  with `annualization_factor(candle_interval_min)` — sqrt(BARS per year), 93.6
+  on 60m bars — applied to one return per TRADE. A mundane 42-trade series
+  reported a Sharpe CI of ~[25.4, 31.5]. `docs/BACKTEST_SPEC.md` makes
+  `mc_ci_lower_positive` one of seven rigor gates for auto-apply eligibility,
+  and at that inflation the gate could never bind. Now takes an optional
+  `trades_per_year` and reports an honest UNANNUALIZED per-trade Sharpe when
+  it is absent (same series: [0.36, 0.43]). The default
+  `candle_interval_min` also moved 15 → 60 to match the repo default.
+- **Multi-pair backtests zipped candles by INDEX, not timestamp.** `_loop`
+  called `next()` on every pair's iterator each tick. `SqliteSource` yields
+  only rows that exist and `HistoryStore.coverage` tracks `gap_count`
+  precisely because gaps are real, so the first missing bar in one pair skewed
+  every later bar of that pair against the others, and the skew accumulated.
+  The coordinator then compared one pair's regime at time T against another's
+  at T−n, and `_finalize_metrics` summed per-pair equity curves standing at
+  different instants — which is what `tools/flywheel_validation.py` writes as
+  the evidence gate `engine_sleeve_allowed()` reads. Now advances only the
+  pairs sitting at the earliest timestamp; a pair with no bar at that
+  timestamp is simply absent for that tick. Verified on a deliberately gapped
+  series: **zero** lookahead events, gap preserved rather than papered over.
+- **`sweep_param` ran synchronously on the live tick thread.**
+  `_tool_run_backtest` was explicitly fixed for this ("I1: never block the live
+  tick"); the sweep was not. It is reachable from the brain's tool-use loop,
+  and the schema permits `n_candles` 20000 × 10 values — ~200,000 engine ticks
+  executed inline with real positions open, during which the agent does not
+  tick, does not reconcile fills, and does not honour its shutdown path. Now
+  routed through `BacktestWorkerPool` when mounted.
+
+### Fixed — operator-facing
+
+- **Rolling order journal was capped at 200, corrupting realized P&L.**
+  `_journal_for_persistence` applied one 200-entry cap to BOTH write paths,
+  but `_merge_order_journal` documents the rolling file as "the authoritative
+  long-horizon record" and `ORDER_JOURNAL_CAP` is 2000 in memory. A session
+  with 800 fills kept only the last 200 on disk; after a restart
+  `_compute_pair_realized_pnl` walked a truncated journal, valuing SELLs
+  against a missing cost basis. Now parameterized: snapshot keeps 200, the
+  rolling file keeps everything.
+- **No paper/live indicator.** A paper session was pixel-identical to a live
+  one — and in paper mode `balance_usd` is still the REAL Kraken account, so
+  "Total Balance" showed real money beside simulated P&L. Backend now
+  broadcasts `paper`/`demo`; the UI renders a PAPER/DEMO pill and the footer
+  no longer claims "Real money at risk" in those modes.
+- **"Total Balance $0.00" while pairs held equity.** The engine-equity
+  fallback was unreachable: the backend always emits `balance_usd` and emits a
+  literal `0` (not null) when the balance is unknown, so `!= null` always took
+  the first branch. Affected the balance card and the history sparkline.
+- **Research Lab pane hammered the agent.** `clearLabRunState` was an inline
+  arrow, so a new identity every render; LabPane's effect depends on it, closing a
+  self-sustaining loop (effect → `research_params_current` → ack → state
+  change → re-render → new identity → effect). Each iteration ran a
+  synchronous `hydra_params_<pair>.json` disk read on the asyncio loop thread
+  that also serves every broadcast, and wiped the operator's dragged params.
+  Now `useCallback([])`.
+
+### Fixed — test integrity
+
+- **Two tuner tests asserted nothing.** `test_params_at_entry_stored_on_buy`
+  and `..._cleared_on_full_sell` wrapped their assertions in `if trade:` /
+  `if engine.position.size > 0:`, and since the v2.27 friction gate landed the
+  synthetic tape never cleared the hurdle — so the bodies never ran and
+  `params_at_entry` was completely untested. Assertions are now unconditional
+  with the friction gate explicitly disabled. **Mutation-tested:** sabotaging
+  `params_at_entry` now fails the test; before, it passed.
+- **The quant kill-switch test was tautological.** It re-implemented the gate
+  inside the test and asserted on its own simulation (`called == []` was
+  unfalsifiable); `hydra_agent` was never imported, so deleting the entire
+  kill-switch branch left it green. Now spies on the real
+  `hydra_quant_rules.apply_rules` and drives the real
+  `_apply_quant_guardrails`, **with a positive control** asserting the rules DO
+  run and DO force_hold when the switch is unset.
+- **`SkipTest` diverged between runners.** `tests/test_engine.py` defined its
+  own `class SkipTest(Exception)`, which its `run_tests()` runner reports as
+  SKIP but pytest treats as a hard FAILURE — so the two runners disagreed
+  about the same tree whenever the optional anthropic/openai SDKs resolved
+  differently. Now aliases `pytest.skip.Exception` when pytest is importable.
+- **The harness could leave live state renamed away.** `isolate_environment()`
+  renames the operator's real `hydra_session_snapshot.json` /
+  `hydra_order_journal.json` to `*.harness_stash`, but the mock/validate/live
+  path had no `try/finally` — an exception out of the `scenarios` import or a
+  Ctrl-C during `--mode validate` skipped the restore, and a later `--resume`
+  would start from nothing. Now `try/finally` + `atexit`, and
+  `restore_environment` was made **idempotent** (it is now called twice; a
+  second pass over the old non-empty list would have deleted the
+  just-restored file).
+- **Bare `pytest` failed on every file.** No `conftest.py` existed, so only
+  `python -m pytest` worked (it injects CWD into `sys.path`). Added one at the
+  repo root.
+
+### Removed
+
+- `.claude/DEPENDABOT_REMEDIATION_STATE.md` — working file for the v2.32
+  Dependabot sweep; all 10 PRs are resolved, so it has served its purpose.
+
+Verified: `python -m pytest tests/` **1451 passed, 0 failed**; harness
+`--mode mock` **36/36**, `--mode smoke` exit 0; `npm ci` + build + lint exit 0;
+`check_release_alignment.py` exit 0 at 2.32.1.
+
+---
+
 ## [2.32.0] — 2026-08-05
 
 Resilience release. Five defects that each ended with the agent quietly not
