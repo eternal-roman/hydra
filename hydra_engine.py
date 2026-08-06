@@ -1933,9 +1933,18 @@ class HydraEngine:
             if (size > 0
                     and self.daily_trend_long() is True
                     and os.environ.get("HYDRA_TREND_CONVICTION_SIZING") != "0"):
+                # `effective_mult` MUST scale the floor too. Without it the
+                # max() below silently discarded every de-risking decision in
+                # the stack — the brain's quant x RM product and the whole
+                # R3/R5/R7 penalty chain — because `conviction_value` was
+                # derived from `balance` alone. An RM "ADJUST, size 0.3" and a
+                # clean 1.0 produced byte-identical notional; only an exact
+                # 0.0 survived, via the `size > 0` guard. That inverted PR-B
+                # ("max_position_pct applies AFTER brain size_multiplier"):
+                # the multiplier bound on the Kelly path and was a no-op here.
                 conviction_value = (
                     self.balance * self.sizer.max_position_pct
-                    * self._trend_vol_multiplier()
+                    * self._trend_vol_multiplier() * effective_mult
                 )
                 size = max(size, conviction_value / current_price)
             # PR-B: hard risk caps AFTER size_multiplier (B1) and against
@@ -1949,6 +1958,22 @@ class HydraEngine:
                 room_units = max(0.0, max_notional - current_notional) / current_price
                 max_cash_units = self.balance / current_price
                 size = min(size, room_units, max_cash_units)
+                # Re-assert the exchange floors. PositionSizer.calculate()
+                # enforces ordermin/costmin, but that ran BEFORE this cap
+                # shrank the size — an engine sitting at max_position_pct
+                # emitted dust BUYs (e.g. 7.4e-08 BTC / $0.007) that the agent
+                # preflight waves through (it compares the real balance, not
+                # the order size) and Kraken rejects. Momentum re-fires it
+                # every tick, burning the 2s REST budget on guaranteed
+                # rejections and littering the journal with placement_error.
+                # Parsed exactly as PositionSizer.calculate does: self.asset is
+                # the full pair ("BTC/USD"), base before the slash, quote after.
+                _base = self.asset.split("/")[0] if "/" in self.asset else self.asset
+                _quote = self.asset.split("/")[1] if "/" in self.asset else "USD"
+                min_size = self.sizer.MIN_ORDER_SIZE.get(_base, 0.02)
+                costmin = self.sizer.MIN_COST.get(_quote, 0.5)
+                if size < min_size or size * current_price < costmin:
+                    size = 0.0
             if size > 0:
                 cost = size * current_price
                 # Update position (average in)
@@ -2289,6 +2314,13 @@ class HydraEngine:
         self.position.avg_entry = 0.0
         self.position.params_at_entry = None
         self.position.unrealized_pnl = 0.0
+        # realized_pnl belongs to the position being written off, not to the
+        # next one. Both ordinary close paths clear it; this one did not, so a
+        # partial-fill residue carried its parent's realized P&L into the next
+        # position, which then reported that stale profit on a flat close —
+        # inflating win_count/gross_profit and feeding ParameterTracker a
+        # fabricated win to learn from.
+        self.position.realized_pnl = 0.0
         return written
 
     def reconcile_partial_fill(
@@ -2529,8 +2561,35 @@ class HydraEngine:
         self.loss_count = int(snapshot.get("loss_count", 0))
         self.total_trades = int(snapshot.get("total_trades", 0))
         self.tick_count = int(snapshot.get("tick_count", 0))
+        # Circuit-breaker halt survives --resume by design (a breach is not
+        # erased by a restart), but it is a ONE-WAY RATCHET: nothing outside
+        # __init__ ever sets it back to False. Production runs
+        # `--mode competition --resume` (start_hydra.bat), so a single 15%
+        # drawdown silently disabled all new BUYs across every future session
+        # forever, with no log line saying why and no documented way out.
+        # SELL/flatten kept working, so the operator saw a bot that had quietly
+        # stopped entering rather than an obviously broken one.
+        #
+        # HYDRA_RESET_CIRCUIT_BREAKER=1 is that way out — a deliberate,
+        # explicit operator act, read once at resume. It clears the halt flag
+        # ONLY; peak_equity and max_drawdown are untouched above, so the
+        # drawdown record is preserved and the breaker re-arms immediately if
+        # the account is still underwater. Auto-clearing on resume would silently
+        # re-enable risk after a breach, which is the one thing the breaker exists
+        # to prevent.
         self.halted = bool(snapshot.get("halted", False))
         self.halt_reason = str(snapshot.get("halt_reason", ""))
+        if self.halted and os.environ.get("HYDRA_RESET_CIRCUIT_BREAKER") == "1":
+            print(f"  [ENGINE] {self.asset}: circuit breaker CLEARED by "
+                  f"HYDRA_RESET_CIRCUIT_BREAKER=1 (was: {self.halt_reason[:60]}). "
+                  f"Drawdown history preserved; breaker re-arms on the next breach.")
+            self.halted = False
+            self.halt_reason = ""
+        elif self.halted:
+            print(f"  [ENGINE] {self.asset}: RESUMED STILL HALTED — new BUYs "
+                  f"blocked, SELL/flatten still allowed. Reason: "
+                  f"{self.halt_reason[:80]}. Set HYDRA_RESET_CIRCUIT_BREAKER=1 "
+                  f"to clear once you have reviewed the drawdown.")
         self.gross_profit = float(snapshot.get("gross_profit", 0.0))
         self.gross_loss = float(snapshot.get("gross_loss", 0.0))
         self.equity_history = list(snapshot.get("equity_history", []))
@@ -2772,7 +2831,12 @@ class HydraEngine:
         current_price = self.prices[-1]
         equity = self.balance + self.position.size * current_price
         pnl = equity - self.initial_balance
-        pnl_pct = (pnl / self.initial_balance) * 100
+        # Guarded like the identical expression in _build_state. The agent
+        # sets initial_balance = 0.0 for signal-only / informational engines
+        # (bridge with no position, non-stable quote with no holding), and
+        # _print_final_report loops every pair OUTSIDE the tick try/except —
+        # one zero-balance engine aborted the entire shutdown report.
+        pnl_pct = (pnl / self.initial_balance * 100) if self.initial_balance > 0 else 0.0
         win_rate = (self.win_count / (self.win_count + self.loss_count) * 100) if (self.win_count + self.loss_count) > 0 else 0
 
         profit_factor = self.gross_profit / self.gross_loss if self.gross_loss > 0 else float("inf")

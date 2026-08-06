@@ -1679,12 +1679,12 @@ export function HydraDashboard({ jwtToken, onLogout }) {
               // secrets only on real success (not optimistic timers).
               try {
                 window.dispatchEvent(new CustomEvent("hydra_save_keys_ack", { detail: msg }));
-              } catch (_) { /* ignore */ }
+              } catch { /* ignore */ }
               return;
             case "start_agent_ack":
               try {
                 window.dispatchEvent(new CustomEvent("hydra_start_agent_ack", { detail: msg }));
-              } catch (_) { /* ignore */ }
+              } catch { /* ignore */ }
               if (msg.success && Number.isInteger(msg.port) && msg.port > 0 && msg.port < 65536) {
                 const newUrl = sanitizeWsUrl(`ws://localhost:${msg.port}`);
                 localStorage.setItem("hydra_ws_url", newUrl);
@@ -2892,7 +2892,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.31.0 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.32.0 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]

@@ -6,6 +6,221 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.32.0] — 2026-08-05
+
+Resilience release. Five defects that each ended with the agent quietly not
+trading — or trading on corrupted numbers — while looking healthy in the log.
+All were found by the 7-way audit sweep and verified before fixing.
+
+### Fixed — the agent silently stops working
+
+- **A dead CandleStream permanently wedged the tick loop.**
+  `_fetch_and_tick` returns `None` in live mode when the candle stream is
+  unhealthy, and the caller stores that `None` under the pair key.
+  `_build_portfolio_review_state` read it with `engine_states.get(pair, {})` —
+  which does NOT apply its default, because the key exists — and raised
+  `AttributeError` on the next `.get()`. That was not a one-tick blip: the
+  crash fired *before* the stream `ensure_healthy()` block later in the same
+  try body, so the dead stream was never restarted and every subsequent tick
+  died at the same line. No signals, no placements, and **no exits** — not even
+  circuit-breaker flattens. Fixed with `or {}`, and stream recovery moved into
+  the tick's `finally` so it can never again be gated on the rest of the tick
+  succeeding (each `ensure_healthy()` individually wrapped so one stream's
+  failure cannot block the others).
+- **The 15% circuit breaker was a permanent one-way ratchet.** `halted`
+  restores from the snapshot and nothing outside `__init__` ever cleared it;
+  `_portfolio_max_drawdown_pct` is a running max, so the portfolio halt
+  re-armed on every future resume. Production runs `--mode competition
+  --resume`, so a single breach disabled all new BUYs across every future
+  session forever, with no log line explaining why — SELL kept working, so the
+  bot looked alive while it had quietly stopped entering. CLAUDE.md described
+  this as "for session". Both halts now print a RESUMED-STILL-HALTED banner at
+  boot and are cleared by an explicit `HYDRA_RESET_CIRCUIT_BREAKER=1`, which
+  clears the flag only — the drawdown record is preserved so the breaker
+  re-arms immediately if still underwater. Deliberately NOT auto-cleared:
+  that would silently re-enable risk after a breach.
+
+### Fixed — corrupted execution accounting
+
+- **ExecutionStream double-folded replayed fills after a subprocess restart.**
+  The stream runs with `--snap-trades true` and `_on_start_reset` deliberately
+  preserves `_known_orders` so in-flight orders can still finalize. Those two
+  correct behaviours combined into double-counting: a 0.4 fill replayed after a
+  restart pushed `vol_exec_running` to 0.8, so a fully-filled 1.0 order
+  reported 1.4 — classified `PARTIALLY_FILLED` instead of `FILLED` (tolerance
+  is 1e-6), booked more inventory than was bought via
+  `reconcile_partial_fill`, produced a garbage cost-weighted `avg_fill_price`,
+  and debited roughly double the real fee from engine cash. Now deduped on
+  `exec_id` (Kraken's per-execution primary key), with a clamp to
+  `placed_amount` for entries that carry no `exec_id`.
+- **Unsellable dust looped forever and stranded inventory.** When the exchange
+  balance for a base asset fell below `ordermin`, the SELL preflight journalled
+  a failure and rolled the engine back — leaving the engine still believing it
+  held a sellable position, so every subsequent tick rebuilt the entry,
+  re-failed, and appended another `PLACEMENT_FAILED`, indefinitely. PR-C's
+  `write_off_dust()` never fired here because it keys off the *engine's* book,
+  not the engine-vs-exchange divergence that actually detects this. Now written
+  off so the engine returns to flat. **Staked holdings are excluded**:
+  `_get_real_quote_balance` skips staked assets by design, so a fully-staked
+  position reads 0.0 and would otherwise have been written off as dust —
+  destroying a real, recoverable position from our books. New
+  `_get_staked_balance` tells the two apart and surfaces the staked case
+  instead.
+
+### Fixed — guardrails that were not guarding
+
+- **R1-R11 and QFE did not run at all without an LLM key.** `hydra_quant_rules`
+  describes itself as "the guardrails the LLMs cannot talk around", but every
+  call to `apply_rules` / `evaluate_qfe` lived inside `_apply_brain`, which
+  returns immediately when `self.brain is None`. So on any deployment with an
+  unset or expired `ANTHROPIC_API_KEY` — or a `HydraBrain` constructor that
+  raised and was swallowed — the entire deterministic stack was inert while the
+  DerivativesStream kept feeding live funding/OI/CVD to the dashboard. Funding
+  could sit at +140 bps with R1 never firing; the feed could go dark entirely
+  and R10's blackout never fire. Nothing printed to say so. Added
+  `_apply_quant_guardrails`, a brain-free path called from the tick loop for
+  any actionable signal when no brain is configured. Deliberately additive —
+  the brain-present path is untouched. `positioning_bias` is `""`, so R8's
+  contrarian boost cannot fire (the same degradation already documented for the
+  fallback path), and `HYDRA_QUANT_INDICATORS_DISABLED=1` still skips it. Boot
+  now prints which guardrail layer is live.
+
+### Tests
+
+`tests/test_guardrails_resilience.py` — 15 cases, each paired with a negative
+control where one exists (benign funding must still let a BUY through; only the
+exact `=1` opt-in clears the halt; distinct `exec_id`s must still accumulate).
+The audit that produced these fixes also found tests that could not fail, so
+these were written to be falsifiable.
+
+Verified: `pytest tests/` **1450 passed, 0 failed**; `harness --mode mock`
+**36/36**; dashboard build + lint exit 0.
+
+---
+
+## [Unreleased]
+
+kraken-cli contract re-alignment plus the money-path fixes found by the
+7-way audit sweep. No version bump: the release cycle (`/release`) owns
+the version-site update.
+
+### kraken-cli upstream re-verification
+
+Checked `krakenfx/kraken-cli` on 2026-08-05: **v0.3.2 (2026-04-20) is
+still the latest tagged release and `aa32814` is still branch HEAD** — the
+same commit Hydra was already pinned to. There is no newer CLI to adopt.
+What *had* drifted was Hydra's use of the CLI's documented contract
+(`agents/tool-catalog.json`, `AGENTS.md`, `CONTEXT.md`):
+
+- **Fixed — every paper order failed at the CLI boundary.**
+  `KrakenCLI.paper_buy/paper_sell` sent `--volume <V>`, but upstream takes
+  VOLUME **positionally** (`kraken paper buy <PAIR> <VOLUME>`); `--volume`
+  is not a flag on that subcommand. `--type limit` was also sent with no
+  `--price`, which upstream rejects. Volume is now positional, the limit
+  price is threaded through from `_place_paper_order`, and a limit with no
+  usable price degrades to `market` rather than emitting a
+  guaranteed-invalid command. Invisible to tests because the entire suite
+  (and the live harness) stubs `KrakenCLI._run`, i.e. above argv
+  construction — `tests/test_kraken_cli.py::TestPaperArgv` now asserts on
+  the argv itself.
+- **Errors are category slugs, not sentences.** Upstream returns
+  `{"error": "<category>", "message": ...}` with an optional `retryable`;
+  CONTEXT.md: *"Route handling decisions based on the `error` field rather
+  than message text."* Hydra wrote its own human strings into that same key,
+  colliding with the slug namespace, and callers printed the bare slug —
+  hence log lines like `PLACEMENT_FAILED: validation` with the actionable
+  detail discarded. `_normalize_error` now adds `error_category` /
+  `error_message` / `retryable` alongside an unchanged `error` (byte-compatible
+  for existing `"error" in result` call sites), and `describe_error()`
+  renders `category: message (suggestion)`.
+- **Bounded retry for read-only calls.** AGENTS.md: *"The CLI does not
+  pre-throttle or retry rate-limited requests"* — an unretried transient
+  blanked an indicator for a whole tick. `_run` now retries on a retryable
+  failure, **read-only commands only** (`_is_retry_safe`). Order placement,
+  cancellation and paper trades are never retried: an ambiguous timeout can
+  double-place and the spot path carries no idempotency key. The 2s REST
+  floor still gates every attempt. This also confirms the 2s floor is
+  load-bearing — Hydra is the only throttle in the chain.
+- **Secrets out of the process argv.** `KRAKEN_API_KEY`/`KRAKEN_API_SECRET`
+  were interpolated into the `bash -c` string, putting the live trading
+  secret in the `wsl` argv where any local user could read it from `ps` /
+  procfs. `shlex.quote` stopped injection but never disclosure. They now
+  travel in the child's environment, forwarded by `WSLENV`. Revert with
+  `HYDRA_CLI_LEGACY_SECRET_EXPORT=1`.
+- **Adopted `kraken extended-balance`** for a hold-netted balance view (see
+  below).
+
+### Fixed — money path
+
+- **Conviction sizing silently nullified every de-risking decision.**
+  `_maybe_execute` applied `effective_mult` and then did
+  `size = max(size, conviction_value / price)` where `conviction_value` was
+  derived from `balance` alone. Whenever the daily ensemble was long — the
+  default live path, `HYDRA_TREND_OVERLAY` and
+  `HYDRA_TREND_CONVICTION_SIZING` both default ON — an RM `ADJUST,
+  size_multiplier=0.3` and a clean `1.0` produced **byte-identical
+  notional**; the R3/R5/R7 penalty stack was equally inert. Only an exact
+  `0.0` survived, via the `size > 0` guard. The floor is now scaled by
+  `effective_mult`, restoring PR-B.
+- **Gross balance double-counted funds held in resting orders.** Kraken's
+  `balance` includes quote currency locked behind our own unfilled post-only
+  orders, so the sizer re-committed money an order already owned and the
+  exchange rejected the follow-up — the `PLACEMENT_FAILED:
+  insufficient_<quote>_balance` loop. `BalanceStream` now tracks gross and
+  free separately (`latest_free_balances()`), `KrakenCLI.free_balance()`
+  reads `extended-balance`, and `_get_real_quote_balance` — the spendability
+  chokepoint — prefers the free view. Equity, peak equity and the drawdown
+  breaker deliberately stay on GROSS. Fails open to gross on any
+  unrecognized payload shape.
+- **Post-OVERRIDE rule re-apply dropped the recomputed size multiplier.**
+  When the brain OVERRODE the engine's direction, the rules were correctly
+  re-scored for the new side but only `force_hold` was consumed —
+  `rr2.size_multiplier` was discarded and the **pre-override** multiplier
+  executed. An engine SELL overridden to BUY under a short squeeze in
+  euphoric contango ran at R8's contrarian ×1.15 instead of R3×R5's ×0.35:
+  3.3× the mandated size, into exactly the setup the rules guard.
+- **Gross-inventory cap could emit a sub-ordermin BUY.** `PositionSizer`
+  enforces ordermin/costmin *before* the `max_position_pct` cap shrinks the
+  size, so an engine sitting at the cap emitted dust orders (~7e-08 BTC /
+  $0.007) that the agent preflight passes (it checks the balance, not the
+  order size) and Kraken rejects — re-fired every tick. Floors re-asserted
+  after the cap.
+- **`write_off_dust()` leaked `realized_pnl` into the next position**, which
+  then booked that stale profit on a flat close — inflating
+  `win_count`/`gross_profit` and feeding `ParameterTracker` a fabricated win
+  to learn from.
+- **`get_performance_report()` divided by zero** when `initial_balance == 0`
+  (signal-only / informational engines). `_print_final_report` loops every
+  pair *outside* the tick try/except, so one such engine aborted the whole
+  shutdown report.
+- **A no-op tuner update destroyed the rollback point.** `_param_history` is
+  `deque(maxlen=1)`; the previous snapshot was appended (evicting the real
+  one) before the code discovered nothing would be applied, then popped —
+  leaving the deque empty and `rollback_to_previous()` returning False.
+
+### Fixed — CI / test integrity
+
+- **A CI step ran zero tests and was permanently green.**
+  `tests/test_companion_mode_scrub.py` has no `__main__` runner, so
+  `python tests/test_companion_mode_scrub.py` imported the module and exited
+  0. 26 tests — including the soul-prompt mode-label safeguards — had never
+  run. Now invoked via pytest.
+- **CI enumerated test files by hand**, so 4 files never ran — including the
+  grep-guards enforcing *"research surfaces never place orders"*
+  (`test_s3_shadow.py`, `test_heartbeat_surface.py`). Added a catch-all
+  `python -m pytest tests/ -q` step so new test files are covered by default.
+- **`pyyaml` added to `requirements.txt`** — `heartbeat/src/heartbeat/config.py`
+  imports it, so the catch-all step would have gone red immediately.
+- **The mandatory mock harness exited 0 when zero scenarios ran.** Emptying
+  `ALL_SCENARIOS`, mistagging modes or breaking the scenario import turned
+  the gate permanently green. It now exits 2 on an empty run, and on fewer
+  than 30 unfiltered mock scenarios.
+- **`.claude/settings.json` pointed the post-edit hook at an absolute
+  Windows path** (`C:/Users/.../post-edit.py`), so the hook failed for every
+  other machine and in CI. Now `$CLAUDE_PROJECT_DIR`-relative.
+
+---
+
 ## [2.31.0] — 2026-07-19
 
 Publishable **heartbeat-flow** package (dataset → P(up) indicator), live

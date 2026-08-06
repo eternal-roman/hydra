@@ -534,6 +534,20 @@ def main() -> int:
         print(f"  JSON report written to {args.json}")
 
     _, failed = Harness.summarize(results)
+
+    # A run that executed nothing is a FAILED gate, not a passing one.
+    # CLAUDE.md makes `--mode mock` mandatory for any PR touching the
+    # execution path; with an empty result list `failed == 0`, so emptying
+    # ALL_SCENARIOS, mistagging modes, or breaking the lazy scenario import
+    # turned that gate permanently green with no signal.
+    if not results:
+        print("  [HARNESS] FATAL: zero scenarios ran — the gate verified nothing.")
+        return 2
+    if args.mode == "mock" and not args.scenario and len(results) < 30:
+        print(f"  [HARNESS] FATAL: only {len(results)} mock scenarios ran "
+              f"(expected >= 30) — scenarios have gone missing.")
+        return 2
+
     return 0 if failed == 0 else 1
 
 

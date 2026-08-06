@@ -1,7 +1,7 @@
 {
   "name": "dashboard",
   "private": true,
-  "version": "2.31.0",
+  "version": "2.32.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^19.2.4",
+    "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
