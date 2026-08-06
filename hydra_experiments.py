@@ -764,14 +764,24 @@ def sweep_experiment(
     store: Optional[ExperimentStore] = None,
     triggered_by: str = "cli",
     tags: Optional[List[str]] = None,
+    pool: Optional[Any] = None,
 ) -> List[Experiment]:
-    """Serial sweep of `param` over `values` on `pair` (defaults to first pair).
+    """Sweep of `param` over `values` on `pair` (defaults to first pair).
 
     Each value produces one Experiment; all share the same base except for the
-    swept param's override. Returns the list of completed experiments.
+    swept param's override.
 
-    Parallelization happens at Phase 6 via BacktestWorkerPool — serial here
+    When `pool` is a BacktestWorkerPool the experiments are QUEUED and returned
+    immediately (status `pending`); when it is None they run inline, which
     keeps the library usable without the agent process mounted.
+
+    The pool path exists because `_tool_sweep_param` is reachable from the
+    brain's tool-use loop, which runs on the LIVE TICK THREAD. `run_backtest`
+    was explicitly fixed for this ("I1: never block the live tick") but the
+    sweep was not: with `n_candles` up to 20000 and 10 values, the schema
+    permits ~200,000 engine ticks executed synchronously while real positions
+    are open — during which the agent does not tick, does not reconcile fills,
+    and does not honour its own shutdown path.
     """
     if not values:
         return []
@@ -798,7 +808,10 @@ def sweep_experiment(
             overrides={target_pair: {param: v}},
             tags=(tags or []) + ["sweep", f"param:{param}"],
         )
-        run_experiment(exp, store=store)
+        if pool is not None:
+            pool.submit_experiment(exp)
+        else:
+            run_experiment(exp, store=store)
         out.append(exp)
     return out
 

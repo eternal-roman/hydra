@@ -38,7 +38,7 @@ import math
 import random
 import statistics
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from hydra_engine import Candle
 from hydra_backtest import (
@@ -252,8 +252,9 @@ def monte_carlo_resample(
     n_iter: int = 500,
     block_len: int = 20,
     seed: int = 42,
-    candle_interval_min: int = 15,
+    candle_interval_min: int = 60,
     starting_equity: float = 100.0,
+    trades_per_year: Optional[float] = None,
 ) -> MonteCarloReport:
     """Block bootstrap over realized trade profits.
 
@@ -261,8 +262,21 @@ def monte_carlo_resample(
     bootstrap (block_len preserves short-horizon autocorrelation), then
     recompute total_return / sharpe / max_dd / profit_factor. Return 95% CIs.
 
-    Note: the sharpe here is computed on trade-level returns, not candle-level.
-    Reviewer uses this to bound the significance of its observed improvement.
+    The sharpe here is computed on TRADE-level returns, not candle-level.
+    That distinction is the whole point of `trades_per_year`: the function
+    used to annualize with `annualization_factor(candle_interval_min)`, i.e.
+    sqrt(BARS per year) — 93.6 on 60m bars — applied to one return per TRADE.
+    A mundane 42-trade series came back with a Sharpe CI of roughly
+    [25.4, 31.5]. `docs/BACKTEST_SPEC.md` makes `mc_ci_lower_positive`
+    (`mc_ci_95[0] > 0`) one of seven rigor gates for auto-apply eligibility,
+    and at a ~93x inflation that gate could never bind for any strategy with a
+    non-degenerate profit series.
+
+    Correct scalar is sqrt(TRADES per year). Pass `trades_per_year` when the
+    caller knows the backtest window; when it is None the Sharpe is reported
+    UNANNUALIZED (per-trade), which is honest rather than inflated.
+    `candle_interval_min` is retained only for signature compatibility — it has
+    no correct meaning against trade-level returns and is no longer used.
     """
     if not trade_profits:
         empty = MonteCarloCI(0.0, 0.0, 0.0, 0.0)
@@ -273,7 +287,10 @@ def monte_carlo_resample(
         )
 
     rng = random.Random(seed)
-    af = annualization_factor(candle_interval_min)
+    # sqrt(trades per year) — NOT sqrt(bars per year). 1.0 leaves the Sharpe
+    # per-trade (unannualized) rather than silently scaling it by a factor
+    # that does not apply to these returns.
+    af = math.sqrt(trades_per_year) if trades_per_year and trades_per_year > 0 else 1.0
 
     total_returns: List[float] = []
     sharpes: List[float] = []

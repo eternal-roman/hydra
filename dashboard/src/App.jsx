@@ -1277,6 +1277,21 @@ export function HydraDashboard({ jwtToken, onLogout }) {
   const [researchParamsSchema, setResearchParamsSchema] = useState(null);
   // T30B — streaming progress + final result for Mode B walk-forward.
   const [researchLabProgress, setResearchLabProgress] = useState(null);
+
+  // Stable identity (useCallback with an empty dep list). Previously this was
+  // an inline arrow, so a NEW function was created on every App render — and
+  // LabPane's effect depends on it. That closed a self-sustaining loop:
+  // effect fires -> research_params_current -> server ack -> setResearchParamsSchema
+  // (always a freshly-parsed object, so always a state change) -> App re-renders
+  // -> new callback identity -> effect fires again. Bounded only by the
+  // localhost WS round-trip, and re-triggered by every candle_update. Each
+  // iteration ran a synchronous hydra_params_<pair>.json disk read on the
+  // asyncio loop thread that also serves every broadcast, and wiped the
+  // operator's dragged candidate params.
+  const clearLabRunState = useCallback(() => {
+    setResearchLabResult(null);
+    setResearchLabProgress(null);
+  }, []);
   // v2.20.0 — top StatCards "Hydra-only" toggle. ON excludes journal entries
   // with source='kraken_backfill' (manual / pre-Hydra trades); OFF shows
   // full history. Persisted to localStorage so the user's choice survives
@@ -1386,7 +1401,10 @@ export function HydraDashboard({ jwtToken, onLogout }) {
     if (data.pairs) {
       const liveTotal = data.balance_usd?.total_usd;
       const engineEquity = Object.values(data.pairs).reduce((sum, p) => sum + (p.portfolio?.equity || 0), 0);
-      setHistory((prev) => [...prev, liveTotal != null ? liveTotal : engineEquity].slice(-500));
+      // Same 0-vs-null trap as totalEquity above: without the > 0 test the
+      // balance sparkline flatlined at zero whenever the CLI was unavailable.
+      const point = (typeof liveTotal === "number" && liveTotal > 0) ? liveTotal : engineEquity;
+      setHistory((prev) => [...prev, point].slice(-500));
     }
     if (data.order_journal) setOrderJournal(data.order_journal);
   }, []);
@@ -1958,7 +1976,15 @@ export function HydraDashboard({ jwtToken, onLogout }) {
   const remaining = state?.remaining || 0;
 
   // Total Balance: use real exchange balance when available, fall back to engine equity
-  const totalEquity = balanceUsd?.total_usd != null ? balanceUsd.total_usd : Object.values(pairs).reduce((s, p) => s + (p.portfolio?.equity || 0), 0);
+  // The engine-equity fallback used to be unreachable: the backend ALWAYS
+  // emits balance_usd, and when the balance is unknown it emits a literal 0
+  // (not null). Since 0 != null the ternary always took the first branch, so
+  // a failed/absent Kraken CLI — routine in paper/dev — rendered
+  // "Total Balance $0.00" while the pairs held real equity. Treat a
+  // non-positive total as "unknown" and fall back.
+  const _liveTotal = balanceUsd?.total_usd;
+  const _engineEquity = Object.values(pairs).reduce((s, p) => s + (p.portfolio?.equity || 0), 0);
+  const totalEquity = (typeof _liveTotal === "number" && _liveTotal > 0) ? _liveTotal : _engineEquity;
   // P&L journalPnlUsd is computed below alongside the hydra-only-toggle
   // sourced fields so the toggle gate them in lockstep.
   // Engine round-trip win rate (position fully closed)
@@ -2032,6 +2058,21 @@ export function HydraDashboard({ jwtToken, onLogout }) {
             {aiBrain ? "AI Brain" : "Engine Only"}
           </div>
           <ConnectionStatus connected={connected} tick={tick} />
+          {/* Paper/demo sessions were visually indistinguishable from live —
+              and in paper mode the Total Balance card shows the REAL Kraken
+              account while P&L and fills are simulated. Say which it is. */}
+          {(state?.demo || state?.paper) && (
+            <span style={{
+              fontSize: 10, fontFamily: mono, fontWeight: 700,
+              letterSpacing: 0.6, padding: "2px 7px", borderRadius: 4,
+              color: "#0b0b0b", background: state?.demo ? "#7dd3fc" : "#fbbf24",
+            }}
+            title={state?.demo
+              ? "Offline demo — synthetic fills, no exchange contact"
+              : "Paper mode — simulated fills; the balance card still shows your REAL account"}>
+              {state?.demo ? "DEMO" : "PAPER"}
+            </span>
+          )}
           {elapsed > 0 && (
             <span style={{ fontSize: 11, fontFamily: mono, color: COLORS.textDim }}>
               {Math.floor(elapsed / 60)}m{Math.floor(elapsed % 60)}s{remaining > 0 ? ` / ${Math.floor((elapsed + remaining) / 60)}m` : ""}
@@ -2075,10 +2116,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                 labResult={researchLabResult}
                 labProgress={researchLabProgress}
                 paramsSchema={researchParamsSchema}
-                clearLabRunState={() => {
-                  setResearchLabResult(null);
-                  setResearchLabProgress(null);
-                }}
+                clearLabRunState={clearLabRunState}
               />
             )}
             {/* Floating observer on LIVE tab — dual-state view. Appears
@@ -2892,7 +2930,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.32.0 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.32.1 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]
@@ -2900,7 +2938,11 @@ export function HydraDashboard({ jwtToken, onLogout }) {
           )}
         </div>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          Not financial advice. Real money at risk.
+          Not financial advice.{" "}
+          {(state?.demo || state?.paper)
+            ? (state?.demo ? "Offline demo — no orders reach Kraken."
+                           : "Paper mode — simulated fills, no real orders.")
+            : "Real money at risk."}
         </div>
       </div>
     </div>

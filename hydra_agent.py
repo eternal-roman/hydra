@@ -851,15 +851,29 @@ class HydraAgent:
     def _snapshot_path(self) -> str:
         return os.path.join(self._snapshot_dir, "hydra_session_snapshot.json")
 
-    def _journal_for_persistence(self) -> List[Dict[str, Any]]:
+    def _journal_for_persistence(self, limit: Optional[int] = 200) -> List[Dict[str, Any]]:
         """Return the journal slice to persist to disk. Excludes
         PLACEMENT_FAILED entries — those are pre-exchange diagnostics
         useful in-session for live debugging, but they re-pollute the
         dashboard on restart if persisted. The in-memory
         self.order_journal still contains them for the current session.
 
-        Caps at the most recent 200 non-failed entries (matches the prior
-        [-200:] cap on the unfiltered list)."""
+        `limit` caps the result to the most recent N entries; None means no
+        cap. It is a parameter because the two write paths need DIFFERENT
+        depths, and sharing one 200-entry cap silently corrupted realized P&L:
+
+          * `_save_snapshot` wants a bounded snapshot — 200 is fine.
+          * the per-tick ROLLING journal is documented in `_merge_order_journal`
+            as "the authoritative long-horizon record ... so the rolling file
+            preserves depth across restarts", and `ORDER_JOURNAL_CAP` is 2000
+            in memory. Capping it at 200 meant a session with 800 fills kept
+            only the last 200 on disk; after a restart the earlier ones were
+            gone for good. `_compute_pair_realized_pnl` walks the whole journal
+            doing average-cost-basis accounting, so SELLs of inventory bought
+            before the cutoff were valued against a truncated (or zero) cost
+            basis — permanently wrong realized P&L in the dashboard,
+            `journal_stats`, and the exported competition results.
+        """
         # Strip in-memory-only blobs that are large / redundant on disk.
         # pre_trade_snapshot is kept in-memory for same-session cancel/true-up;
         # on resume, CANCELLED_UNFILLED without snapshot still warns (pre-PR-C).
@@ -870,7 +884,7 @@ class HydraAgent:
             if e.get("lifecycle", {}).get("state") == "PLACEMENT_FAILED":
                 continue
             out.append(e)
-        return out[-200:]
+        return out if limit is None else out[-limit:]
 
     def _save_snapshot(self):
         """Atomically save session state to disk (.tmp -> os.replace).
@@ -1924,7 +1938,11 @@ class HydraAgent:
                 # half-valid JSON. Mirrors _save_snapshot's pattern.
                 # Offline --demo never touches the operator rolling journal.
                 if not getattr(self, "demo", False):
-                    filtered_journal = self._journal_for_persistence()
+                    # limit=None: the rolling file is the authoritative
+                    # long-horizon record (see _merge_order_journal), so it
+                    # must NOT inherit the snapshot's 200-entry cap. Bounded
+                    # in memory by ORDER_JOURNAL_CAP.
+                    filtered_journal = self._journal_for_persistence(limit=None)
                     if filtered_journal:
                         rolling_file = os.path.join(self._snapshot_dir, "hydra_order_journal.json")
                         rolling_tmp = rolling_file + ".tmp"
@@ -4333,6 +4351,13 @@ class HydraAgent:
             "running": self.running,
             "interval": self.interval,
             "mode": self.mode,
+            # Paper/demo flags were persisted to the snapshot and stamped on
+            # every journal intent, but never broadcast — so a paper session
+            # was pixel-identical to a live one in the UI. Worse than neutral:
+            # in paper mode `balance_usd` is still the REAL Kraken account, so
+            # "Total Balance" showed real money next to paper P&L and fills.
+            "paper": bool(getattr(self, "paper", False)),
+            "demo": bool(getattr(self, "demo", False)),
             "ai_brain": self.brain.get_stats() if self.brain else None,
         }
 
@@ -4611,7 +4636,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.32.0",
+            "version": "2.32.1",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
