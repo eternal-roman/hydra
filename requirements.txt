@@ -13,7 +13,7 @@ PyJWT>=2.13.0
 cryptography>=49.0.0
 passlib[bcrypt]>=1.7.4
 bcrypt<5.0
-websockets>=16.1.1
+websockets>=17.0.1
 # heartbeat/src/heartbeat/config.py imports yaml. Absent from this file until
 # v2.32, so `pytest tests/` red-lined on test_heartbeat_surface.py the moment
 # the catch-all CI step existed to run it.
