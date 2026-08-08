@@ -244,10 +244,21 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 - Engine demo (no keys): `python hydra_engine.py`
 
 **Launchers:**
-- `start_hydra.bat` — production watchdog (`--mode competition --resume` — **do not remove these flags**)
+- `start_hydra.bat` — production watchdog (`--pairs auto --mode competition --resume` — **do not remove these flags**)
 - `start_all.bat` — full stack: agent + dashboard
 - `start_dashboard.bat` — dashboard only
-- `start_hydra_companion.bat` — paper-mode companion testing (no real money)
+- `start_hydra_companion.bat` — paper-mode companion testing (no real money); same `--pairs auto` as production
+
+**A launcher's explicit `--pairs` overrides the code default and does not
+drift with it.** Both agent launchers hardcoded the legacy
+`SOL/USD,SOL/BTC,BTC/USD` triangle from before v2.29 and kept running it in
+production for every release after the default moved to the three cores —
+trading a pair set the evidence ledger had rejected (SOL AUC 0.56 FAIL, the
+SOL/BTC bridge drain-only) with **no ETH and no ZEC**. They now pass
+`--pairs auto`, which seeds BTC/USD + ETH/USD + ZEC/USD and adds one
+satellite per additional held asset, so held SOL is worked as an ordinary
+satellite. Any change to the default pair set must be re-checked against
+these two files — nothing else does it, and no test covers `.bat` content.
 
 ## Version sites (Rule 5: update ALL in one commit)
 

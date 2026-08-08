@@ -32,7 +32,7 @@ echo.
 
 :loop
 echo [%date% %time%] Starting HYDRA agent...
-python -u hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD --mode competition --paper
+python -u hydra_agent.py --pairs auto --mode competition --paper
 echo.
 echo [%date% %time%] HYDRA exited (code %errorlevel%). Restarting in 10 seconds...
 echo Press Ctrl+C to stop.
