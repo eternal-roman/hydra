@@ -62,7 +62,10 @@ Hot index + kill switches: `CLAUDE.md` (module row `companions`, env flags).
 
 ### Touched additively (no edits to existing components)
 ```
-hydra_agent.py       — adds _execute_companion_proposal + mount_companion_routes (env-gated)
+hydra_agent.py       — mounts the coordinator + WS handlers (env-gated). There is no
+                       _execute_companion_proposal on the agent: execution lives in
+                       hydra_companions/{coordinator,live_executor}.py and reaches the
+                       exchange through KrakenCLI, not through a HydraAgent method.
 dashboard/src/App.jsx — +Companion root component (~600 LOC, all inline-styled)
 .gitignore           — adds .hydra-companions/
 CHANGELOG.md         — entry per phase on merge
@@ -153,23 +156,28 @@ Heuristic-first:
 
 ---
 
-## 5. Safety caps (per-companion, code-enforced)
+## 5. Safety caps (per-companion)
 
-| Cap | Athena | Apex | Broski |
-|---|---|---|---|
-| Max trades / day | 4 | 6 | **9** |
-| Max risk / trade (% equity) | 0.5% default / 1.0% ceiling | 1.0% | **1.5%** |
-| Max concurrent risk (% equity) | 2.0% | 3.0% | **4.5%** |
-| Max ladder rungs | 4 | 4 | **5** |
-| Price-band from mid (hard) | ±3% | ±4% | **±6%** |
-| VOLATILE regime | blocked or half-size | half-size | half-size allowed |
-| Daily chat budget (USD) | $2 | $3 | $2 |
+Values live in `hydra_companions/model_routing.json` → `safety_caps` (that file's `comment` field is the authority on enforcement status). **Enforced** = a code path rejects the proposal; **declared** = the number exists in JSON but nothing reads it.
 
-Universal hard-blocks (all companions):
+| Cap | Athena | Apex | Broski | Status |
+|---|---|---|---|---|
+| Max trades / day | 4 | 6 | **9** | Enforced — `coordinator.confirm_trade` + `live_executor`, live-execution path only |
+| Max risk / trade (% equity) | 0.5% default / 1.0% ceiling | 1.0% | **1.5%** | Enforced — `ProposalValidator.validate_trade` |
+| Price-band from mid (hard) | ±3% | ±4% | **±6%** | Enforced — `ProposalValidator.validate_trade` |
+| Max ladder rungs | 4 | 4 | **5** | Enforced — `ProposalValidator.validate_ladder` |
+| Daily chat budget (USD) | $2 | $3 | $2 | Enforced — `CompanionCoordinator` cost counter |
+| Max concurrent risk (% equity) | 2.0% | 3.0% | **4.5%** | **Declared only** — no code reads this key |
+| VOLATILE regime | blocked or half-size | half-size | half-size allowed | **Declared only** — no code reads `volatile_regime_policy`; the soul's `avoided_regimes` reaches the prompt, which is persuasion, not a gate |
+
+Universal hard-blocks (all companions), in `ProposalValidator`:
 - No stop-loss → reject.
-- Size < pair `ordermin` or cost < `costmin` → reject.
+- Pair not among the agent's live engines → reject.
+- Size < `ordermin` or cost < `costmin` (from `hydra_pair_registry`) → reject.
+- Equity unknown (empty snapshot at boot) → reject; the risk cap fails closed.
+- Notional > engine `max_position_pct` of equity → reject (a tight stop must not buy unbounded size).
 - System status `maintenance` / `cancel_only` → reject.
-- Any engine in circuit-breaker halt → reject.
+- Any engine in circuit-breaker halt → reject; portfolio-wide BUY halt → reject BUY (SELL still allowed, per PR-A).
 - Market orders → never proposed, no tool exposes them.
 
 ---
@@ -235,14 +243,15 @@ Every confirmed trade funnels through this gauntlet:
 
 1. **Token/TTL check** (ws handler rejects stale/mismatched tokens).
 2. **Proposal validator** (`executor.py`):
-   - Pair ∈ `PAIRS_SUPPORTED`.
-   - Size ≥ `ordermin`, cost ≥ `costmin` (reuse existing `KrakenCLI` pair constants).
+   - Pair ∈ the agent's live `engines` map.
+   - Size ≥ `ordermin`, cost ≥ `costmin` — read from `hydra_pair_registry.default_registry()`, the single source of truth.
    - Limit price within ±max_price_band_from_mid (per-companion cap).
-   - Risk as % of equity ≤ companion's cap.
+   - Risk as % of equity ≤ companion's cap; unknown equity rejects.
+   - Notional ≤ engine `max_position_pct` of equity.
    - Stop-loss present and non-zero.
 3. **System status gate** — reuses `kraken status` check.
-4. **Circuit breaker check** — any engine halted → reject.
-5. **Per-companion daily trade-count + risk cap** check.
+4. **Circuit breaker check** — any engine halted → reject; portfolio BUY halt → reject BUY.
+5. **Per-companion daily trade-count** check (`coordinator.confirm_trade`, live-execution path).
 6. **Journal write** — `COMPANION_PROPOSAL_CONFIRMED` entry, regardless of outcome.
 7. **Place** via `KrakenCLI.order_buy/sell` with `userref` prefix `COMPANION_<id>_<proposal_id>` — so ExecutionStream fills are attributable to the companion.
 8. **ExecutionStream lifecycle** — existing infrastructure handles fills, rollbacks, reconciliation. No new code path on fills.
@@ -304,7 +313,7 @@ Two tiers, both per-companion per-user:
 | Phase | Scope | Ship criteria |
 |---|---|---|
 | **0** | Spec: soul JSONs + routing + this doc (this PR) | Review and sign-off |
-| **1** | Read-only chat: companions chat, reference live state, teach. No proposals. | All unit tests green; `mock` harness smoke passes; gated by `HYDRA_COMPANION_ENABLED=1` |
+| **1** | Read-only chat: companions chat, reference live state, teach. No proposals. | All unit tests green; `mock` harness smoke passes. (Phase-1 shipped behind an opt-in; the surviving gate is the kill switch `HYDRA_COMPANION_DISABLED` below — there is no `HYDRA_COMPANION_ENABLED` in the code.) |
 | **2** | Proposals (trade + ladder) emit as cards. Confirm is a no-op mock execution. | Proposal validator full coverage; UI cards render/confirm/reject |
 | **3** | Live single-trade execution via `_place_order`. Per-companion caps live. | `live_harness --mode mock` passes with companion scenarios; manual validate on paper account |
 | **4** | Live ladder execution + `LadderWatcher` invalidation cancels | Ladder lifecycle test suite green; partial-fill paths covered |
@@ -389,23 +398,27 @@ No auth, no DB, no multi-tenancy yet — just doors that open the right directio
 
 Soul JSON schema bumped from 1.0 → 1.1 for all three companions. Additive only — no legacy keys removed. The upgrade introduces a CBP-inspired graph shape inside each soul file so provenance, conditional rule activation, fallibility, and intellectual lineage are first-class.
 
-**Schema provenance (no runtime dependency).** The soul graph borrows its *shape* — provenance, conditional gates, weighted nodes/edges, intellectual lineage — from a Context-Binding-Protocol-style node/edge model, but it is **pure hand-authored flat JSON with zero runtime dependency on any CBP service.** The compiler (`hydra_companions/compiler.py`) reads these sections straight from the soul files in `hydra_companions/souls/` and renders them into the system prompt. Node/edge ids are hand-authored semantic slugs; soul graphs stay hand-editable and version-controlled by design. (The optional CBP *sidecar* that once mirrored per-companion distilled memory cross-session was removed in v2.26.0 — companion memory is now local JSONL only. See CHANGELOG v2.26.0.)
+**Schema provenance (no runtime dependency).** The soul graph borrows its *shape* — provenance, conditional gates, weighted nodes/edges, intellectual lineage — from a Context-Binding-Protocol-style node/edge model, but it is **pure hand-authored flat JSON with zero runtime dependency on any CBP service.** The compiler (`hydra_companions/compiler.py`) reads the soul files in `hydra_companions/souls/` directly. Node/edge ids are hand-authored semantic slugs; soul graphs stay hand-editable and version-controlled by design. (The optional CBP *sidecar* that once mirrored per-companion distilled memory cross-session was removed in v2.26.0 — companion memory is now local JSONL only. See CHANGELOG v2.26.0.)
 
-### New top-level sections (all optional; compiler gates rendering on presence)
+Not every section reaches a compiled prompt. The **Compiled** column below is the truth as of this revision — verify against `compile_soul()` before relying on one.
 
-| Section | Purpose | Shape |
-|---|---|---|
-| `intellectual_lineage` | Mentors / authors / sources with what was taken and what was rejected | Array of CBP entity nodes: `{id, type:"entity", val:{author,key_work,chapter_or_concept,what_*_took,what_*_rejected}, w, decay, tags}` |
-| `formative_incidents` | Dated, weighted narratives with explicit lessons | Array of CBP state nodes: `{id, type:"state", val:{date,title,narrative,lesson}, w, decay, tags}` |
-| `beliefs` | Weighted, decay-tagged held convictions | Array of CBP state nodes: `{id, type:"state", val:"<statement>", w, decay, decay_trigger?, tags}` |
-| `past_selves` | Prior versions of the persona linked via `supersedes` edges | Array of CBP entity nodes |
-| `provenance_edges` | Typed, directional, optionally conditional edges connecting rules → incidents → mentors | Array of CBP edges using the standard-8 vocab (`causes, correlates, contradicts, qualifies, supersedes, requires, inhibits, amplifies`) with `strength ∈ [-1,1]` and `conditional` expressions |
-| `conditional_rules` | Behavioral rules with CBP `conditional` activation expressions | Array of `{base_rule_id, condition_label, conditional, modified_template, note?, invokes_protocol?}` |
-| `fallibility` | Self-correction protocol for known biases | `{stance, known_biases[], self_correction_protocol:{id, title, triggered_when, protocol, recovery_phrase}}` |
-| `non_trading_interests` | Interests that bear on the companion's thinking | Array of `{interest, depth, bears_on_trading}` |
-| `internal_tensions` | Honest tradeoffs / costs of the persona | Array of `{tension, cost, honest_acknowledgment}` |
-| `capabilities` | Per-soul tool allowlist | `{tool_access:[], tool_access_note?, preferred_intents_for_tool_use:[]}` |
-| `voice.modes` | Multi-mode voice register with switching rules | `{default_mode_id, modes_available:[{id,when,register,median_words,capitalization,example}], switching_rules:[]}` |
+### New top-level sections (all optional)
+
+| Section | Compiled? | Purpose | Shape |
+|---|---|---|---|
+| `intellectual_lineage` | ✓ `## Where my rules come from` | Mentors / authors / sources with what was taken and what was rejected | Array of CBP entity nodes: `{id, type:"entity", val:{author,key_work,chapter_or_concept,what_*_took,what_*_rejected}, w, decay, tags}` |
+| `formative_incidents` | ✓ `## How I got here` (top 3 by `w`) | Dated, weighted narratives with explicit lessons | Array of CBP state nodes: `{id, type:"state", val:{date,title,narrative,lesson}, w, decay, tags}` |
+| `beliefs` | **No** — read into a local, never rendered | Weighted, decay-tagged held convictions | Array of CBP state nodes: `{id, type:"state", val:"<statement>", w, decay, decay_trigger?, tags}` |
+| `past_selves` | **No** — read into a local, never rendered | Prior versions of the persona linked via `supersedes` edges | Array of CBP entity nodes |
+| `provenance_edges` | **No** — the compiler never reads this key | Typed, directional, optionally conditional edges connecting rules → incidents → mentors | Array of CBP edges using the standard-8 vocab (`causes, correlates, contradicts, qualifies, supersedes, requires, inhibits, amplifies`) with `strength ∈ [-1,1]` and `conditional` expressions |
+| `conditional_rules` | ✓ `## Gated rules` | Behavioral rules with CBP `conditional` activation expressions | Array of `{base_rule_id, condition_label, conditional, modified_template, note?, invokes_protocol?}` |
+| `fallibility` | ✓ `## Known fallibilities` | Self-correction protocol for known biases | `{stance, known_biases[], self_correction_protocol:{id, title, triggered_when, protocol, recovery_phrase}}` |
+| `non_trading_interests` | ✓ `## Human texture` | Interests that bear on the companion's thinking | Array of `{interest, depth, bears_on_trading}` |
+| `internal_tensions` | ✓ `## Human texture` | Honest tradeoffs / costs of the persona | Array of `{tension, cost, honest_acknowledgment}` |
+| `capabilities` | ✓ as `CompiledSoul.tool_access` (allowlist, not prose) | Per-soul tool allowlist | `{tool_access:[], tool_access_note?, preferred_intents_for_tool_use:[]}` |
+| `voice.modes` | ✓ `## Voice modes` | Multi-mode voice register with switching rules | `{default_mode_id, modes_available:[{id,when,register,median_words,capitalization,example}], switching_rules:[]}` |
+
+The three uncompiled sections are authored in all three souls and are inert: editing them changes no prompt and no behavior. Wire them into `compile_soul()` before treating them as live persona.
 
 ### Conditional expression syntax
 
@@ -418,15 +431,9 @@ The compiler renders these to plain English via `_render_condition_plain` for pr
 
 ### Compiler additions (`hydra_companions/compiler.py`)
 
-New rendered blocks (per-soul, gated on field presence):
-- `## Voice modes` (from `voice.modes`)
-- `## How I got here (formative incidents)` (top 3 by `w`)
-- `## Where my rules come from` (from `intellectual_lineage`)
-- `## Gated rules (conditional activation)` (from `conditional_rules`)
-- `## Known fallibilities` (from `fallibility`)
-- `## Human texture` (condensed from `non_trading_interests` + `internal_tensions`)
+Rendered blocks are the ✓ rows of the section table above; every one is gated on field presence.
 
-`CompiledSoul` dataclass gained four fields: `tool_access` (frozenset), `voice_modes` (tuple), `has_formative_incidents`, `has_intellectual_lineage`, `has_fallibility_protocol`. All backwards-compatible defaults.
+`CompiledSoul` gained five v1.1 fields: `tool_access` (frozenset), `voice_modes` (tuple), `has_formative_incidents`, `has_intellectual_lineage`, `has_fallibility_protocol`. All backwards-compatible defaults. (v1.2 later added `has_curiosity_about_user`, `has_inner_life`, `has_bonding_cadence`.)
 
 ### New read-only tools (`hydra_companions/tools_readonly.py`)
 
@@ -452,11 +459,13 @@ New rendered blocks (per-soul, gated on field presence):
 
 `respond()` now passes the soul's tool_access list into `compose_context_blob` and enables chart / journal inclusion flags when the intent is `chart_analysis`, `trade_proposal`, or `ladder_proposal`. Data injection is still gated by the allowlist.
 
-### Test coverage (113 passing)
+### Test coverage
 
-- `tests/test_companion_compiler.py` — v1.1 hybrid-section presence, voice modes, condition rendering, per-soul content checks (new 11 tests).
-- `tests/test_companion_router.py` — `chart_analysis` routing, Apex Grok migration, Sonnet retention for Athena (new 7 tests).
-- `tests/test_apex_tools.py` — journal filters + chronological sort, chart snapshot shape, chart summary shape + lookback clamp, allowlist grant/deny, `compose_context_blob` gating + max_bytes (new 19 tests).
+Run `python -m pytest tests/test_companion_*.py tests/test_apex_tools.py -q` for the live count.
+
+- `tests/test_companion_compiler.py` — v1.1 hybrid-section presence, voice modes, condition rendering, per-soul content checks.
+- `tests/test_companion_router.py` — `chart_analysis` routing, Apex Grok migration, Sonnet retention for Athena.
+- `tests/test_apex_tools.py` — journal filters + chronological sort, chart snapshot shape, chart summary shape + lookback clamp, allowlist grant/deny, `compose_context_blob` gating + max_bytes.
 
 ### Storage note
 

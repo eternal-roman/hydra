@@ -179,7 +179,7 @@ L(t)   = Σ_i w_i · S_i(t)                     P(up) = σ(L)
   functional form — calibrated weights drop into `features.weights` with
   zero approximation gap.
 
-Features are registered in tiers (`features/tier0.py` … `tier2.py`) with
+Features are registered in tiers (`src/heartbeat/features/tier0.py` … `tier2.py`) with
 name, tier, inputs, lookback, and a falsifiable hypothesis each. Tier 0
 (OFI, CLV, range/ATR, volume z, OFI-momentum) is enabled by default;
 Tier 1/2 stay dark until their gates pass (`features.enabled_tiers`).
@@ -256,7 +256,7 @@ python -m pytest tests/
 
 | gate | offline evidence (this repo) | needs network |
 |---|---|---|
-| 1 feed+tape | store round-trip, replay digest identical, reconnect+backfill under mocked transport (`tests/test_ws.py`) | real 90-day `backfill`, live socket-kill drill |
+| 1 feed+tape | store round-trip (`tests/test_store.py`), taint/gap/sequence + dedup rules (`tests/test_tape.py`), replay digest identical | real 90-day `backfill`, live socket-kill drill |
 | 2 engine+posterior | `test_no_lookahead.py`, `test_determinism.py`, hand-computed fixtures per feature | — |
 | 3 labeler+eval | ≥60 events/asset on synth tapes, reports + example traces in `evidence/` | re-run on real tape |
 | 4 calibration | walk-forward AUC tables, printed non-overlapping train/test ranges (`evidence/gate4_walkforward.txt`) | re-run on real tape |

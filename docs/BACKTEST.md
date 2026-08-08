@@ -178,15 +178,17 @@ Zero writes to live state files (invariant I3). Errors route to
 
 ## Safety invariants (I1–I12)
 
-All twelve invariants from the spec are enforced. The highlights:
+Ten of the twelve are enforced in code. Highlights:
 
 - **I1** Live tick cadence unaffected — measured, not assumed.
 - **I3** Separate storage; live state files are never touched.
 - **I6** Kill switch → v2.9.x behavior.
 - **I7** Zero logic drift — drift regression replays live session tick-by-tick.
-- **I11** Bounded: 2 default workers (4 max), queue depth 20, 50 experiments/day.
+- **I11** Bounded: 2 default workers (4 hard cap), queue depth 20, 50 experiments/day global.
 
-(I8/I9 governed the archived Reviewer/Shadow Validator — see the note above.)
+**I8 and I9 are moot, not enforced** — both governed the AI Reviewer / Shadow
+Validator, archived in v2.26.0. Nothing auto-applies code or params today, so
+there is no gate to run; re-enabling either subsystem re-opens both invariants.
 
 See `BACKTEST_SPEC.md` §Safety Invariants for the full list.
 

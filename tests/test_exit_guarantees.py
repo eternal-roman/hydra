@@ -204,3 +204,94 @@ class TestQfeFeeAwareFloor:
             positioning_bias="crowded_short",
         )
         assert r.force_exit is False
+
+
+class TestNonTradableEngineCanStillExit:
+    """A6: `tradable=False` blocks entries, never a flatten.
+
+    `tradable` is derived from the QUOTE balance (do we hold the currency
+    that funds this pair's orders). A SELL spends the BASE we already hold,
+    so gating exits on it stranded inventory with no way out: the bridge in
+    exit_only drain mode, or a satellite whose quote pool emptied while
+    holding the base. The engine circuit breaker is also suppressed while
+    not tradable, so nothing else would have forced the flatten.
+    """
+
+    def test_sell_executes_when_not_tradable_with_inventory(self):
+        eng = _seeded()
+        # Seed inventory directly (file convention) - the entry gates are
+        # not under test here, the exit path is.
+        eng.position.size = 0.5
+        eng.position.avg_entry = 100.0
+        held = eng.position.size
+
+        eng.tradable = False
+        trade = eng.execute_signal("SELL", 0.99, "flatten", "DEFENSIVE")
+        assert trade is not None, "non-tradable engine must still flatten"
+        assert trade.action == "SELL"
+        assert eng.position.size == pytest.approx(0.0)
+        assert trade.amount == pytest.approx(held)
+
+    def test_buy_still_refused_when_not_tradable(self):
+        eng = _seeded()
+        eng.tradable = False
+        trade = eng.execute_signal("BUY", 0.99, "entry", "MOMENTUM")
+        assert trade is None
+        assert eng.position.size == 0.0
+
+    def test_sell_refused_when_not_tradable_and_flat(self):
+        """No inventory means nothing to exit - stays refused."""
+        eng = _seeded()
+        eng.tradable = False
+        trade = eng.execute_signal("SELL", 0.99, "flatten", "DEFENSIVE")
+        assert trade is None
+
+
+class TestCircuitBreakerResetIsEffective:
+    """The documented HYDRA_RESET_CIRCUIT_BREAKER escape hatch must work.
+
+    The breaker used to arm off `max_drawdown`, a monotone high-water mark
+    that nothing ever lowers. Clearing `halted` therefore lasted exactly one
+    tick: the next tick re-read the same historical high and re-halted, even
+    from a fully recovered account sitting at its old peak. New BUYs were
+    dead for good with a halt reason describing a loss already recovered.
+    Arming reads the CURRENT drawdown; `max_drawdown` stays the record.
+    """
+
+    def _tick_once(self, eng: HydraEngine) -> None:
+        px = eng.prices[-1]
+        eng.ingest_candle({
+            "open": px, "high": px + 0.5, "low": px - 0.5,
+            "close": px, "volume": 100.0,
+            "timestamp": float(eng.candles[-1].timestamp + 300),
+        })
+        eng.tick()
+
+    def test_recovered_equity_does_not_rearm_after_reset(self):
+        eng = _seeded()
+        # Historical breach on the record, but the account is back at peak.
+        eng.peak_equity = eng.balance
+        eng.max_drawdown = 22.0
+        eng.halted = False       # operator just cleared it
+        eng.halt_reason = ""
+
+        self._tick_once(eng)
+        assert eng.halted is False, (
+            "a fully recovered engine must not re-arm off the historical "
+            "high-water mark"
+        )
+        assert eng.max_drawdown == 22.0, "drawdown record must be preserved"
+
+    def test_still_underwater_rearms_immediately(self):
+        eng = _seeded()
+        # Peak far above current equity => current drawdown ~50%.
+        eng.peak_equity = eng.balance * 2.0
+        eng.max_drawdown = 0.0
+        eng.halted = False
+        eng.halt_reason = ""
+
+        self._tick_once(eng)
+        assert eng.halted is True, (
+            "an engine still underwater must re-arm on the next tick"
+        )
+        assert "CIRCUIT BREAKER" in eng.halt_reason

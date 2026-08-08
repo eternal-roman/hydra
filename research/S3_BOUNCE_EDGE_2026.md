@@ -49,7 +49,7 @@ below the 9-bar MA in a 30-bar lookback, crash exclusion (any bar range
 > 3·ATR in the last 4), bounce trigger high ≥ low + 1.0·ATR, entry at
 the close of the first bar after the bounce whose low holds (b1). The
 2-bar swing confirmation lag coincides with the entry decision bar, so
-no look-ahead exists at entry (`s3bounce/setups.py`, verbatim port of
+no look-ahead exists at entry (`s3bounce/s3bounce/setups.py`, verbatim port of
 the research pipeline, parity-pinned at 1e-9).
 
 **Classifier:** logistic regression (L2=1.0) on six frozen features —
@@ -57,7 +57,7 @@ the research pipeline, parity-pinned at 1e-9).
 `retest` — trained per expanding yearly fold on setups *resolved*
 before the fold cut (label leakage includes resolution time). Gate =
 train-p75 of predicted probability. Artifact: 2026 fold weights,
-BTC threshold 0.5677, ETH 0.5575 (`s3bounce/model_artifact.json`).
+BTC threshold 0.5677, ETH 0.5575 (`s3bounce/s3bounce/model_artifact.json`).
 
 **Exit basis (X1, gate-adopted):** stop on daily close < bounce low
 (fill at that close), target at low + 3.3·ATR, 200-bar horizon.

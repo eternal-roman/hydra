@@ -12,6 +12,7 @@ from dataclasses import dataclass, asdict
 from typing import Literal, Optional
 
 from hydra_companions.config import PROPOSALS_LOG
+from hydra_pair_registry import default_registry
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -112,15 +113,24 @@ class ProposalValidator:
         price = pdata.get("price")
         return float(price) if isinstance(price, (int, float)) else None
 
-    def _kraken_cli(self):
-        return getattr(self.agent, "kraken_cli", None)
-
-    def _system_healthy(self) -> ValidationResult:
+    def _system_healthy(self, side: str = "") -> ValidationResult:
         # Kraken status is an agent-level attribute, not in the broadcaster
         # snapshot. Walk the agent directly.
         status = getattr(self.agent, "_last_kraken_status", None)
         if status in ("maintenance", "cancel_only"):
             return ValidationResult.bad(f"kraken status: {status}")
+        # Portfolio-wide 15% drawdown breaker. This is a SEPARATE flag from
+        # the per-engine halt: the portfolio breaker arms off summed equity,
+        # so it fires while every individual engine is still under its own
+        # threshold and `engine.halted` is False everywhere. Checking only the
+        # engine flags let a confirmed companion BUY through a halted
+        # portfolio — the one thing the breaker exists to stop. BUY only;
+        # SELL/flatten stays allowed, matching PR-A exit guarantees.
+        if side == "buy" and getattr(self.agent, "_portfolio_buy_halted", False):
+            dd = getattr(self.agent, "_portfolio_max_drawdown_pct", 0.0)
+            return ValidationResult.bad(
+                f"portfolio drawdown halt ({dd:.1f}%) — new BUYs blocked"
+            )
         # Engine halts (circuit breaker) live on the engine instances.
         engines = getattr(self.agent, "engines", {}) or {}
         for pair, engine in engines.items():
@@ -140,6 +150,17 @@ class ProposalValidator:
 
         if not p.pair or "/" not in p.pair:
             return ValidationResult.bad(f"bad pair: {p.pair!r}")
+        # COMPANION_SPEC §8 step 2: the pair must be one the agent actually
+        # runs. Without this an unknown pair also silently disabled the price
+        # band below (`_current_price` returns None for a pair absent from the
+        # snapshot), so ANY limit price was accepted on a pair the engine,
+        # journal and LadderWatcher cannot track.
+        engines = getattr(self.agent, "engines", {}) or {}
+        if engines and p.pair not in engines:
+            return ValidationResult.bad(
+                f"{p.pair} is not an active trading pair "
+                f"({', '.join(sorted(engines))})"
+            )
         if p.side not in ("buy", "sell"):
             return ValidationResult.bad(f"bad side: {p.side!r}")
         if p.size <= 0:
@@ -163,27 +184,56 @@ class ProposalValidator:
             if diff_pct > band:
                 return ValidationResult.bad(f"limit {diff_pct:.2f}% from mid exceeds {band}% band")
 
-        # Risk check (vs equity).
+        # Risk check (vs equity). Fails CLOSED: at agent boot the broadcaster
+        # snapshot is empty, so equity reads 0.0 and the whole cap used to be
+        # skipped — exactly when the least is known about the account.
         equity = self._current_equity_usd()
-        if equity > 0:
-            risk_usd = abs(p.limit_price - p.stop_loss) * p.size
-            risk_pct = (risk_usd / equity) * 100
-            if risk_pct > caps["max_risk_per_trade_pct_equity"]:
-                return ValidationResult.bad(
-                    f"risk {risk_pct:.2f}% exceeds cap {caps['max_risk_per_trade_pct_equity']}%"
-                )
+        if equity <= 0:
+            return ValidationResult.bad(
+                "account equity unavailable — cannot size risk"
+            )
+        risk_usd = abs(p.limit_price - p.stop_loss) * p.size
+        risk_pct = (risk_usd / equity) * 100
+        if risk_pct > caps["max_risk_per_trade_pct_equity"]:
+            return ValidationResult.bad(
+                f"risk {risk_pct:.2f}% exceeds cap {caps['max_risk_per_trade_pct_equity']}%"
+            )
+        # The risk cap alone is not a size cap: tightening the stop makes an
+        # arbitrarily large order "low risk" (5 BTC with a $1 stop is $5 of
+        # risk and $500k of notional). Bound gross notional by the same
+        # max_position_pct the engine enforces (PR-B), so a companion order
+        # cannot exceed what the engine would size for itself.
+        notional = p.size * p.limit_price
+        engine = engines.get(p.pair) if engines else None
+        max_position_pct = getattr(
+            getattr(engine, "sizer", None), "max_position_pct", 0.30
+        )
+        max_notional = equity * float(max_position_pct)
+        if notional > max_notional:
+            return ValidationResult.bad(
+                f"notional ${notional:,.2f} exceeds "
+                f"{float(max_position_pct) * 100:.0f}% of equity "
+                f"(${max_notional:,.2f})"
+            )
 
-        # Kraken min size/cost (best-effort).
-        cli = self._kraken_cli()
-        if cli is not None:
-            ordermin = getattr(cli, "MIN_ORDER_SIZE", {}).get(p.pair.split("/")[0])
-            costmin = getattr(cli, "MIN_COST", {}).get(p.pair.split("/")[1])
-            if ordermin is not None and p.size < ordermin:
-                return ValidationResult.bad(f"size {p.size} below Kraken ordermin {ordermin}")
-            if costmin is not None and (p.size * p.limit_price) < costmin:
-                return ValidationResult.bad(f"cost {p.size * p.limit_price:.4f} below Kraken costmin {costmin}")
+        # Kraken min size/cost. Read from the pair registry — the single
+        # source of truth. This previously read `agent.kraken_cli`, an
+        # attribute HydraAgent never assigns, for `MIN_ORDER_SIZE`/`MIN_COST`,
+        # which live on hydra_engine.PositionSizer and not on KrakenCLI — so
+        # both lookups yielded {} and the check silently passed everything.
+        meta = default_registry().get(p.pair)
+        if meta is None:
+            return ValidationResult.bad(f"{p.pair} not in pair registry")
+        if p.size < meta.ordermin:
+            return ValidationResult.bad(
+                f"size {p.size} below Kraken ordermin {meta.ordermin}"
+            )
+        if notional < meta.costmin:
+            return ValidationResult.bad(
+                f"cost {notional:.4f} below Kraken costmin {meta.costmin}"
+            )
 
-        health = self._system_healthy()
+        health = self._system_healthy(p.side)
         if not health.ok:
             return health
         return ValidationResult.good()

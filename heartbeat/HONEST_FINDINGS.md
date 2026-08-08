@@ -82,7 +82,7 @@ vs +1.3%) — both registered as shadow-window secondaries.
 ## Shipped state + outstanding gates
 
 Shipped v2.30.0+: `s3bounce/` package (parity-pinned 1e-9, yearly refit
-`tools/export_s3_model.py`) + `hydra_s3.py` signal surface and
+`heartbeat/tools/export_s3_model.py`) + `hydra_s3.py` signal surface and
 `HYDRA_S3_STRATEGY` shadow phase (all arms logged in parallel to
 `.hydra-s3/`; NO order path exists).
 
@@ -104,7 +104,7 @@ Shipped (docs densify + surface, post-v2.30.1 branch):
    confirmation layer; the trend overlay must NOT gate S3 entries
    (evidence above). No live wiring before that passes.
 4. **Confirmer bakeoff** (`s3_heartbeat_confirmer` registration +
-   `tools/bakeoff_s3_heartbeat_confirmer.py`) before any SKIP-BUY from
+   `heartbeat/tools/bakeoff_s3_heartbeat_confirmer.py`) before any SKIP-BUY from
    heartbeat on the S3 book. Engine BUY co-occurrence diagnostic must
    show n_BUY≥20 before any engine-path confirmer claim
    (`engine_buy_cooccurrence_*`). Cascade AUC is measurement-only

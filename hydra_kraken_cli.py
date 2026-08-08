@@ -120,29 +120,42 @@ def describe_error(payload: dict) -> str:
 
 
 class KrakenCLI:
-    """Wraps kraken-cli v0.3.2 running in WSL Ubuntu.
+    """Wraps kraken-cli v0.4.1 running in WSL Ubuntu.
 
-    Upstream re-verified 2026-08-05 against krakenfx/kraken-cli: v0.3.2
-    (2026-04-20) is still the latest tagged release and `aa32814` is still
-    branch HEAD, so the pin below is current — there is no newer CLI to
-    adopt. What changed on Hydra's side is alignment with the CLI's
-    *documented* contract (tool-catalog.json / AGENTS.md / CONTEXT.md):
+    Contract alignment carried forward from the v0.3.2 pin:
       - `paper buy|sell` take VOLUME positionally, not via `--volume`.
       - errors are category slugs with a `retryable` hint (see
         `_normalize_error`), not human sentences.
       - the CLI does not pre-throttle or retry; Hydra owns the 2s floor.
 
-    Verified compatible with kraken-cli v0.3.2 (commit aa32814+):
-      - `--asset-class` flag is canonical (`--aclass` is hidden alias);
-        Hydra never passed `--aclass`, so no callsite change required.
-      - `relativeFundingRate` rename in commit 910a4d6 was internal to
-        kraken-cli's paper-trading futures engine. Hydra calls
-        `kraken futures tickers` (read-only public endpoint), which still
-        emits `fundingRate` (absolute, USD/contract/period) — that field
-        is converted to relative bps via `_absolute_to_relative_bps` in
-        `hydra_derivatives_stream.py`.
-      - Spot endpoints (ticker/balance/orderbook/ohlc/orders/pairs) have
-        no breaking schema changes from v0.2.3 → v0.3.2.
+    Re-verified 2026-08-07 against the installed v0.4.1 (`kraken --help`
+    per subcommand). Every flag Hydra passes still exists:
+      - `order buy|sell PAIR VOLUME --type limit --price P --oflags post
+        --userref N [--validate] --yes` — all present, unchanged.
+      - `order cancel TXID --yes`, `order cancel-all --yes`,
+        `order cancel-after --yes` — all present.
+      - `pairs --pair`, `ticker PAIRS...`, `ohlc PAIR --interval --since`,
+        `balance`, `extended-balance`, `trades-history --start --end`,
+        `volume --pair`, `query-orders TXIDS... --userref --trades` —
+        all present.
+      - `--asset-class` is canonical (`--aclass` is a hidden alias);
+        Hydra never passed `--aclass`.
+      - `kraken futures tickers` is still the read-only public endpoint
+        Hydra reads, still emitting `fundingRate` (absolute,
+        USD/contract/period), converted to relative bps by
+        `_absolute_to_relative_bps` in `hydra_derivatives_stream.py`.
+
+    v0.4.1 ADDS surface Hydra deliberately does not use: `order amend`
+    (in-place, preserves queue priority), `order batch`/`cancel-batch`,
+    `--cl-ord-id`, `--reduce-only`, `--timeinforce`, `--stptype`,
+    `--deadline`, and the `workspace`/`session`/`tape`/`lab`/`record`/
+    `replay`/`mcp`/`streamd` command families. Adopting any of them is a
+    deliberate change, not a drift fix.
+
+    Schema drift is handled defensively rather than assumed away:
+    `load_pair_constants` refuses to overlay the registry when a constant
+    is missing, and `balance()` skips unparseable entries. Both log loudly
+    — a renamed key must never silently become a wrong number.
 
     Pair metadata (precision, ordermin, costmin, alias resolution) is
     delegated to `hydra_pair_registry.PairRegistry`. The class-level
@@ -223,6 +236,48 @@ class KrakenCLI:
             cls._last_rest_mono = time.monotonic()
 
     @classmethod
+    def forward_credentials(cls, cmd_str: str) -> tuple:
+        """Return (cmd_str, env) with Kraken credentials kept out of argv.
+
+        Credentials are handed to the child process through its ENVIRONMENT
+        (forwarded into the distro via WSLENV), never interpolated into the
+        bash -c string. The old `export KRAKEN_API_SECRET=...` form put the
+        live trading secret in the `wsl` process argv, where any local user
+        could read it out of `ps` / procfs. shlex.quote stopped injection but
+        never disclosure. Set HYDRA_CLI_LEGACY_SECRET_EXPORT=1 to revert if a
+        WSLENV-less environment cannot forward the variables.
+
+        Shared by the REST wrapper (`_build_invocation`) and by the long-lived
+        WebSocket stream subprocesses (`hydra_streams.BaseStream.start`).
+        v2.15.0 hardened only the REST path; the five stream subprocesses kept
+        the legacy export form and hold their argv for the WHOLE session, so
+        they were the longer disclosure window of the two.
+        """
+        env = os.environ.copy()
+        api_key = os.environ.get("KRAKEN_API_KEY")
+        api_secret = os.environ.get("KRAKEN_API_SECRET")
+        if not (api_key and api_secret):
+            return cmd_str, env
+
+        if os.environ.get("HYDRA_CLI_LEGACY_SECRET_EXPORT") == "1":
+            cmd_str = (
+                f"export KRAKEN_API_KEY={shlex.quote(api_key)}"
+                f" && export KRAKEN_API_SECRET={shlex.quote(api_secret)}"
+                f" && {cmd_str}"
+            )
+            return cmd_str, env
+
+        # WSLENV is a colon-separated list of variable NAMES to forward
+        # across the Windows→WSL boundary. The values stay in the
+        # environment block, out of argv.
+        parts = [p for p in env.get("WSLENV", "").split(":") if p]
+        for n in ("KRAKEN_API_KEY", "KRAKEN_API_SECRET"):
+            if n not in parts:
+                parts.append(n)
+        env["WSLENV"] = ":".join(parts)
+        return cmd_str, env
+
+    @classmethod
     def _build_invocation(cls, args: list) -> tuple:
         """Return (argv, env) for a kraken CLI call.
 
@@ -232,39 +287,10 @@ class KrakenCLI:
         surface is growing and a single unescaped caller would grant
         RCE in the WSL environment. v2.15.0 hardens the boundary.
 
-        Multi-tenancy credentials are handed to the child process through
-        its ENVIRONMENT (forwarded into the distro via WSLENV), never
-        interpolated into the bash -c string. The old `export KRAKEN_API_
-        SECRET=...` form put the live trading secret in the `wsl` process
-        argv, where any local user could read it out of `ps` / procfs for
-        the duration of the call. shlex.quote stopped injection but never
-        disclosure. Set HYDRA_CLI_LEGACY_SECRET_EXPORT=1 to revert if a
-        WSLENV-less environment cannot forward the variables.
+        Credential handling lives in `forward_credentials`.
         """
         quoted = " ".join(shlex.quote(str(a)) for a in args)
-        env = os.environ.copy()
-        cmd_str = "source ~/.cargo/env"
-
-        api_key = os.environ.get("KRAKEN_API_KEY")
-        api_secret = os.environ.get("KRAKEN_API_SECRET")
-        if api_key and api_secret:
-            if os.environ.get("HYDRA_CLI_LEGACY_SECRET_EXPORT") == "1":
-                cmd_str += (
-                    f" && export KRAKEN_API_KEY={shlex.quote(api_key)}"
-                    f" && export KRAKEN_API_SECRET={shlex.quote(api_secret)}"
-                )
-            else:
-                # WSLENV is a colon-separated list of variable NAMES to
-                # forward across the Windows→WSL boundary. The values stay
-                # in the environment block, out of argv.
-                names = ["KRAKEN_API_KEY", "KRAKEN_API_SECRET"]
-                existing = env.get("WSLENV", "")
-                parts = [p for p in existing.split(":") if p]
-                for n in names:
-                    if n not in parts:
-                        parts.append(n)
-                env["WSLENV"] = ":".join(parts)
-
+        cmd_str, env = cls.forward_credentials("source ~/.cargo/env")
         cmd_str += f" && kraken {quoted} -o json 2>/dev/null"
         return ["wsl", "-d", WSL_DISTRO, "--", "bash", "-c", cmd_str], env
 
@@ -475,10 +501,38 @@ class KrakenCLI:
                 continue
             base = cls._normalize_asset(info.get("base", ""))
             quote = cls._normalize_asset(info.get("quote", ""))
+            # Schema-drift guard. These three fields are overlaid onto the
+            # registry by apply_pair_constants, so a generic literal fallback
+            # does not degrade gracefully — it OVERWRITES correct per-pair
+            # values with wrong ones. A renamed key (a real risk across CLI
+            # upgrades) previously gave every pair ordermin=0.02 and
+            # price_decimals=8, which makes hydra_engine.write_off_dust
+            # silently erase any BTC position under 0.02 BTC and makes
+            # _format_price emit a precision Kraken rejects. Skipping the pair
+            # keeps the registry's authoritative values (the documented
+            # "caller should use registry fallback" path) and says so loudly.
+            missing = [
+                k for k in ("pair_decimals", "ordermin", "costmin")
+                if info.get(k) is None
+            ]
+            if missing:
+                print(f"  [WARN] kraken pairs schema drift for {friendly}: "
+                      f"missing {', '.join(missing)} — keeping registry values. "
+                      f"Check `kraken pairs` output against this CLI version.")
+                continue
+            try:
+                price_decimals = int(info["pair_decimals"])
+                ordermin = float(info["ordermin"])
+                costmin = float(info["costmin"])
+            except (TypeError, ValueError) as e:
+                print(f"  [WARN] kraken pairs unparseable constants for "
+                      f"{friendly}: {e} — keeping registry values.")
+                continue
+
             result[friendly] = {
-                "price_decimals": int(info.get("pair_decimals", cls.PRICE_DECIMALS_DEFAULT)),
-                "ordermin": float(info.get("ordermin", 0.02)),
-                "costmin": float(info.get("costmin", 0.5)),
+                "price_decimals": price_decimals,
+                "ordermin": ordermin,
+                "costmin": costmin,
                 "base": base,
                 "quote": quote,
                 "lot_decimals": int(info.get("lot_decimals", 8)),
@@ -567,11 +621,44 @@ class KrakenCLI:
 
     @staticmethod
     def balance() -> dict:
-        """Get account balance. Returns {asset: amount} for non-zero balances."""
+        """Get account balance. Returns {asset: amount} for non-zero balances.
+
+        Parses defensively: entries that are not scalar numbers are skipped
+        rather than raised on. The previous comprehension called `float(v)`
+        unguarded, so a per-asset dict, an added metadata key, or a `result`
+        envelope raised TypeError/ValueError straight out of the wrapper —
+        and the three callers (`run`, `discover_portfolio_pairs`,
+        `_print_final_report`) have no try/except, so a CLI shape change
+        killed `main()` before the trading loop started and `start_hydra.bat`
+        restarted into the identical crash forever. Fails open like
+        `_extract_free`/`free_balance`.
+        """
         data = KrakenCLI._run(["balance"])
-        if isinstance(data, dict) and "error" not in data:
-            return {k: float(v) for k, v in data.items() if float(v) > 0}
-        return data
+        if not isinstance(data, dict) or "error" in data:
+            return data
+
+        # Unwrap a single-key envelope if the CLI ever adds one.
+        for envelope in ("result", "balances"):
+            inner = data.get(envelope)
+            if isinstance(inner, dict):
+                data = inner
+                break
+
+        out = {}
+        skipped = []
+        for k, v in data.items():
+            amount = KrakenCLI._extract_free(v) if isinstance(v, dict) else v
+            try:
+                amount = float(amount)
+            except (TypeError, ValueError):
+                skipped.append(k)
+                continue
+            if amount > 0:
+                out[k] = amount
+        if skipped:
+            print(f"  [WARN] kraken balance: skipped {len(skipped)} unparseable "
+                  f"entries ({', '.join(skipped[:5])}) — possible CLI schema drift.")
+        return out
 
     # Field spellings Kraken/kraken-cli have used for "amount locked in open
     # orders". Probed in order; the first numeric hit wins. Unknown shapes

@@ -8,7 +8,9 @@ HF-004 on its first run.** Any PR touching the execution path should use it.
 ## Mandatory for PRs touching
 
 `hydra_agent.py:_place_order`, `_place_paper_order`, `ExecutionStream`,
-the tick-loop wrapper at lines 2155-2193, any `order_journal.append` site, or
+the Phase 2.5 / 2.6 execute-and-rollback block inside `HydraAgent.run()`
+(`snapshot_position` → `execute_signal` → `_place_order` → `restore_position`),
+any `order_journal.append` site, or
 `hydra_engine.py:execute_signal`/`_maybe_execute`/`snapshot_position`/
 `restore_position`/`PositionSizer.calculate`.
 
@@ -17,7 +19,7 @@ the tick-loop wrapper at lines 2155-2193, any `order_journal.append` site, or
 | Mode | Duration | Cost | What it runs |
 |---|---|---|---|
 | `smoke` | ~1.5s | $0 | Import + agent construction only |
-| `mock` *(default)* | ~1.5s | $0 | **35** scenarios via monkey-patched Kraken (H/F/E/S/R/Hp/W) — CI gate |
+| `mock` *(default)* | ~1.5s | $0 | **36** scenarios via monkey-patched Kraken (H/F/E/S/R/Hp/W) — CI gate |
 | `validate` | ~10s | $0 | 3 scenarios hitting real Kraken read-only + `--validate` |
 | `live` | ~3min | <$0.01 | 7 scenarios with real post-only orders + immediate cancel |
 
@@ -44,20 +46,23 @@ Exit codes: `0` all passed, `1` scenario failure, `2` harness setup error.
 
 ## Scenario catalog
 
-Source of truth is `scenarios.py` → `ALL_SCENARIOS`. Mock CI runs the registered
-subset that currently reports **35/35**; full registry includes live-only (`L*`)
-scenarios not executed in `mock` mode. Categories:
+Source of truth is `scenarios.py` → `ALL_SCENARIOS`: **44 registered, 36 of them
+`MOCK`**, which is what CI reports (`36/36`). The other 8 are live/validate-only.
+Counts below are by the `category` field, not by code prefix.
 
-| Prefix | Category | Count | What it tests |
+| Category | Registered | In `mock` | What it tests |
 |---|---|---|---|
-| `H*` | Happy path | 6 | Paper/live buy/sell, mocked and real |
-| `F*` | Failure path | 7 | Each `_place_order` failure branch + 13-field rollback check |
-| `E*` | Edge case | 7 | Txid shapes, halted engine, ordermin, unparseable JSON |
-| `S*` | Schema meta | 1 | Validator sanity check |
-| `R*` | Rollback meta | 1 | Comparator sanity check |
-| `Hp*` | Historical regression | 6 | Named for the commit that fixed the original bug |
-| `L*` | Live only | 6 | Real Kraken — ticker, validate, post-only + cancel per pair |
-| `W*` | WS lifecycle | 7 | ExecutionStream lifecycle transitions via FakeExecutionStream |
+| `H` Happy path | 7 | 5 | Paper/live buy/sell mocked and real; includes `S3SH1` (S3 shadow places zero orders) |
+| `F` Failure path | 7 | 7 | Each `_place_order` failure branch + 13-field rollback check |
+| `E` Edge case | 7 | 7 | Txid shapes, halted engine, ordermin, unparseable JSON |
+| `S` Schema meta | 1 | 1 | Validator sanity check |
+| `R` Rollback meta | 1 | 1 | Comparator sanity check |
+| `H_prime` Historical regression | 8 | 8 | Named for the commit that fixed the original bug |
+| `L` Live only | 6 | 0 | Real Kraken — ticker, validate, post-only + cancel per pair |
+| `W` WS lifecycle | 7 | 7 | ExecutionStream lifecycle transitions via FakeExecutionStream |
+
+A `mock` run of fewer than 30 scenarios is a hard harness failure (an empty or
+mistagged registry must not read as a green gate).
 
 Every `H/F/E` scenario calls `validate_entry(entry, expected_state=...)`,
 so schema compliance is enforced implicitly for all production entries.
@@ -70,7 +75,7 @@ all 13 engine fields restore exactly to pre-trade state.
 tests/live_harness/
 ├── __init__.py          Package marker
 ├── harness.py           Harness class, CLI entry, harness_execute wrapper
-├── scenarios.py         All 41+ scenarios + ALL_SCENARIOS registry
+├── scenarios.py         All 44 scenarios + ALL_SCENARIOS registry
 ├── schemas.py           Per-state order journal schemas + validate_entry()
 ├── state_comparator.py  13-field rollback comparator
 ├── stubs.py             StubRun + Kraken response builders
@@ -85,10 +90,10 @@ tests/live_harness/
 4. **Broadcaster** — `.start()` patched to no-op (defensive; `__init__`
    doesn't call it anyway).
 
-**The execute wrapper** `harness_execute()` reproduces the tick-loop wrapper
-at `hydra_agent.py:2155-2193`: snapshot → `execute_signal` → `_place_order` →
-rollback on failure. Returns a report dict with `outcome`, `pre_snap`,
-`trade`, `trade_dict`, `last_journal_entry` for post-scenario assertions.
+**The execute wrapper** `harness_execute()` reproduces the tick-loop wrapper in
+`HydraAgent.run()`: snapshot → `execute_signal` → `_place_order` → rollback on
+failure. Returns a report dict with `outcome`, `pre_snap`, `trade`,
+`trade_dict`, `last_journal_entry` for post-scenario assertions.
 
 ## Findings tracker
 
@@ -169,7 +174,7 @@ Fields: stable `code` (never reuse), `name`, `category` (one letter), `modes`
 | `_place_order`, `_place_paper_order`, order journal write sites | `mock` + `validate` + `live` for high-risk |
 | `ExecutionStream` | `mock` + `live` recommended |
 | `execute_signal`, `_maybe_execute`, `snapshot_*`, `restore_*`, `PositionSizer.calculate` | `mock` |
-| `KrakenCLI.order_buy`/`order_sell`/`order_amend`/`ticker` | `mock` + `validate` |
+| `KrakenCLI.order_buy`/`order_sell`/`ticker` | `mock` + `validate` |
 | Any order_journal entry schema | `mock` |
 | Signal/regime/indicators | (not on execution path — `test_engine.py` covers this) |
 | Any field added to `snapshot_position`/`snapshot_runtime` | `mock` + update `state_comparator.py` **in the same PR** |
@@ -193,7 +198,7 @@ field to `HydraEngine` that's serialized by `snapshot_position()` or
 rollback tests while rollback is actually incomplete — exactly the bug class
 that commit `4effbea` fixed.
 
-Current 15 fields (snapshot_position/runtime must agree; comparator covers rollback-relevant subset):
+Current 16 fields (snapshot_position/runtime must agree; comparator covers the 13-field rollback-relevant subset):
 
 | Field | `snapshot_position` | `snapshot_runtime` | comparator |
 |---|---|---|---|
@@ -211,6 +216,7 @@ Current 15 fields (snapshot_position/runtime must agree; comparator covers rollb
 | `max_drawdown` | ✓ | ✓ | ✓ |
 | `gross_profit` | ✓ | ✓ | — |
 | `gross_loss` | ✓ | ✓ | — |
+| `tradable` | ✓ *(restored with default `True` for pre-v2.11.0 snapshots)* | — | — |
 | `halted` | — | ✓ | ✓ |
 
 When adding a field, add a row to this table in the same PR. That's how the

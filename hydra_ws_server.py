@@ -79,16 +79,12 @@ class DashboardBroadcaster:
             Path("dashboard/dist/index.html"),
     }
 
-    # Loopback by default. Inbound COMMANDS require the per-process token, but
-    # the OUTBOUND path never did: `_handler` adds the socket to `self.clients`
-    # and immediately sends `latest_state` — which carries `balance`,
-    # `balance_usd.assets` (full per-asset holdings), portfolio drawdown, every
-    # open position and the last 20 order-journal entries. `_origin_allowed`
-    # returns True for a missing Origin header (non-browser clients), so any
-    # host that could reach :8765 got the whole account with no credential.
-    # The dashboard and Electron wrapper are local, so loopback costs nothing.
-    # Set HYDRA_WS_HOST=0.0.0.0 to deliberately expose it (e.g. behind a
-    # reverse proxy that terminates auth).
+    # Loopback by default, and both directions now require the per-process
+    # token — see the `pending`/`clients` split in __init__ for the outbound
+    # half. The dashboard and Electron wrapper are local, so loopback costs
+    # nothing. Set HYDRA_WS_HOST=0.0.0.0 to deliberately expose it (e.g.
+    # behind a reverse proxy); the auth handshake, not the bind address, is
+    # what keeps account state private.
     DEFAULT_HOST = os.environ.get("HYDRA_WS_HOST", "127.0.0.1")
 
     def __init__(self, host: str = None, port: int = 8765):
@@ -96,7 +92,20 @@ class DashboardBroadcaster:
             host = self.DEFAULT_HOST
         self.host = host
         self.port = port
+        # `clients` receives broadcasts and the state snapshot; a socket only
+        # graduates into it after a successful auth handshake. `pending` holds
+        # freshly accepted sockets that have not proved anything yet.
+        #
+        # Binding to loopback (v2.32.1) narrowed WHO could reach the port, but
+        # the outbound path still had no credential at all: _handler used to
+        # add every socket to `clients` and immediately push `latest_state`,
+        # which carries balance, per-asset holdings, portfolio drawdown, open
+        # positions and the last 20 order-journal entries. The token gated
+        # inbound commands only. Any local process — and under
+        # HYDRA_WS_HOST=0.0.0.0 any host — could read the whole account by
+        # opening a socket and never sending a byte.
         self.clients = set()
+        self.pending = set()
         self.latest_state = {}
         self._loop = None
         self._thread = None
@@ -109,6 +118,8 @@ class DashboardBroadcaster:
         # the dispatch channel against dashboard-XSS-chain attacks even
         # though the socket is bound to 127.0.0.1.
         self.auth_token = secrets.token_hex(32)
+        # Seconds a socket may sit unauthenticated before it is closed.
+        self.auth_grace_s = float(os.environ.get("HYDRA_WS_AUTH_GRACE_S", "10"))
         self._write_token_files()
         
         # Register core auth handlers
@@ -270,9 +281,26 @@ class DashboardBroadcaster:
             self._thread.join(timeout=2.0)
 
     def _origin_allowed(self, origin: str) -> bool:
+        """Browser-CSRF defence only — NOT the authentication boundary.
+
+        Deliberately fails open for a missing Origin so non-browser clients
+        (tests, CLI, the Electron wrapper) still connect. That is safe only
+        because the auth handshake in `_handler` now gates every byte of
+        account state; before it did not, and this fail-open was the whole
+        front door. Do not restore state-on-connect behind this check.
+        """
         if not origin:
             return True  # non-browser client (tests, CLI)
         return any(origin.startswith(p) for p in self.ALLOWED_ORIGIN_PREFIXES)
+
+    def _client_authenticated(self, msg: dict) -> bool:
+        """True when `msg` carries a valid credential for this process."""
+        if self.production_mode:
+            jwt_token = msg.get("jwt")
+            return bool(jwt_token and hydra_auth.verify_token(jwt_token))
+        provided = msg.get("auth", "")
+        return (isinstance(provided, str)
+                and secrets.compare_digest(provided, self.auth_token))
 
     def _request_origin(self, websocket) -> str:
         # Version-compat shim: `websockets` 10.x exposes `request_headers`,
@@ -297,15 +325,11 @@ class DashboardBroadcaster:
             except Exception as e:
                 import logging; logging.warning(f"Ignored exception: {e}")
             return
-        self.clients.add(websocket)
-        print(f"  [WS] Dashboard client connected ({len(self.clients)} total)")
+        # Accepted but unproven. No state is sent and no broadcast reaches it
+        # until it authenticates.
+        self.pending.add(websocket)
+        reaper = asyncio.create_task(self._reap_unauthenticated(websocket))
         try:
-            # Send latest state immediately on connect (legacy raw + wrapped)
-            if self.latest_state:
-                await websocket.send(json.dumps(self.latest_state))
-                await websocket.send(json.dumps({
-                    "type": "state", "data": self.latest_state,
-                }))
             async for raw in websocket:
                 try:
                     await self._dispatch_inbound(raw, websocket)
@@ -316,8 +340,43 @@ class DashboardBroadcaster:
             if not isinstance(e, (ConnectionError, OSError)):
                 print(f"  [WS] Client handler error: {type(e).__name__}: {e}")
         finally:
+            reaper.cancel()
+            self.pending.discard(websocket)
+            was_client = websocket in self.clients
             self.clients.discard(websocket)
-            print(f"  [WS] Dashboard client disconnected ({len(self.clients)} total)")
+            if was_client:
+                print(f"  [WS] Dashboard client disconnected "
+                      f"({len(self.clients)} total)")
+
+    async def _reap_unauthenticated(self, websocket):
+        """Close a socket that never authenticates within the grace window."""
+        try:
+            await asyncio.sleep(self.auth_grace_s)
+        except asyncio.CancelledError:
+            return
+        if websocket in self.pending:
+            self.pending.discard(websocket)
+            print(f"  [WS] Closing unauthenticated client after "
+                  f"{self.auth_grace_s:.0f}s")
+            try:
+                await websocket.close(code=1008, reason="auth required")
+            except Exception as e:
+                import logging; logging.warning(f"Ignored exception: {e}")
+
+    async def _promote_client(self, websocket):
+        """Move an authenticated socket into `clients` and send it state."""
+        if websocket in self.clients:
+            return
+        self.pending.discard(websocket)
+        self.clients.add(websocket)
+        print(f"  [WS] Dashboard client authenticated "
+              f"({len(self.clients)} total)")
+        if self.latest_state:
+            # Legacy raw + wrapped, matching the pre-auth-gate contract.
+            await websocket.send(json.dumps(self.latest_state))
+            await websocket.send(json.dumps({
+                "type": "state", "data": self.latest_state,
+            }))
 
     async def _dispatch_inbound(self, raw, websocket):
         try:
@@ -327,24 +386,36 @@ class DashboardBroadcaster:
         if not isinstance(msg, dict):
             return
         msg_type = msg.get("type")
+
+        # Explicit handshake: promotes the socket into `clients` so it starts
+        # receiving state and broadcasts. Handled before the handler lookup
+        # because it needs the websocket itself, which handlers never see.
+        if msg_type == "auth":
+            ok = self._client_authenticated(msg)
+            if ok:
+                await self._promote_client(websocket)
+            try:
+                await websocket.send(json.dumps({
+                    "type": "auth_ack",
+                    "success": ok,
+                    **({} if ok else {"error": "auth_required"}),
+                }))
+            except Exception as e:
+                import logging; logging.warning(f"Ignored exception: {e}")
+            return
+
         handler = self._handlers.get(msg_type) if msg_type else None
         if handler is None:
             return
         # Authentication logic
-        is_authenticated = False
-        
         if msg_type == "login":
-            is_authenticated = True # Login endpoint is public
-        elif self.production_mode:
-            jwt_token = msg.get("jwt")
-            if jwt_token:
-                payload_data = hydra_auth.verify_token(jwt_token)
-                if payload_data:
-                    is_authenticated = True
+            is_authenticated = True  # Login endpoint is public
         else:
-            provided = msg.get("auth", "")
-            if isinstance(provided, str) and secrets.compare_digest(provided, self.auth_token):
-                is_authenticated = True
+            is_authenticated = self._client_authenticated(msg)
+            # A command carrying a valid credential also promotes the socket,
+            # so a client that goes straight to commands still gets state.
+            if is_authenticated:
+                await self._promote_client(websocket)
 
         if not is_authenticated:
             try:

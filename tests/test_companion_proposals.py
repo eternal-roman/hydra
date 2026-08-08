@@ -89,18 +89,89 @@ def test_risk_cap_enforced():
 
 
 def test_broski_higher_risk_cap():
+    """Broski's 1.5% per-trade risk cap admits a size apex's 1.0% rejects.
+
+    The stop is deliberately WIDE (141 -> 134). Risk and notional are locked
+    in the ratio limit/(limit-stop), so the original 2-wide stop meant a
+    1.4%-of-equity risk implied a 98.7%-of-equity position - which the
+    notional cap now (correctly) rejects before the risk cap is reached.
+    A 7-wide stop separates the two caps so this test measures only risk:
+    size 0.2 -> risk 1.4 (1.4% of 100 equity), notional 28.2 (28.2%, under
+    the 30% max_position_pct default).
+    """
     agent = FakeAgent()
     r = Router()
     v = ProposalValidator(agent=agent, router=r)
-    # Size that would fail apex (1%) but pass broski (1.5%).
-    # 142*size=usd, risk=size*(141-139)=2*size. Equity=100. apex cap=1% of eq=1usd.
-    # 2*size=1 -> size=0.5 just below apex cap. 2*size=1.5 -> 0.75 is broski cap.
-    base = _valid_trade().to_dict()
-    mid_size = TradeProposal(**{**base, "size": 0.7, "companion_id": "apex"})
-    assert not v.validate_trade(mid_size).ok
-    bro_size = TradeProposal(**{**base, "size": 0.7, "companion_id": "broski"})
-    assert v.validate_ladder is not None  # sanity
-    assert v.validate_trade(bro_size).ok
+    base = {**_valid_trade().to_dict(), "stop_loss": 134.0, "size": 0.2}
+    mid_size = TradeProposal(**{**base, "companion_id": "apex"})
+    apex_result = v.validate_trade(mid_size)
+    assert not apex_result.ok
+    assert "risk" in apex_result.reason.lower(), apex_result.reason
+    bro_size = TradeProposal(**{**base, "companion_id": "broski"})
+    assert v.validate_trade(bro_size).ok, v.validate_trade(bro_size).reason
+
+
+def test_portfolio_drawdown_halt_blocks_companion_buy():
+    """The 15% PORTFOLIO breaker must stop a confirmed companion BUY.
+
+    `_portfolio_buy_halted` is a separate flag from `engine.halted`: it arms
+    off summed equity, so it fires while every individual engine is still
+    under its own threshold and `engine.halted` is False everywhere. The
+    validator checked only the engine flags, so a companion BUY walked
+    straight through a halted portfolio.
+    """
+    agent = FakeAgent()
+    agent._portfolio_buy_halted = True
+    agent._portfolio_max_drawdown_pct = 17.3
+    v = ProposalValidator(agent=agent, router=Router())
+    result = v.validate_trade(_valid_trade())
+    assert not result.ok
+    assert "portfolio" in result.reason.lower(), result.reason
+
+
+def test_portfolio_drawdown_halt_still_allows_companion_sell():
+    """SELL/flatten survives the portfolio halt (PR-A exit guarantee)."""
+    agent = FakeAgent()
+    agent._portfolio_buy_halted = True
+    agent._portfolio_max_drawdown_pct = 17.3
+    v = ProposalValidator(agent=agent, router=Router())
+    # Sell stop sits above entry.
+    p = TradeProposal(**{**_valid_trade().to_dict(),
+                         "side": "sell", "stop_loss": 148.0})
+    assert v.validate_trade(p).ok, v.validate_trade(p).reason
+
+
+def test_notional_cap_rejects_tight_stop_oversize():
+    """A tight stop must not buy an unbounded position.
+
+    The per-trade risk cap alone is not a size cap: |limit - stop| * size is
+    small whenever the stop is close, so an arbitrarily large order reads as
+    "low risk". Here 0.7 SOL @ 141 with a 2-wide stop is 1.4% risk - inside
+    broski's 1.5% cap - but 98.7% of a 100-equity account in a single order.
+    """
+    agent = FakeAgent()
+    v = ProposalValidator(agent=agent, router=Router())
+    p = TradeProposal(**{**_valid_trade().to_dict(),
+                         "size": 0.7, "companion_id": "broski"})
+    result = v.validate_trade(p)
+    assert not result.ok
+    assert "notional" in result.reason.lower(), result.reason
+
+
+def test_equity_unavailable_fails_closed():
+    """No equity reading => reject, never silently skip the risk cap.
+
+    `broadcaster.latest_state` is {} at agent boot, so equity reads 0.0.
+    The cap used to be skipped entirely in exactly that window.
+    """
+    agent = FakeAgent()
+    # Assign directly: FakeBroadcaster's `state or {...}` treats {} as falsy
+    # and would substitute the populated default.
+    agent.broadcaster.latest_state = {}
+    v = ProposalValidator(agent=agent, router=Router())
+    result = v.validate_trade(_valid_trade())
+    assert not result.ok
+    assert "equity" in result.reason.lower(), result.reason
 
 
 def test_ladder_rung_sum():

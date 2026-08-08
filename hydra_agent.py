@@ -874,11 +874,13 @@ class HydraAgent:
             basis — permanently wrong realized P&L in the dashboard,
             `journal_stats`, and the exported competition results.
         """
-        # Strip in-memory-only blobs that are large / redundant on disk.
-        # pre_trade_snapshot is kept in-memory for same-session cancel/true-up;
-        # on resume, CANCELLED_UNFILLED without snapshot still warns (pre-PR-C).
-        # We DO persist a compact snapshot key when present so resume rollback
-        # can restore engine books after crash mid-PLACED.
+        # `pre_trade_snapshot` IS persisted, deliberately (PR-C/C2): entries
+        # are written through whole. It is what lets `_reconcile_stale_placed`
+        # true up a previous-session fill to its exchange price and roll back
+        # a phantom position after a crash mid-PLACED. Only PLACEMENT_FAILED
+        # entries are filtered here. (An earlier version of this comment said
+        # the snapshot was in-memory only; that reading is what left the
+        # resume reconciler passing None and skipping both repairs.)
         out: List[Dict[str, Any]] = []
         for e in self.order_journal:
             if e.get("lifecycle", {}).get("state") == "PLACEMENT_FAILED":
@@ -1722,7 +1724,16 @@ class HydraAgent:
                                 replay["cached"] = True
                                 replay["cached_at_tick"] = state.get("tick", 0)
                                 state["ai_decision"] = replay
-                            all_states[pair] = state
+                        # Every pair with a state enters Phase 2.5. This assignment
+                        # MUST stay outside the if/elif/else above: v2.32.0 added the
+                        # brain-free guardrail branch and left this inside the HOLD
+                        # arm, so an actionable signal with self.brain is None ran the
+                        # guardrails and was then dropped from all_states entirely —
+                        # Phase 2.5 skipped the pair and NO order was ever placed, not
+                        # entries and not exits. Brain pairs overwrite this below with
+                        # the future's result; the plain state is the fallback when a
+                        # brain future fails.
+                        all_states[pair] = state
 
                 if brain_pairs:
                     with ThreadPoolExecutor(max_workers=len(brain_pairs)) as executor:
@@ -3302,14 +3313,45 @@ class HydraAgent:
                             self.engines.get(pair), entry,
                             apply_debit=apply_debit)
 
-                    # Previous-session fills have no pre_trade_snapshot (not
-                    # persisted). We use the arithmetic fallback in
-                    # reconcile_partial_fill for PARTIALLY_FILLED, accepting
-                    # minor avg_entry drift if the original trade was an
-                    # average-in. For fully unfilled, log — operator verifies.
-                    if state == "PARTIALLY_FILLED":
-                        engine = self.engines.get(pair)
-                        placed = float(entry.get("intent", {}).get("amount", 0) or 0)
+                    # PR-C/C2: `pre_trade_snapshot` IS persisted — _place_order
+                    # writes it onto the journal entry and
+                    # _journal_for_persistence does not strip it — so a
+                    # previous-session order can be trued up exactly like a
+                    # live one. This branch used to pass None and skip
+                    # true_up_fill/restore_position entirely, which meant:
+                    #   FILLED    -> engine kept the optimistic candle-close
+                    #                avg_entry instead of the exchange
+                    #                avg_fill_price (wrong P&L and wrong exit
+                    #                decisions for the rest of the session);
+                    #   CANCELLED -> engine kept a phantom position it never
+                    #                bought, so the next SELL sized against
+                    #                inventory that does not exist.
+                    # Mirrors _apply_execution_event, which already does this.
+                    engine = self.engines.get(pair)
+                    snap = entry.get("pre_trade_snapshot")
+                    placed = float(entry.get("intent", {}).get("amount", 0) or 0)
+
+                    if state == "FILLED":
+                        fill_amt = vol_exec if vol_exec > 0 else placed
+                        if engine and snap is not None and avg_price > 0 and fill_amt > 0:
+                            try:
+                                engine.true_up_fill(
+                                    side=side,
+                                    amount=fill_amt,
+                                    fill_price=avg_price,
+                                    pre_trade_snapshot=snap,
+                                    reason=f"FILLED true-up on resume ({txid})",
+                                )
+                                print(f"  [HYDRA] {pair} {side} trued up to exchange "
+                                      f"fill {fill_amt:.8f} @ {avg_price}")
+                            except Exception as e:
+                                print(f"  [WARN] {pair} {side} resume true-up failed "
+                                      f"({e}); engine holds candle-close entry")
+                        elif engine and snap is None:
+                            print(f"  [WARN] {pair} {side} FILLED with no "
+                                  f"pre_trade_snapshot — engine keeps its optimistic "
+                                  f"entry price (operator verify)")
+                    elif state == "PARTIALLY_FILLED":
                         limit_px = avg_price if avg_price else float(
                             entry.get("intent", {}).get("limit_price", 0) or 0
                         )
@@ -3320,18 +3362,29 @@ class HydraAgent:
                                     placed_amount=placed,
                                     vol_exec=vol_exec,
                                     limit_price=limit_px,
-                                    pre_trade_snapshot=None,
+                                    pre_trade_snapshot=snap,
                                     reason=f"PARTIALLY_FILLED reconciled on resume ({txid})",
                                 )
-                                print(f"  [HYDRA] {pair} {side} engine adjusted "
-                                      f"(arithmetic fallback; avg_entry may drift "
-                                      f"slightly if original was an average-in)")
+                                note = ("" if snap is not None else
+                                        " (arithmetic fallback; avg_entry may drift "
+                                        "slightly if original was an average-in)")
+                                print(f"  [HYDRA] {pair} {side} engine adjusted{note}")
                             except Exception as e:
                                 print(f"  [WARN] {pair} {side} partial-fill reconcile "
                                       f"failed ({e}); engine over-committed")
                     elif state in ("CANCELLED_UNFILLED", "REJECTED"):
-                        print(f"  [WARN] {pair} {side} was never filled — engine position may be "
-                              f"stale from snapshot. Operator should verify.")
+                        if engine and snap is not None:
+                            try:
+                                engine.restore_position(snap)
+                                print(f"  [HYDRA] {pair} {side} was never filled — "
+                                      f"engine rolled back to pre-order book")
+                            except Exception as e:
+                                print(f"  [WARN] {pair} {side} rollback failed ({e}); "
+                                      f"engine position may be stale")
+                        else:
+                            print(f"  [WARN] {pair} {side} was never filled and has no "
+                                  f"pre_trade_snapshot — engine position may be "
+                                  f"stale from snapshot. Operator should verify.")
                     reconciled += 1
 
                 elif status in ("open", "pending", "pending_new", "new"):
@@ -4180,13 +4233,25 @@ class HydraAgent:
                 self._portfolio_current_drawdown_pct = round(cur_dd, 4)
                 if cur_dd > self._portfolio_max_drawdown_pct:
                     self._portfolio_max_drawdown_pct = cur_dd
-                # PR-B / B4: sticky portfolio BUY halt at 15% max DD.
+                # PR-B / B4: sticky portfolio BUY halt at 15% drawdown.
+                #
+                # Arms on the CURRENT drawdown, matching the engine breaker.
+                # `_portfolio_max_drawdown_pct` is a monotone running max that
+                # nothing ever lowers, so arming on it re-halted the portfolio
+                # on the first tick after HYDRA_RESET_CIRCUIT_BREAKER=1 cleared
+                # the flag at resume — even from a fully recovered account —
+                # which left the documented escape hatch a no-op for the
+                # portfolio half exactly as it had been for the engine half.
+                # The halt stays STICKY once tripped (cleared only by the
+                # explicit operator reset), so recovery inside a session does
+                # not silently re-enable BUYs; this only means the reset holds
+                # when the account is no longer underwater.
                 _pcb = float(getattr(self, "PORTFOLIO_CIRCUIT_BREAKER_PCT", 15.0))
-                if self._portfolio_max_drawdown_pct >= _pcb:
+                if cur_dd >= _pcb:
                     if not getattr(self, "_portfolio_buy_halted", False):
                         print(
-                            f"  [PORTFOLIO CB] max DD "
-                            f"{self._portfolio_max_drawdown_pct:.1f}% ≥ "
+                            f"  [PORTFOLIO CB] drawdown "
+                            f"{cur_dd:.1f}% ≥ "
                             f"{_pcb:.0f}% — "
                             f"blocking new BUYs (SELL still allowed)"
                         )
@@ -4636,7 +4701,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.32.1",
+            "version": "2.33.0",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

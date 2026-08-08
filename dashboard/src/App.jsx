@@ -1437,11 +1437,12 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       // useEffect(() => sendMessage(...), [connected]) — notably the
       // companion.connect kickoff — which sent messages with a stale or
       // empty token and got auth_required, hiding the orb permanently.
-      await refreshWsToken();
-      if (mountedRef.current) {
-        reconnectAttemptsRef.current = 0;
-        setConnected(true);
-      }
+      const token = await refreshWsToken();
+      if (!mountedRef.current || ws.readyState !== WebSocket.OPEN) return;
+      // The server holds new sockets unauthenticated and sends NO state until
+      // this handshake succeeds, so it must go out before anything else.
+      // `connected` flips on auth_ack, not on socket open.
+      ws.send(JSON.stringify({ type: "auth", auth: token || "" }));
     };
     ws.onmessage = (event) => {
       if (!mountedRef.current) return;
@@ -1456,6 +1457,19 @@ export function HydraDashboard({ jwtToken, onLogout }) {
         // New typed messages (Phase 6+)
         if (msg && typeof msg.type === "string") {
           switch (msg.type) {
+            case "auth_ack":
+              // The server sends no account state until this succeeds, so
+              // `connected` tracks authentication, not socket liveness.
+              if (msg.success) {
+                reconnectAttemptsRef.current = 0;
+                setConnected(true);
+              } else {
+                console.error("[HYDRA] WS auth rejected — check that the "
+                  + "dashboard is served from the same agent process "
+                  + "(hydra_ws_token.json).");
+                setConnected(false);
+              }
+              return;
             case "backtest_progress":
               setBtProgress((prev) => lruCapDict(prev, msg.experiment_id, msg, MAX_BACKTEST_DICT_ENTRIES));
               // Accumulate per-pair equity for the observer chart. Cap total
@@ -2930,7 +2944,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.32.1 | kraken-cli v0.3.2 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.33.0 | kraken-cli v0.4.1 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]
@@ -2959,34 +2973,67 @@ function AuthSurface({ onLogin }) {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const loginWsRef = useRef(null);
+
+  // The login socket is short-lived but was never closed on error and was
+  // replaced on every submit, so failed attempts accumulated open sockets.
+  useEffect(() => () => {
+    try { loginWsRef.current?.close(); } catch { /* already closed */ }
+  }, []);
 
   const handleLogin = async (e) => {
     e.preventDefault();
+    if (loading) return;
     setLoading(true);
     setError("");
 
+    const finish = (ws, msg) => {
+      if (msg) setError(msg);
+      try { ws?.close(); } catch { /* already closed */ }
+      if (loginWsRef.current === ws) loginWsRef.current = null;
+      setLoading(false);
+    };
+
     try {
+      // Replace any socket left over from a previous attempt.
+      try { loginWsRef.current?.close(); } catch { /* already closed */ }
       const ws = new WebSocket(DEFAULT_WS_URL);
+      loginWsRef.current = ws;
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: "login", username, password }));
       };
       ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
+        let msg;
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return;  // ignore anything that is not JSON
+        }
         if (msg.type === "login_ack") {
           if (msg.success) {
+            finish(ws, "");
             onLogin(msg.token);
           } else {
-            setError(msg.error || "Login failed");
+            finish(ws, msg.error || "Login failed");
           }
-          ws.close();
         }
       };
       ws.onerror = () => {
-        setError("WebSocket connection failed. Ensure backend is running.");
+        finish(ws, "WebSocket connection failed. Ensure backend is running.");
+      };
+      ws.onclose = () => {
+        // Server hung up before acking (e.g. the unauthenticated-socket
+        // reaper). Without this the button stays disabled forever.
+        if (loginWsRef.current === ws) {
+          loginWsRef.current = null;
+          setLoading(false);
+        }
       };
     } catch (err) {
+      // Only a synchronous constructor failure lands here; the async paths
+      // clear `loading` themselves. The old `finally` cleared it immediately,
+      // so the submit button was never actually disabled.
       setError(err.message);
-    } finally {
       setLoading(false);
     }
   };
