@@ -6,6 +6,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.33.1] — 2026-08-08
+
+Launcher fix. Production was starting on the pair set v2.29 retired.
+
+### Fixed
+
+- **`start_hydra.bat` and `start_hydra_companion.bat` hardcoded the legacy
+  `--pairs SOL/USD,SOL/BTC,BTC/USD` triangle.** An explicit `--pairs`
+  overrides the code default and does not drift with it, so when v2.29 moved
+  the default to the three independent cores the launchers kept production on
+  the retired triangle through every release since. The live agent therefore
+  traded a pair set the evidence ledger had already rejected — 90d real tape
+  found no SOL edge (`calibrate_SOL_USD.txt`, AUC 0.56 FAIL) and the SOL/BTC
+  bridge only ever runs `exit_only` drain (`bridge_isolation.json`, 0
+  trades/1y) — while **never trading ETH or ZEC at all**. Both launchers now
+  pass `--pairs auto`, which seeds BTC/USD + ETH/USD + ZEC/USD and adds one
+  satellite per additional held asset, so held SOL is still worked as an
+  ordinary satellite rather than a default core with a dead bridge.
+  `--mode competition --resume` unchanged.
+
+  Verified against the real account: `discover_portfolio_pairs("USD")`
+  resolves to `['BTC/USD', 'ETH/USD', 'ZEC/USD']`.
+
+  Root launchers, `scripts/` and `.github/workflows/` sit in no audit
+  partition and no test asserts `.bat` content, which is why three
+  consecutive audit releases did not see it. CLAUDE.md now records that a
+  default-pair change must be re-checked against these two files.
+
+---
+
 ## [2.33.0] — 2026-08-08
 
 Audit release. A 7-way parallel sweep found a **silent stop-trading
