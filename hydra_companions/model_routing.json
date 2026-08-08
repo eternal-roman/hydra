@@ -148,7 +148,7 @@
   },
 
   "safety_caps": {
-    "comment": "Hard ceilings that every companion must respect, enforced in code not prompt. Enforced by hydra_companions/executor.py validator.",
+    "comment": "Read via router.safety_cap(companion_id, key, default). ENFORCED IN CODE: max_risk_per_trade_pct_equity + max_price_band_from_mid_pct (executor.ProposalValidator.validate_trade), max_ladder_rungs (validate_ladder), max_trades_per_day (coordinator.confirm_trade + live_executor, live-execution path only). DECLARED BUT NOT YET ENFORCED — no code reads these keys: max_concurrent_risk_pct_equity, volatile_regime_policy. Treat those two as intent, not as a guarantee, until a validator check lands.",
     "athena": {
       "max_trades_per_day": 4,
       "max_risk_per_trade_pct_equity": 1.0,

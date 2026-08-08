@@ -6,6 +6,133 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.33.0] — 2026-08-08
+
+Audit release. A 7-way parallel sweep found a **silent stop-trading
+regression shipped in v2.32.0**, an unauthenticated account-state read on the
+dashboard socket, a credential left in process argv, and four ways the
+exchange could strand or mis-price real inventory. kraken-cli re-verified
+against v0.4.1.
+
+### Fixed — the agent placed no orders at all without an LLM key
+
+- **Actionable signals were dropped before execution when `brain is None`.**
+  v2.32.0 added the brain-free guardrail branch to the Phase 2 loop as an
+  `elif` above the `else` that owned `all_states[pair] = state`. A BUY or SELL
+  with no LLM configured therefore ran R1-R11 + QFE, logged normally — and was
+  then absent from `all_states`, so Phase 2.5 (`state = all_states.get(pair);
+  if not state: continue`) skipped the pair entirely. **No orders were placed,
+  not entries and not exits**: a losing position rode through every
+  hold-through flatten and every circuit-breaker flatten while the console
+  showed a healthy agent generating signals. The assignment now sits outside
+  the branch, where it was before v2.32.0. Regression test drives the real
+  `run()` loop with `brain = None` and asserts `execute_signal` is reached;
+  re-nesting the assignment fails it.
+
+### Fixed — exchange inventory could be stranded or mis-priced
+
+- **A non-tradable engine could not SELL.** `_maybe_execute` refused
+  everything when `tradable=False`, but that flag is derived from the QUOTE
+  balance and a SELL spends the BASE already held. The bridge in `exit_only`
+  drain mode, or any satellite whose quote pool emptied while holding the
+  base, could never flatten — and the engine breaker is suppressed while not
+  tradable, so nothing else forced the exit. SELL is now allowed whenever
+  `position.size > 0`; entries stay refused.
+- **The 15% circuit breaker armed off a monotone high-water mark.** Both the
+  engine and the portfolio halt compared `max_drawdown` — a running max
+  nothing ever lowers — against the threshold, so `HYDRA_RESET_CIRCUIT_BREAKER=1`
+  cleared the flag and the very next tick re-armed it, even from a fully
+  recovered account back at its old peak. The one documented escape hatch was
+  a no-op and new BUYs were dead for good. Both now arm on the CURRENT
+  drawdown; the running max is preserved purely as the record, and the halt
+  stays sticky within a session.
+- **Resume threw away the data needed to true up a fill.**
+  `_reconcile_stale_placed` passed `pre_trade_snapshot=None` and never called
+  `true_up_fill` or `restore_position`, on the stated grounds that
+  previous-session orders have no snapshot. They do — `_place_order` writes it
+  onto the journal entry and `_journal_for_persistence` does not strip it. A
+  resting BUY that filled while offline left the engine on its optimistic
+  candle-close entry price; one cancelled by the dead man's switch left a
+  **phantom position never bought**, so the next SELL sized against inventory
+  that did not exist. Now mirrors `_apply_execution_event`.
+- **A renamed `kraken pairs` key would have silently erased positions.**
+  `load_pair_constants` substituted generic literals (`ordermin` 0.02,
+  `pair_decimals` 8) for missing keys and `apply_pair_constants` overlaid them
+  onto the registry, replacing correct per-pair values with wrong ones.
+  At ordermin 0.02, `write_off_dust` silently zeroes any BTC position under
+  ~0.02 BTC. Missing or unparseable constants now keep the registry's values
+  and log loudly.
+
+### Fixed — security
+
+- **The dashboard socket served account state with no credential.** Binding to
+  loopback (v2.32.1) narrowed who could reach :8765 but the OUTBOUND path
+  still had no auth: `_handler` added every socket to `clients` and
+  immediately pushed `latest_state` — balance, per-asset holdings, portfolio
+  drawdown, open positions, the last 20 journal entries. The token gated
+  inbound commands only, and `_origin_allowed` returns True for a missing
+  Origin, so any local process (any host under `HYDRA_WS_HOST=0.0.0.0`) could
+  read the whole account by connecting and sending nothing. Sockets now wait
+  in `pending`, receive nothing, and are closed after
+  `HYDRA_WS_AUTH_GRACE_S` (default 10s) unless they complete an `auth`
+  handshake. `_origin_allowed` is now documented as CSRF defence only.
+- **The API secret sat in `wsl` process argv for the whole session.**
+  v2.15.0 moved credentials to WSLENV for REST calls but
+  `hydra_streams.BaseStream.start` kept the inline `export KRAKEN_API_SECRET=`
+  form for all five long-lived stream subprocesses — a strictly longer
+  disclosure window than the path that was fixed. Both now share
+  `KrakenCLI.forward_credentials`; `HYDRA_CLI_LEGACY_SECRET_EXPORT=1` reverts.
+- **The dashboard login screen opened a socket before authenticating** and
+  never closed it on error, and its `finally` cleared `loading` synchronously
+  so the submit button was never disabled. Socket lifecycle is now ref-held
+  and closed on every terminal path.
+
+### Fixed — companion money safety
+
+- **A confirmed companion BUY bypassed the portfolio circuit breaker.**
+  `_system_healthy` checked only per-engine `halted`; the portfolio halt arms
+  off summed equity and fires while every individual engine is still under its
+  own threshold. SELL remains allowed (PR-A).
+- **The Kraken minimum-size check was dead code.** It read
+  `agent.kraken_cli` (an attribute `HydraAgent` never assigns) for
+  `MIN_ORDER_SIZE`/`MIN_COST`, which live on `PositionSizer`, so both lookups
+  yielded `{}` and every undersized proposal passed. Now reads
+  `hydra_pair_registry`.
+- **Risk % was not a size cap.** `|limit - stop| * size` is small whenever the
+  stop is tight, so 0.7 SOL @ 141 with a 2-wide stop read as 1.4% risk while
+  being 98.7% of a 100-equity account. Gross notional is now bounded by the
+  engine's own `max_position_pct`. The risk cap also **fails closed** when
+  equity is unavailable (it was skipped entirely at boot, when the least is
+  known), and proposals for pairs the agent does not run are rejected — an
+  unknown pair previously also disabled the price-band check.
+
+### Changed
+
+- **kraken-cli pin v0.3.2 → v0.4.1**, re-verified per subcommand: every flag
+  Hydra passes (`--type/--price/--oflags/--userref/--validate/--yes`,
+  `cancel`, `cancel-all`, `cancel-after`, `pairs`, `ticker`, `ohlc`,
+  `balance`, `extended-balance`, `trades-history`, `volume`, `query-orders`)
+  still exists and is unchanged. v0.4.1 adds `order amend`, batch orders,
+  `--cl-ord-id`, `--reduce-only` and the `workspace`/`session`/`tape`/`lab`
+  families; Hydra deliberately adopts none of them.
+- `balance()` skips unparseable entries instead of raising. The three callers
+  have no try/except, so a shape change previously killed `main()` before the
+  trading loop and `start_hydra.bat` restarted into the same crash forever.
+
+### Documentation
+
+Docs audited for truthfulness; claims that no longer matched the code were
+corrected rather than the code bent to fit them. Notably:
+`model_routing.json` advertised `max_concurrent_risk_pct_equity` and
+`volatile_regime_policy` as "enforced in code" — no code reads either key;
+`COMPANION_SPEC` referenced a `_execute_companion_proposal` that does not
+exist and claimed the compiler renders `beliefs`/`past_selves` (it reads them
+into unused locals); `BACKTEST.md` claimed all twelve invariants are enforced
+when I8/I9 are moot; harness scenario counts and several file paths were
+stale.
+
+---
+
 ## [2.32.1] — 2026-08-06
 
 Audit backlog closeout. Research-layer correctness, an unauthenticated data

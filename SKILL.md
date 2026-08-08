@@ -199,14 +199,14 @@ LOOP every {tick_interval}:
 
   PRINT status summary
 
-  IF max_drawdown > 15%:
+  IF current_drawdown >= 15%:          # equity vs peak this tick, not the record high
     BLOCK new BUYs only; still allow SELL to flatten
 END LOOP
 ```
 
 ## Risk Management Rules
 
-1. **Circuit Breaker (per engine)**: Halt **new BUYs** if max drawdown exceeds 15%; **SELL still allowed** (flatten inventory). Portfolio-level 15% max DD also sticky-blocks BUYs. (Not a full session freeze of exits.)
+1. **Circuit Breaker (per engine)**: Halt **new BUYs** when the *current* drawdown (equity vs peak this tick) reaches 15%; **SELL still allowed** (flatten inventory). The halt is sticky for the session and survives `--resume`; only `HYDRA_RESET_CIRCUIT_BREAKER=1` clears it, and `max_drawdown` is kept as the record. Portfolio-level 15% max DD also sticky-blocks BUYs. (Not a full session freeze of exits.)
 2. **Dead Man's Switch**: Always run `kraken order cancel-after 60` before live orders
 3. **Position Limits**: No single position notional > max_position_pct of equity (30%/40%), applied after brain size_multiplier
 4. **Trade Threshold**: Entries only when confidence ≥ 0.65; exits do not use this floor

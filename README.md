@@ -68,7 +68,7 @@ download works before installing WSL or provisioning keys.
 
 - Python **3.10+**
 - Node.js **18+** (dashboard only)
-- WSL Ubuntu with [kraken-cli](https://github.com/krakenfx/kraken-cli) (`kraken --version` → 0.3.2+)
+- WSL Ubuntu with [kraken-cli](https://github.com/krakenfx/kraken-cli) (`kraken --version` → 0.4.1+)
 - Kraken API keys for **live** trading (spot trade; **no withdraw**)
 - **Paper** still needs WSL + kraken-cli (public OHLC + `kraken paper`); no trade keys required for market data
 
@@ -148,7 +148,7 @@ python tests/live_harness/harness.py --mode mock
 cd dashboard && npm run build
 ```
 
-Harness: `smoke` · `mock` (**35** scenarios in CI) · `validate` · `live` (explicit flag). See [`tests/live_harness/README.md`](tests/live_harness/README.md).
+Harness: `smoke` · `mock` (**36** scenarios in CI) · `validate` · `live` (explicit flag). See [`tests/live_harness/README.md`](tests/live_harness/README.md).
 
 ## Project layout
 
@@ -171,6 +171,8 @@ Harness: `smoke` · `mock` (**35** scenarios in CI) · `validate` · `live` (exp
 - **Secret scanning** + **push protection** enabled on the repo
 - Report vulnerabilities **privately** via [Security Advisories](https://github.com/eternal-roman/hydra/security/advisories/new) — see [`SECURITY.md`](SECURITY.md)
 - Secrets stay local: `.env`, `hydra_*_token.json`, `hydra_auth_state.json`, `*.db` (all gitignored)
+- Dashboard WS binds loopback and authenticates **both directions**: a socket receives no account state until it presents the per-process token (or a JWT in production mode)
+- Kraken credentials reach WSL through the environment (`WSLENV`), never through `wsl` argv
 
 ## Docs
 
@@ -197,6 +199,7 @@ Harness: `smoke` · `mock` (**35** scenarios in CI) · `validate` · `live` (exp
 | Port 3000 taken | Vite uses `strictPort` — free the port |
 | Port 8765 taken | Pass `--ws-port 8766` (or free the port) |
 | Dashboard disconnected | Start agent first (hosts WS on 8765); `--demo` works offline |
+| Dashboard connects then shows nothing | WS auth failed — the UI must be served by the same agent process that wrote `hydra_ws_token.json`. Unauthenticated sockets get no state and are closed after `HYDRA_WS_AUTH_GRACE_S` (default 10s) |
 | No trades | Hold-through blocks non-TREND_UP BUYs; min_conf 0.65; friction may skip thin entries |
 | Paper mode idle / 0 ticks | Needs working kraken-cli OHLC; use `--demo` without WSL |
 | Want raw engine (no rails) | `HYDRA_HOLD_THROUGH=0` |

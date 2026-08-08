@@ -1740,10 +1740,20 @@ class HydraEngine:
         # if the operator later deposits the quote currency.
         # v2.27.6: inclusive threshold (>=) aligns engine with portfolio CB
         # and CLAUDE "15% drawdown kills" wording (was exclusive `>`).
-        if self.tradable and self.max_drawdown >= self.CIRCUIT_BREAKER_PCT:
+        # Arms on the CURRENT drawdown, not on `max_drawdown`. `max_drawdown`
+        # is a monotone high-water mark that nothing ever lowers, so arming on
+        # it re-halted the engine on the very next tick after
+        # HYDRA_RESET_CIRCUIT_BREAKER=1 cleared the flag — even from a fully
+        # recovered account back at its old peak — which made the one
+        # documented escape hatch a no-op and left new BUYs dead for good.
+        # `halted` is still sticky once tripped (only the explicit operator
+        # reset clears it), so this does not auto-resume mid-session; it only
+        # means the reset re-arms when the account is *still* underwater,
+        # which is what restore_runtime already claims.
+        if self.tradable and drawdown >= self.CIRCUIT_BREAKER_PCT:
             self.halted = True
             self.halt_reason = (
-                f"CIRCUIT BREAKER: drawdown {self.max_drawdown:.1f}% "
+                f"CIRCUIT BREAKER: drawdown {drawdown:.1f}% "
                 f">= {self.CIRCUIT_BREAKER_PCT}% limit"
             )
 
@@ -1865,14 +1875,27 @@ class HydraEngine:
             Kelly sizes entries, full-close on any SELL once a position exists
             and is above ordermin.
 
-        Informational-only engines (tradable=False) never produce a Trade
+        Informational-only engines (tradable=False) never open a position
         — the agent-level guard (real quote-currency balance) flipped the
         flag because we don't hold the currency needed to fund this pair's
         orders. The signal still exists in state for confluence consumers.
+        They CAN still close one: ``tradable`` is derived from the *quote*
+        balance, which a SELL does not spend, so gating exits on it stranded
+        inventory permanently (the bridge in exit_only drain mode, or a
+        satellite whose quote pool emptied while holding the base). Exits
+        follow the same rule as the halt path below.
         """
-        if not self.tradable:
-            return None
         if not self.prices:
+            return None
+
+        # Exit guarantee: a non-tradable engine may still flatten inventory.
+        # Entries are refused because we cannot fund them; SELLs spend the
+        # base we already hold, so blocking them traps the position with no
+        # way out (the engine breaker is also suppressed while not tradable,
+        # so nothing else would force the flatten).
+        if not self.tradable and not (
+            signal.action == SignalAction.SELL and self.position.size > 0
+        ):
             return None
 
         # Halt blocks new risk only. Risk-reducing SELLs must still run.

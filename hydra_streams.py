@@ -3,7 +3,6 @@ import subprocess
 import json
 import time
 import os
-import shlex
 import threading
 import queue
 from typing import Dict, List, Optional, Any, Tuple
@@ -67,11 +66,13 @@ class BaseStream:
         self._reader_exit_reason = None
         self._on_start_reset()
         label = self._stream_label()
-        cmd_str = f"source ~/.cargo/env && {self._build_cmd()}"
-        api_key = os.environ.get("KRAKEN_API_KEY")
-        api_secret = os.environ.get("KRAKEN_API_SECRET")
-        if api_key and api_secret:
-            cmd_str = f"export KRAKEN_API_KEY={shlex.quote(api_key)} && export KRAKEN_API_SECRET={shlex.quote(api_secret)} && {cmd_str}"
+        # Credentials go through the environment via WSLENV, never into the
+        # `wsl` argv — these subprocesses live for the whole session, so an
+        # inline `export SECRET=...` would expose the live trading secret in
+        # ps/procfs for far longer than the REST path v2.15.0 fixed.
+        cmd_str, env = KrakenCLI.forward_credentials(
+            f"source ~/.cargo/env && {self._build_cmd()}"
+        )
 
         cmd = [
             "wsl", "-d", WSL_DISTRO, "--", "bash", "-c", cmd_str
@@ -79,7 +80,7 @@ class BaseStream:
         try:
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                bufsize=1, text=True,
+                bufsize=1, text=True, env=env,
             )
         except Exception as e:
             print(f"  [{label}] failed to spawn subprocess: {type(e).__name__}: {e}")

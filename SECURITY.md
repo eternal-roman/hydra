@@ -21,6 +21,17 @@ If you fork this repo:
 
 Runtime files that must stay local (already gitignored): `hydra_auth_state.json`, `hydra_ws_token.json`, `hydra_users.db`, order journals, session snapshots.
 
+`hydra_ws_token.json` is a live credential: it is the per-process token that unlocks the dashboard WebSocket in both directions. Treat leaking it as leaking read access to the whole account state.
+
+## Built-in boundaries
+
+| Boundary | Where | Behavior |
+|---|---|---|
+| Dashboard WS | `hydra_ws_server.py` | Binds `127.0.0.1` (`HYDRA_WS_HOST`). Sockets sit in `pending` and receive **no** account state until they authenticate; unauthenticated sockets close after `HYDRA_WS_AUTH_GRACE_S` (default 10s). Inbound commands need the same credential. `Origin` checking is CSRF defence only and fails open for non-browser clients — it is not the auth boundary. |
+| Kraken credentials | `KrakenCLI.forward_credentials` | Passed to WSL through the environment via `WSLENV`, never interpolated into `wsl` argv (which is world-readable via `ps`/procfs). Covers the REST wrapper and the long-lived stream subprocesses. `HYDRA_CLI_LEGACY_SECRET_EXPORT=1` reverts, and should not be used on a shared host. |
+| CLI argument injection | `KrakenCLI._build_invocation` | Every argument is `shlex.quote`d before reaching `bash -c`. |
+| Order surface | engine + agent | Spot, limit, post-only only. No withdraw scope is used or required. |
+
 ## Scope
 
 In scope:
