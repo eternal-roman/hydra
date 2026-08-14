@@ -100,6 +100,7 @@ def _alias_variants(canonical: str) -> set[str]:
       USD  → {USD, ZUSD}             (Z-prefix legacy fiat)
       USDC → {USDC, ZUSDC}
       SOL  → {SOL, XSOL}
+      ZEC  → {ZEC, XZEC}
     """
     if not canonical:
         return set()

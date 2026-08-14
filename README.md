@@ -97,7 +97,7 @@ python hydra_agent.py --mode competition --paper
 python hydra_agent.py --balance 100                         # BTC/USD, ETH/USD, ZEC/USD
 python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD       # legacy SOL triangle
 
-# Dashboard (http://localhost:3000 → agent WS :8765)
+# Dashboard: http://localhost:3000  →  agent WS ws://127.0.0.1:8765
 cd dashboard && npm run dev
 
 # Windows launchers
@@ -112,6 +112,7 @@ start_hydra.bat            # production: --pairs auto --mode competition --resum
 | `.env` / `.env.example` | API keys, kill switches (`HYDRA_*`) |
 | `--pairs` / `--quote` / `HYDRA_QUOTE` | Pairs (default BTC/ETH/ZEC USD). `--quote` only changes `--pairs auto` fallback quote |
 | `--demo` / `--paper` / `--resume` / `--mode` | Offline demo, paper, snapshot resume, Kelly mode |
+| `python hydra_auth.py create-user` / `reset-password` | Dashboard login (insert-only create; reset does not recreate) |
 
 Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`](SKILL.md)
 
@@ -197,8 +198,9 @@ Harness: `smoke` · `mock` (**36** scenarios in CI) · `validate` · `live` (exp
 | `kraken: command not found` | Install kraken-cli in WSL; `source ~/.cargo/env` — or use `--demo` |
 | Wrong WSL distro | `wsl -l -v` → set `HYDRA_WSL_DISTRO` |
 | Port 3000 taken | Vite uses `strictPort` — free the port |
-| Port 8765 taken | Pass `--ws-port 8766` (or free the port) |
-| Dashboard disconnected | Start agent first (hosts WS on 8765); `--demo` works offline |
+| Port 8765 taken | Launchers refuse to start. Free the port or pass `--ws-port` |
+| Dashboard disconnected | Agent hosts `ws://127.0.0.1:8765` (not `localhost`/IPv6). `--demo` works offline |
+| Forgot dashboard password | `python hydra_auth.py reset-password <user>` (`create-user` will not overwrite) |
 | Dashboard connects then shows nothing | WS auth failed — the UI must be served by the same agent process that wrote `hydra_ws_token.json`. Unauthenticated sockets get no state and are closed after `HYDRA_WS_AUTH_GRACE_S` (default 10s) |
 | No trades | Hold-through blocks non-TREND_UP BUYs; min_conf 0.65; friction may skip thin entries |
 | Paper mode idle / 0 ticks | Needs working kraken-cli OHLC; use `--demo` without WSL |
