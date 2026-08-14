@@ -10,7 +10,8 @@ v2.17.1 hardening:
 - No hardcoded `admin/admin` default. First-run admin creation requires
   `HYDRA_ADMIN_PASSWORD`; otherwise a bootstrap instruction is printed
   and no user is seeded. For manual provisioning use the CLI:
-      python hydra_auth.py create-user <username>
+      python hydra_auth.py create-user <username> [--admin]
+      python hydra_auth.py reset-password <username>
 """
 import sqlite3
 import os
@@ -154,6 +155,7 @@ def init_db():
 
 def create_user(username: str, password: str, role: str = "user") -> bool:
     """Create a new user. Returns True if successful, False if exists."""
+    username = (username or "").strip()
     password_hash = pwd_context.hash(password)
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -168,11 +170,35 @@ def create_user(username: str, password: str, role: str = "user") -> bool:
         conn.close()
 
 
+def set_password(username: str, password: str) -> bool:
+    """Replace the stored hash for an existing user. False if not found."""
+    username = (username or "").strip()
+    if not username or not password:
+        return False
+    password_hash = pwd_context.hash(password)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE users SET password_hash = ? WHERE username = ? COLLATE NOCASE",
+            (password_hash, username),
+        )
+        conn.commit()
+        return c.rowcount > 0
+    finally:
+        conn.close()
+
+
 def authenticate_user(username: str, password: str) -> Optional[Dict]:
     """Verify credentials and return user info if valid."""
+    username = (username or "").strip()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id, username, password_hash, role FROM users WHERE username = ?", (username,))
+    c.execute(
+        "SELECT id, username, password_hash, role FROM users "
+        "WHERE username = ? COLLATE NOCASE",
+        (username,),
+    )
     user = c.fetchone()
     conn.close()
 
@@ -252,7 +278,10 @@ def get_api_keys_by_username(username: str, exchange: str) -> Optional[Dict[str,
     """Retrieve API keys using username instead of user_id."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id FROM users WHERE username = ?", (username,))
+    c.execute(
+        "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
+        ((username or "").strip(),),
+    )
     row = c.fetchone()
     conn.close()
     if not row:
@@ -260,21 +289,50 @@ def get_api_keys_by_username(username: str, exchange: str) -> Optional[Dict[str,
     return get_api_keys(row[0], exchange)
 
 
+def _read_cli_password(username: str) -> Optional[str]:
+    password = os.environ.get("HYDRA_NEW_USER_PASSWORD") or getpass.getpass(
+        f"Password for {username}: "
+    )
+    if not password:
+        print("[AUTH] Empty password rejected.", file=sys.stderr)
+        return None
+    return password
+
+
 def _cli_create_user(argv):
     if len(argv) < 1:
         print("usage: python hydra_auth.py create-user <username> [--admin]", file=sys.stderr)
         return 2
-    username = argv[0]
+    username = argv[0].strip()
     role = "admin" if "--admin" in argv[1:] else "user"
-    password = os.environ.get("HYDRA_NEW_USER_PASSWORD") or getpass.getpass(f"Password for {username}: ")
-    if not password:
-        print("[AUTH] Empty password rejected.", file=sys.stderr)
+    password = _read_cli_password(username)
+    if password is None:
         return 2
     if create_user(username, password, role=role):
         label = "admin user" if role == "admin" else "user"
         print(f"[AUTH] Created {label} '{username}'.")
         return 0
-    print(f"[AUTH] User '{username}' already exists.", file=sys.stderr)
+    print(
+        f"[AUTH] User '{username}' already exists. "
+        f"Password was NOT changed. Reset with: "
+        f"python hydra_auth.py reset-password {username}",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _cli_reset_password(argv):
+    if len(argv) < 1:
+        print("usage: python hydra_auth.py reset-password <username>", file=sys.stderr)
+        return 2
+    username = argv[0].strip()
+    password = _read_cli_password(username)
+    if password is None:
+        return 2
+    if set_password(username, password):
+        print(f"[AUTH] Reset password for '{username}'.")
+        return 0
+    print(f"[AUTH] User '{username}' not found.", file=sys.stderr)
     return 1
 
 
@@ -309,5 +367,11 @@ _audit_legacy_default_admin()
 if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] == "create-user":
         sys.exit(_cli_create_user(sys.argv[2:]))
-    print("usage: python hydra_auth.py create-user <username> [--admin]", file=sys.stderr)
+    if len(sys.argv) >= 2 and sys.argv[1] == "reset-password":
+        sys.exit(_cli_reset_password(sys.argv[2:]))
+    print(
+        "usage: python hydra_auth.py create-user <username> [--admin]\n"
+        "       python hydra_auth.py reset-password <username>",
+        file=sys.stderr,
+    )
     sys.exit(2)

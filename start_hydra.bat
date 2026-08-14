@@ -16,6 +16,14 @@ REM edge, AUC 0.56 FAIL, and the SOL/BTC bridge only ever drains exit_only.
 REM Production was therefore trading a rejected pair set with no ETH or ZEC.
 REM --mode competition --resume are load-bearing: do not remove them.
 :loop
+netstat -ano | findstr /R /C:":8765 .*LISTENING" >nul
+if not errorlevel 1 (
+  echo ERROR: port 8765 is already in use.
+  echo A leftover process is answering dashboard login on that port.
+  echo Stop it, then rerun this launcher. The dashboard at :3000 talks to :8765.
+  pause
+  exit /b 1
+)
 echo [%date% %time%] Starting HYDRA agent...
 python -u hydra_agent.py --pairs auto --mode competition --resume
 echo.

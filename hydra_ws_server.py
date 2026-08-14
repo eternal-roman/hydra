@@ -136,7 +136,9 @@ class DashboardBroadcaster:
             
         user = hydra_auth.authenticate_user(username, password)
         if user:
-            token = hydra_auth.create_access_token({"sub": username, "role": user["role"]})
+            token = hydra_auth.create_access_token(
+                {"sub": user["username"], "role": user["role"]}
+            )
             return {"success": True, "token": token, "user": user}
         return {"success": False, "error": "Invalid credentials"}
         
@@ -152,7 +154,10 @@ class DashboardBroadcaster:
         username = user_info.get("sub")
         conn = sqlite3.connect("hydra_users.db")
         c = conn.cursor()
-        c.execute("SELECT id FROM users WHERE username = ?", (username,))
+        c.execute(
+            "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
+            (username,),
+        )
         row = c.fetchone()
         conn.close()
         

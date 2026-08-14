@@ -9,6 +9,8 @@ import pathlib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import pytest
+
 from hydra_agent import HydraAgent, discover_portfolio_pairs
 from hydra_engine import HydraEngine
 from hydra_kraken_cli import KrakenCLI
@@ -230,3 +232,62 @@ def test_unfunded_quote_pool_seeds_zero_but_stays_sellable():
     assert eth.tradable is True
     # Entry sizing collapses to zero without funds
     assert eth.sizer.calculate(0.9, eth.balance, 3000.0, "ETH/USDC") == 0.0
+
+
+def test_unfunded_usd_pool_clears_constructor_dummy_peak():
+    """Live first-seed with no USD cash must not inherit --balance/N as peak.
+
+    That printed Eq $0 / DD 100% and armed the 15% BUY halt on tick 1
+    for crypto-only (or USDC-only) accounts trading USD pairs.
+    """
+    agent = object.__new__(HydraAgent)
+    agent.paper = False
+    agent.initial_balance = 100.0
+    agent.balance_stream = _NullBalanceStream()
+    agent._cached_balance = {"XXBT": 0.01, "XETH": 0.5, "XZEC": 2.0}
+    agent.pairs = ["BTC/USD", "ETH/USD", "ZEC/USD"]
+    agent.engines = {}
+    for pair, px in (("BTC/USD", 63121.7), ("ETH/USD", 1883.82), ("ZEC/USD", 490.94)):
+        eng = HydraEngine(initial_balance=100.0 / 3, asset=pair)
+        eng.prices = [px]
+        agent.engines[pair] = eng
+        assert eng.peak_equity == pytest.approx(100.0 / 3)
+
+    agent._set_engine_balances(per_pair_usd=100.0 / 3)
+    for pair in agent.pairs:
+        eng = agent.engines[pair]
+        assert eng.balance == 0.0
+        assert eng.peak_equity == 0.0
+        assert eng.tradable is True
+        # First tick must not report 100% DD / arm the breaker.
+        equity = eng.balance + eng.position.size * eng.prices[-1]
+        dd = ((eng.peak_equity - equity) / eng.peak_equity * 100) if eng.peak_equity > 0 else 0.0
+        assert dd == 0.0
+
+
+def test_unfunded_usd_pool_preserves_snapshot_peak():
+    """A --resume peak above the constructor dummy is still never lowered."""
+    agent = object.__new__(HydraAgent)
+    agent.paper = False
+    agent.initial_balance = 100.0
+    agent.balance_stream = _NullBalanceStream()
+    agent._cached_balance = {"XXBT": 0.01}
+    agent.pairs = ["BTC/USD"]
+    eng = HydraEngine(initial_balance=100.0, asset="BTC/USD")
+    eng.prices = [63000.0]
+    eng.peak_equity = 5000.0
+    eng.initial_balance = 5000.0
+    agent.engines = {"BTC/USD": eng}
+    agent._set_engine_balances(per_pair_usd=100.0)
+    assert eng.balance == 0.0
+    assert eng.peak_equity == 5000.0
+
+
+def test_get_real_quote_balance_error_envelope_fails_open():
+    """A truthy `{error: ...}` free-balance payload is not $0 cash."""
+    agent = object.__new__(HydraAgent)
+    agent.paper = False
+    agent.balance_stream = _NullBalanceStream()
+    agent._cached_free_balance = {"error": "EAPI:Invalid key"}
+    agent._cached_balance = {"ZUSD": 90.0}
+    assert agent._get_real_quote_balance("USD") == 90.0

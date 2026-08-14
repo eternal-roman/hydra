@@ -369,6 +369,18 @@ class TestFeeTierExtraction:
         assert "SOL/USDC" in result["pair_fees"]
         assert result["pair_fees"]["SOL/USDC"]["taker_pct"] == 0.26
 
+    def test_extract_fee_tier_xzeczusd_maps_to_zec_usd(self):
+        """kraken volume emits XZECZUSD for ZEC/USD (legacy X+Z prefixes)."""
+        agent = self._make_agent()
+        result = agent._extract_fee_tier({
+            "fees": {"XZECZUSD": {"fee": "0.26"}},
+            "fees_maker": {"XZECZUSD": {"fee": "0.16"}},
+        })
+        assert "ZEC/USD" in result["pair_fees"]
+        assert "XZECZUSD" not in result["pair_fees"]
+        assert result["pair_fees"]["ZEC/USD"]["taker_pct"] == 0.26
+        assert result["pair_fees"]["ZEC/USD"]["maker_pct"] == 0.16
+
     def test_extract_fee_tier_missing_pairs_attr(self):
         """Agent without `pairs` set should still return a valid dict.
 

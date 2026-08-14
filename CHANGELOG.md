@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Login: `python hydra_auth.py reset-password <user>` (`create-user` is insert-only). Usernames trim and match case-insensitively.
+- `RULES_ONLY` ticks no longer `KeyError: final_signal`.
+- Demo Kraken Account empty copy (not forever "Loading...").
+- Fee key `XZECZUSD` → `ZEC/USD` (`XZEC` alias).
+- Unfunded USD cash: constructor `--balance` is not a real peak (no false 100% DD / BUY halt). Snapshot peaks stay.
+- Filter kraken-cli subscribe ACK deprecations on stream stderr.
+- Launchers exit if :8765 is already listening.
+
+---
+
 ## [2.33.2] — 2026-08-14
 
 Audit patch. Accounting, rails, dashboard, and docs. No new live gates

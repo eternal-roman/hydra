@@ -9,7 +9,7 @@ import os
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hydra_streams import CandleStream
+from hydra_streams import CandleStream, _is_kraken_cli_ack_noise
 
 
 PAIRS = ["SOL/USDC", "SOL/BTC", "BTC/USDC"]
@@ -171,6 +171,29 @@ class TestCandleStreamLabel:
     def test_label(self):
         cs = _make_stream()
         assert cs._stream_label() == "CANDLE_WS"
+
+
+class TestKrakenCliAckNoise:
+
+    def test_deprecated_timestamp_is_noise(self):
+        line = (
+            '{"level":"WARN","fields":{"message":"ack warning",'
+            '"warnings":"timestamp is deprecated, use interval_begin"}}'
+        )
+        assert _is_kraken_cli_ack_noise(line) is True
+
+    def test_deprecated_exec_fields_are_noise(self):
+        line = (
+            "cancel_reason is deprecated, use reason; "
+            "stop_price is deprecated, use trigger_price"
+        )
+        assert _is_kraken_cli_ack_noise(line) is True
+
+    def test_real_errors_are_not_noise(self):
+        assert _is_kraken_cli_ack_noise("") is False
+        assert _is_kraken_cli_ack_noise(
+            '{"level":"ERROR","fields":{"message":"subscribe failed"}}'
+        ) is False
 
 
 # ═══════════════════════════════════════════════════════════════

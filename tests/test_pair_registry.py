@@ -111,6 +111,20 @@ def test_resolve_zusd_alias():
     assert reg.resolve("BTCZUSD").cli_format == "BTC/USD"
 
 
+def test_resolve_xzec_legacy_prefix_alias():
+    """XZEC is Kraken's X-prefix code for ZEC. Combined with ZUSD it
+    produces XZECZUSD — the form `kraken volume` emits for ZEC/USD
+    (same dialect as XXBTZUSD for BTC). Without this alias the live
+    agent logs [FEE-TIER] Unrecognized Kraken fee-key 'XZECZUSD' and
+    stores ZEC fees under the raw key instead of ZEC/USD."""
+    reg = default_registry()
+    assert reg.resolve("XZECZUSD").cli_format == "ZEC/USD"
+    assert reg.resolve("XZEC/ZUSD").cli_format == "ZEC/USD"
+    assert reg.resolve("XZECUSD").cli_format == "ZEC/USD"
+    assert reg.resolve("XZEC/USD").cli_format == "ZEC/USD"
+    assert reg.resolve("XZECUSDC").cli_format == "ZEC/USDC"
+
+
 def test_resolve_xxbt_double_prefix_alias():
     """XXBT is Kraken's 4-letter legacy code for BTC. Combined with
     ZUSD, it produces XXBTZUSD — the form `kraken volume` actually
@@ -147,6 +161,9 @@ def test_alias_variants_data_driven():
     usd_variants = _alias_variants("USD")
     assert "USD" in usd_variants
     assert "ZUSD" in usd_variants
+    zec_variants = _alias_variants("ZEC")
+    assert "ZEC" in zec_variants
+    assert "XZEC" in zec_variants
 
 
 def test_alias_variants_unknown_canonical():

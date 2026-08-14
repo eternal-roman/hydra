@@ -206,6 +206,10 @@ class HydraAgent:
         # paths that require role-based lookup must guard on `self.triangle`.
         self.triangle: Optional[TradingTriangle] = self._derive_triangle(pairs)
         self.initial_balance = initial_balance
+        # Frozen --balance/N used to detect constructor dummy peak on a
+        # live unfunded-quote seed. `self.initial_balance` is later
+        # overwritten to exchange tradable USD and must not be the yardstick.
+        self._constructor_balance_split = float(initial_balance) / max(1, len(pairs))
         self._competition_start_balance = None  # Set once on first start, persisted across resumes
         # Portfolio-level drawdown (v2.16.2): per-pair engine.max_drawdown is a
         # pinned running max across tiny dips; it does not reflect exchange-wide
@@ -2305,8 +2309,13 @@ class HydraAgent:
             merged["qfe_trigger_values"] = qfe_trigger_values
             state["ai_decision"] = merged
         else:
+            # Post-rules/QFE engine action. Dashboard AI pill reads
+            # `final_signal`; `_print_tick_status` used to KeyError without it.
+            rules_final = str((state.get("signal") or {}).get("action") or "HOLD")
+            rules_summary = "Deterministic guardrails only — no LLM configured."
             state["ai_decision"] = {
                 "action": "RULES_ONLY",
+                "final_signal": rules_final,
                 "size_multiplier": final_size_multiplier,
                 "size_multiplier_brain": 1.0,
                 "size_multiplier_rules": rules_size_mult,
@@ -2316,9 +2325,8 @@ class HydraAgent:
                 "qfe_active": qfe_active,
                 "qfe_reason": qfe_reason,
                 "qfe_trigger_values": qfe_trigger_values,
-                "combined_summary": (
-                    "Deterministic guardrails only — no LLM configured."
-                ),
+                "combined_summary": rules_summary,
+                "summary": rules_summary,
                 "brain_available": False,
             }
         return state
@@ -3890,10 +3898,34 @@ class HydraAgent:
             if quote in STABLE_QUOTES:
                 slice_quote = _stable_slice(quote)
                 equity = slice_quote + engine.position.size * current_price
+                old_peak = float(engine.peak_equity or 0.0)
+                dummy_split = float(
+                    getattr(self, "_constructor_balance_split", None)
+                    or (
+                        (getattr(self, "initial_balance", 0.0) or 0.0)
+                        / max(1, len(self.pairs) or 1)
+                    )
+                )
                 engine.balance = slice_quote
                 engine.initial_balance = equity
-                # PR-B / B3: never rebase peak downward on re-seed / resume.
-                engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
+                # PR-B / B3: never rebase a *real* peak downward on re-seed
+                # / resume. The constructor `--balance` split is not a real
+                # peak: live accounts with no USD cash used to inherit it,
+                # print DD 100%, and arm the 15% BUY halt on tick 1.
+                if (
+                    not self.paper
+                    and slice_quote <= 0.0
+                    and engine.position.size <= 0
+                    and old_peak <= dummy_split + 1e-9
+                ):
+                    engine.peak_equity = 0.0
+                    print(
+                        f"  [HYDRA] {pair}: unfunded {quote} pool — engine "
+                        f"cash $0 (sizer will refuse BUYs). Not a drawdown; "
+                        f"peak cleared of constructor --balance placeholder."
+                    )
+                else:
+                    engine.peak_equity = max(old_peak, equity)
                 # Always tradable: with a zero pool the sizer sizes entries
                 # to 0 (balance < costmin) but held inventory stays sellable.
                 engine.tradable = True
@@ -4101,25 +4133,40 @@ class HydraAgent:
         Falling through to the gross snapshot is intentional: an unavailable
         hold feed reproduces pre-v2.32 behavior rather than blocking trading.
         """
+        def _asset_map(candidate) -> Optional[dict]:
+            if not candidate or not isinstance(candidate, dict):
+                return None
+            # CLI error envelopes are truthy dicts but not an asset map.
+            # Treating them as $0 cash starved every USD engine on tick 1.
+            keys = [k for k in candidate if k != "error"]
+            if "error" in candidate and not keys:
+                return None
+            return candidate
+
         bal = None
         if not self.paper and self.balance_stream.healthy:
             # FREE view: gross minus funds held in resting orders.
-            bal = self.balance_stream.latest_free_balances()
+            bal = _asset_map(self.balance_stream.latest_free_balances())
             if not bal:
-                bal = self.balance_stream.latest_balances()
+                bal = _asset_map(self.balance_stream.latest_balances())
         if not bal:
-            bal = getattr(self, "_cached_free_balance", None)
+            bal = _asset_map(getattr(self, "_cached_free_balance", None))
         if not bal:
-            bal = getattr(self, "_cached_balance", None)
+            bal = _asset_map(getattr(self, "_cached_balance", None))
         if not bal:
             return None
         # Sum all non-staked holdings that normalize to the quote currency.
         total = 0.0
         for asset, amount in bal.items():
+            if asset in ("error", "result", "balances", "volume", "count"):
+                continue
             if KrakenCLI._is_staked(asset):
                 continue
             if KrakenCLI._normalize_asset(asset) == quote:
-                total += amount
+                try:
+                    total += float(amount)
+                except (TypeError, ValueError):
+                    continue
         return total
 
     def _extract_fee_tier(self, vol_response: dict) -> dict:
@@ -4503,7 +4550,15 @@ class HydraAgent:
 
         if state.get("ai_decision") and not state["ai_decision"].get("fallback"):
             ai = state["ai_decision"]
-            print(f"  |  [AI] {ai['action']} → {ai['final_signal']} | {ai.get('summary', '')[:70]}")
+            # RULES_ONLY / cached / older payloads omit brain keys.
+            # Prefer `summary` (brain) then `combined_summary` (guardrails).
+            summary = ai.get("summary") or ai.get("combined_summary") or ""
+            if not isinstance(summary, str):
+                summary = str(summary)
+            print(
+                f"  |  [AI] {ai.get('action', '?')} → "
+                f"{ai.get('final_signal') or '—'} | {summary[:70]}"
+            )
 
         if state.get("last_trade"):
             t = state["last_trade"]
