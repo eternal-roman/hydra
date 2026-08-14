@@ -14,6 +14,7 @@ import sys
 import os
 import time
 import threading
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hydra_streams import FakeExecutionStream  # noqa: E402
@@ -206,9 +207,13 @@ class TestHealthStatusReasons:
         finally:
             bs._reader_thread.stop()
 
-    def test_start_does_not_clear_got_data_after_reader_begins(self, monkeypatch):
+    def test_start_does_not_clear_got_data_after_reader_begins(self):
         """`_got_data = False` after Thread.start() raced a snapshot
-        that already marked the stream live."""
+        that already marked the stream live.
+
+        CI runs this file as `python tests/test_execution_stream.py`
+        (plain unittest runner, no pytest fixtures).
+        """
         es = ExecutionStream(paper=False)
         fake = _FakeProc(rc=None)
         fake.stdout = []
@@ -231,13 +236,10 @@ class TestHealthStatusReasons:
             def join(self, timeout=None):
                 pass
 
-        monkeypatch.setattr("hydra_streams.subprocess.Popen", fake_popen)
-        monkeypatch.setattr("hydra_streams.threading.Thread", _ImmediateThread)
-        assert es.start() is True
+        with patch("hydra_streams.subprocess.Popen", fake_popen), \
+             patch("hydra_streams.threading.Thread", _ImmediateThread):
+            assert es.start() is True
         assert es._got_data is True
-        es._proc = fake
-        es._reader_thread = _ImmediateThread()
-        es._stderr_thread = _ImmediateThread()
         es.stop()
 
     def test_exec_no_snapshot_still_unhealthy(self):
