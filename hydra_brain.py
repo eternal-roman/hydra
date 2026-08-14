@@ -2,14 +2,14 @@
 """
 HYDRA Brain — Multi-Agent AI Reasoning Layer (3-Agent Pipeline)
 
-Agent 1: Market Quant (Claude Sonnet) — quantitative market analysis with
+Agent 1: Market Quant — quantitative market analysis with
          derivatives positioning (funding, OI regime, basis) and CVD
          divergence; outputs scenario probabilities + size_multiplier.
          Historically named "Analyst"; the journal / WS field
          `analyst_reasoning` is preserved for back-compat.
-Agent 2: Risk Manager (Claude Sonnet) — Jane-Street / Deribit institutional
-         rigor: structured risk metrics, stress-scenario loss, liquidity
-         score, correlation cluster; outputs decision + size_multiplier.
+Agent 2: Risk Manager — structured risk metrics, stress-scenario loss,
+         liquidity score, correlation cluster; outputs decision +
+         size_multiplier.
 Agent 3: Strategic Advisor (Grok 4 Reasoning) — deep analysis on contested
          decisions (OVERRIDE or ADJUST from Risk Manager, or low-conviction
          disagreement between Quant and engine).
@@ -68,8 +68,8 @@ class BrainDecision:
     final_signal: str              # "BUY", "SELL", "HOLD"
     confidence_adj: float          # adjusted confidence 0-1
     size_multiplier: float         # 0.0–1.5
-    analyst_reasoning: str         # Claude analyst thesis
-    risk_reasoning: str            # Claude risk assessment
+    analyst_reasoning: str         # Quant thesis
+    risk_reasoning: str            # RM assessment
     strategist_reasoning: str = "" # Grok strategic analysis (if escalated)
     combined_summary: str = ""     # one-line for trade log
     risk_flags: List[str] = field(default_factory=list)
@@ -418,7 +418,7 @@ def _coerce_bool(v, default: bool = False) -> bool:
 
 
 class HydraBrain:
-    """3-agent AI reasoning: Claude Analyst + Claude Risk Manager + Grok Strategist.
+    """3-agent AI reasoning: Market Quant + Risk Manager + Grok Strategist.
     Grok only fires on genuine disagreements (OVERRIDE or analyst disagrees at low conviction)."""
 
     # Cross-component disclosure threshold. When daily_cost first crosses
@@ -443,7 +443,7 @@ class HydraBrain:
         broadcaster: Optional[Any] = None,
         tool_iterations_cap: int = 4,
     ):
-        # Primary: Claude for Analyst + Risk Manager
+        # Primary: Quant + RM on primary_client
         self.primary_client = None
         self.primary_provider = None
         self.primary_model = None
@@ -613,14 +613,14 @@ class HydraBrain:
         total_tokens_out = 0
 
         try:
-            # Agent 1: Market Quant (Claude)
+            # Agent 1: Market Quant
             analyst_output, a_in, a_out = self._run_quant(state)
             total_tokens_in += a_in
             total_tokens_out += a_out
             if analyst_output is None:
                 raise ValueError("Analyst returned no output")
 
-            # Agent 2: Risk Manager (Claude)
+            # Agent 2: Risk Manager
             risk_output, r_in, r_out = self._run_risk_manager(state, analyst_output)
             total_tokens_in += r_in
             total_tokens_out += r_out
@@ -1048,7 +1048,7 @@ class HydraBrain:
     # ─── Agent runners ───
 
     def _run_quant(self, state: Dict) -> tuple:
-        """Market Quant (Claude). Returns (parsed_output, in_tokens, out_tokens).
+        """Market Quant. Returns (parsed_output, in_tokens, out_tokens).
 
         v2.14 prompt shape emits a `scenario` block, `indicators_used`,
         `positioning_bias`, `size_multiplier`, `force_hold`. When the JSON
@@ -1092,7 +1092,7 @@ class HydraBrain:
         return parsed, tok_in, tok_out
 
     def _run_risk_manager(self, state: Dict, analyst: Dict) -> tuple:
-        """Risk Manager (Claude). Returns (parsed_output, in_tokens, out_tokens)."""
+        """Risk Manager. Returns (parsed_output, in_tokens, out_tokens)."""
         user_msg = self._build_risk_prompt(state, analyst)
         if self._tool_use_enabled:
             from hydra_backtest_tool import BACKTEST_TOOLS
@@ -1502,14 +1502,14 @@ PAIR: {state.get('asset', '?')} | TIMEFRAME: {state.get('candle_interval', '?')}
 ENGINE SIGNAL: {sig.get('action', '?')} @ {sig.get('confidence', 0):.2f} confidence
 ENGINE REASON: {sig.get('reason', '')}
 
-MARKET ANALYST (Claude):
+MARKET ANALYST:
   Thesis: {analyst.get('thesis', 'N/A')}
   Conviction: {analyst.get('conviction', 0):.2f}
   Agrees with engine: {analyst.get('signal_agreement', '?')}
   Concern: {analyst.get('concern', 'None')}
   Key factors: {', '.join(analyst.get('key_factors', []))}
 
-RISK MANAGER (Claude):
+RISK MANAGER:
   Decision: {risk.get('decision', '?')}
   Final action: {risk.get('final_action', '?')}
   Size multiplier: {risk.get('size_multiplier', '?')}

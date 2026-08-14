@@ -147,7 +147,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 |---|---|---|
 | engine | `hydra_engine.py` | indicators, regime, signals, sizing, hold-through rails, daily trend overlay |
 | agent | `hydra_agent.py` | live agent: Kraken CLI via WSL, WS broadcast, execution, reconciler, snapshot + `--resume` |
-| brain | `hydra_brain.py` | 3-agent AI: Claude Market Quant + Risk Manager + Grok Strategist |
+| brain | `hydra_brain.py` | 3-agent AI: Market Quant + Risk Manager + Grok Strategist |
 | derivatives_stream | `hydra_derivatives_stream.py` | Kraken Futures public data via kraken CLI (funding, OI, basis) — read-only, SIGNAL INPUT ONLY |
 | quant_rules | `hydra_quant_rules.py` | R1-R11 deterministic guardrails (funding extreme, OI regime, basis euphoric, CVD divergence, contrarian edge, staleness, QFE profit exit) |
 | rm_features | `hydra_rm_features.py` | pure engine-internal RM signals (realized vol, DD velocity, fill rate, slippage, cross-pair corr, idle minutes) — stdlib only, no I/O, no mutation |
@@ -177,7 +177,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 - `research/RETAIL_CRYPTO_EDGE_2026.md` · `research/S3_BOUNCE_EDGE_2026.md` + `research/data/`
 - Root `AUDIT_*.md` gitignored local snapshot only (not product truth)
 
-## Claude Code tooling
+## Agent tooling
 
 - **Skills:** `/release` (release SOP), `/audit` (zero-skip review), `/bakeoff` (candidate signal vs current system on real data), `/review`, `/security-review`
 - **Post-edit hook:** `.claude/hooks/post-edit.py` — path-scoped verification; advisory; silence with `HYDRA_POSTEDIT_HOOK_DISABLED=1` (wired in `.claude/settings.json`)

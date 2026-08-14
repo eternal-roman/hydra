@@ -2061,7 +2061,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
               the brain is active so it pops cleanly against the blue-tinted
               pill background instead of blending with the blue border/text. */}
           <div title={aiBrain
-                ? "Market Quant (Claude) + Risk Manager (Claude) + Grok Strategist are reasoning over engine signals."
+                ? "Market Quant + Risk Manager + Grok Strategist are reasoning over engine signals."
                 : "Pure engine execution — no AI brain attached. Signals run straight from the engine to the order layer."}
                style={{ padding: "0 14px", minHeight: 38, borderRadius: 4,
                         fontSize: 12, fontWeight: 700, fontFamily: mono,

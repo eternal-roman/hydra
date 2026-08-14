@@ -354,7 +354,7 @@ class HydraAgent:
                 self.backtest_pool = None
                 self.backtest_dispatcher = None
 
-        # AI Brain (optional — Claude for analysis, Grok for strategic depth)
+        # AI Brain (optional — Quant + RM analysis, Grok for strategic depth)
         self.brain = None
         if HAS_BRAIN:
             anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")

@@ -10,7 +10,7 @@
 set -u
 [[ "${HYDRA_POSTEDIT_HOOK_DISABLED:-0}" == "1" ]] && exit 0
 
-# Claude Code passes hook input as JSON on stdin; the touched path lives at
+# Hook host passes input as JSON on stdin; the touched path lives at
 # .tool_input.file_path (Edit) or .tool_input.path (Write). Fall back to env.
 INPUT=$(cat 2>/dev/null || true)
 FILE=$(printf '%s' "$INPUT" | python -c "
