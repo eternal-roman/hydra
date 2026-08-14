@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Dashboard login had no password-reset path.** `create-user` is insert-only,
+  so re-running it left the old hash and printed "already exists". Added
+  `python hydra_auth.py reset-password <username>`. Login now trims / ignores
+  username case. Duplicate create-user points at reset-password.
+- **`KeyError: final_signal`** on brain-free `RULES_ONLY` ticks. Guardrails
+  payload now stamps `final_signal` / `summary`; tick printer uses `.get`.
+- **Kraken Account "Loading..."** forever in `--demo`. Honest empty copy.
+- **`[FEE-TIER] Unrecognized ... 'XZECZUSD'`.** `XZEC → ZEC` registry alias.
+- **Tick-1 Eq $0 / DD 100%** on unfunded USD cash. Constructor `--balance`
+  split is no longer treated as a real peak (snapshot peaks still preserved).
+- **kraken-cli subscribe ACK deprecations** (`timestamp` / `cancel_reason`)
+  no longer printed as stream stderr failures.
+- Launchers refuse to start if :8765 is already listening.
+
+---
+
 ## [2.33.2] — 2026-08-14
 
 Audit patch. Accounting, rails, dashboard, and docs. No new live gates

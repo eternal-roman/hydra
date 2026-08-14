@@ -151,6 +151,42 @@ class TestDemoMode(unittest.TestCase):
             self.assertEqual(on_disk[0]["order_ref"]["order_id"], "RESIDUAL-MARKER")
             self.assertEqual(snap_path.read_text(encoding="utf-8"), "{}")
 
+    def test_dashboard_state_broadcasts_demo_and_empty_kraken_balance(self):
+        """Offline --demo has no exchange account; UI must not hang on Loading."""
+        from hydra_agent import HydraAgent
+
+        agent = HydraAgent(
+            pairs=["BTC/USD"],
+            initial_balance=500.0,
+            interval_seconds=1,
+            duration_seconds=1,
+            ws_port=18769,
+            demo=True,
+        )
+        agent._warmup_demo_candles(n=60)
+        tick_state = agent._fetch_and_tick("BTC/USD")
+        self.assertIsNotNone(tick_state)
+        dash = agent._build_dashboard_state(1, {"BTC/USD": tick_state}, 0.0)
+        self.assertTrue(dash["demo"])
+        self.assertEqual(dash.get("balance") or {}, {})
+        usd = dash.get("balance_usd") or {}
+        self.assertEqual(usd.get("assets") or [], [])
+        self.assertEqual(float(usd.get("total_usd") or 0), 0.0)
+
+    def test_dashboard_kraken_account_empty_copy_not_stuck_loading(self):
+        """App.jsx: Loading only pre-tick; demo/empty after load have honest copy."""
+        from pathlib import Path
+        src = Path(__file__).resolve().parent.parent.joinpath(
+            "dashboard", "src", "App.jsx"
+        ).read_text(encoding="utf-8")
+        self.assertIn("function krakenAccountEmptyCopy", src)
+        self.assertIn("Offline demo — no exchange account", src)
+        self.assertIn('return connected ? "Loading..." : "No balances"', src)
+        self.assertIn("if (demo) return \"Offline demo — no exchange account\"", src)
+        self.assertIn("function heartbeatDisplayLabel", src)
+        self.assertIn('if (hb.why === "missing") return "no heartbeat"', src)
+        self.assertIn("Research verdict: flow classifier FAIL", src)
+
 
 if __name__ == "__main__":
     unittest.main()

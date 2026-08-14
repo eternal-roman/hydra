@@ -73,6 +73,7 @@ ASSET_ALIASES = {
     "XBTC": "BTC",
     "XBT":  "BTC",
     "XETH": "ETH",
+    "XZEC": "ZEC",
     "XSOL": "SOL",
     "ZUSD": "USD",
     "ZUSDC": "USDC",

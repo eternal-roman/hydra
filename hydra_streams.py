@@ -9,6 +9,22 @@ from typing import Dict, List, Optional, Any, Tuple
 
 from hydra_kraken_cli import KrakenCLI, WSL_DISTRO
 
+# kraken-cli v0.4.1 still requests deprecated WS fields; Kraken ACKs with
+# a WARN. We already prefer interval_begin / reason on ingest. Not a
+# stream failure — printing every subscribe ACK looks like a crash.
+_KRAKEN_CLI_ACK_NOISE = (
+    "timestamp is deprecated",
+    "cancel_reason is deprecated",
+    "stop_price is deprecated",
+)
+
+
+def _is_kraken_cli_ack_noise(line: str) -> bool:
+    """True for known kraken-cli subscribe ACK deprecation warnings."""
+    if not line:
+        return False
+    return any(marker in line for marker in _KRAKEN_CLI_ACK_NOISE)
+
 # ═══════════════════════════════════════════════════════════════
 # BASE STREAM — shared WS subprocess/reader/health infrastructure
 # ═══════════════════════════════════════════════════════════════
@@ -218,7 +234,7 @@ class BaseStream:
                 if self._shutdown.is_set():
                     break
                 line = raw.rstrip()
-                if line:
+                if line and not _is_kraken_cli_ack_noise(line):
                     print(f"  [{label} stderr] {line[:200]}")
         except Exception as e:
             if not self._shutdown.is_set():

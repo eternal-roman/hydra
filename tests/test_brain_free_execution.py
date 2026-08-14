@@ -107,3 +107,71 @@ def test_guardrails_still_run_without_brain():
         agent.run()
 
     assert seen, "deterministic guardrails did not run on the brain-free path"
+
+
+def _print_state(ai=None, action="HOLD"):
+    state = {
+        "signal": {"action": action, "confidence": 0.72, "reason": "test"},
+        "portfolio": {"equity": 1000.0, "pnl_pct": 0.1, "max_drawdown_pct": 1.2},
+        "position": {"size": 0.0, "avg_entry": 0.0, "unrealized_pnl": 0.0},
+        "price": 68000.0,
+        "regime": "RANGING",
+        "strategy": "MEAN_REVERSION",
+    }
+    if ai is not None:
+        state["ai_decision"] = ai
+    return state
+
+
+def test_rules_only_payload_includes_final_signal(monkeypatch):
+    """Brain-free guardrails must stamp final_signal (dashboard pill + print)."""
+    monkeypatch.delenv("HYDRA_QUANT_INDICATORS_DISABLED", raising=False)
+    from hydra_engine import HydraEngine
+
+    agent = HydraAgent.__new__(HydraAgent)
+    agent.brain = None
+    agent.engines = {"BTC/USD": HydraEngine(initial_balance=1000, asset="BTC/USD")}
+    state = {
+        "signal": {"action": "BUY", "confidence": 0.8, "reason": "momentum"},
+        "price": 100.0,
+        "position": {"size": 0.0, "avg_entry": 0.0},
+        "quant_indicators": {
+            "funding_bps_8h": 5.0, "oi_price_regime": "neutral",
+            "cvd_divergence_sigma": 0.1, "basis_apr_pct": 5.0,
+            "staleness_s": 10.0,
+        },
+    }
+    agent._apply_quant_guardrails("BTC/USD", state)
+    ai = state["ai_decision"]
+    assert ai["action"] == "RULES_ONLY"
+    assert ai["final_signal"] == state["signal"]["action"]
+    assert ai.get("summary") or ai.get("combined_summary")
+
+
+def test_print_tick_status_rules_only_does_not_raise(capsys):
+    """RULES_ONLY (and legacy missing keys) must not KeyError in tick print."""
+    agent = HydraAgent.__new__(HydraAgent)
+
+    agent._print_tick_status("BTC/USD", _print_state({
+        "action": "RULES_ONLY",
+        "final_signal": "HOLD",
+        "combined_summary": "Deterministic guardrails only — no LLM configured.",
+        "brain_available": False,
+    }))
+    out = capsys.readouterr().out
+    assert "RULES_ONLY" in out
+    assert "HOLD" in out
+    assert "Deterministic guardrails" in out
+
+    # Pre-fix payload: no final_signal / summary / fallback.
+    agent._print_tick_status("BTC/USD", _print_state({
+        "action": "RULES_ONLY",
+        "combined_summary": "legacy rules-only payload",
+    }))
+    out2 = capsys.readouterr().out
+    assert "RULES_ONLY" in out2
+    assert "legacy rules-only" in out2
+
+    # Completely sparse cached decision.
+    agent._print_tick_status("ETH/USD", _print_state({}))
+    capsys.readouterr()  # must not raise

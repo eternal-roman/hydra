@@ -96,6 +96,22 @@ const fmtInd = (v) => {
   return v.toFixed(2);
 };
 
+/** Kraken Account empty-state. "Loading..." only while connected with no tick yet. */
+function krakenAccountEmptyCopy({ connected, isLoaded, demo }) {
+  if (!isLoaded) return connected ? "Loading..." : "No balances";
+  if (demo) return "Offline demo — no exchange account";
+  return "No balances";
+}
+
+/** Heartbeat surface label. Missing process → "no heartbeat"; never invent 0.5. */
+function heartbeatDisplayLabel(hb) {
+  if (!hb) return null;
+  const ok = hb.status === "ok" && typeof hb.p_up === "number";
+  if (ok) return `P(up) ${(hb.p_up * 100).toFixed(1)}%`;
+  if (hb.why === "missing") return "no heartbeat";
+  return `P(up) ${hb.why || hb.status || "—"}`;
+}
+
 // ─── Small Components ───
 
 // QuantumIcon — a static nucleus with three electron dots swirling around it
@@ -1428,7 +1444,10 @@ export function HydraDashboard({ jwtToken, onLogout }) {
   const [wsUrl, setWsUrl] = useState(() => sanitizeWsUrl(localStorage.getItem("hydra_ws_url")));
 
   const connect = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+    const cur = wsRef.current;
+    // Don't open a second socket while the first handshake is in flight
+    // (StrictMode remount / connect identity change).
+    if (cur && (cur.readyState === WebSocket.OPEN || cur.readyState === WebSocket.CONNECTING)) return;
     const ws = new WebSocket(sanitizeWsUrl(wsUrl));
     wsRef.current = ws;
     ws.onopen = async () => {
@@ -1439,10 +1458,14 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       // empty token and got auth_required, hiding the orb permanently.
       const token = await refreshWsToken();
       if (!mountedRef.current || ws.readyState !== WebSocket.OPEN) return;
+      const auth = token || wsTokenRef.current || "";
+      // Don't send an empty handshake — the first connect used to race
+      // token fetch and land auth="" before a successful retry.
+      if (!auth && !jwtToken) return;
       // The server holds new sockets unauthenticated and sends NO state until
       // this handshake succeeds, so it must go out before anything else.
       // `connected` flips on auth_ack, not on socket open.
-      ws.send(JSON.stringify({ type: "auth", auth: token || "", jwt: jwtToken || "" }));
+      ws.send(JSON.stringify({ type: "auth", auth, jwt: jwtToken || "" }));
     };
     ws.onmessage = (event) => {
       if (!mountedRef.current) return;
@@ -1967,7 +1990,21 @@ export function HydraDashboard({ jwtToken, onLogout }) {
     return () => {
       mountedRef.current = false;
       clearTimeout(reconnectRef.current);
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      wsRef.current = null;
+      if (!ws) return;
+      // Closing a CONNECTING socket logs "WebSocket is closed before the
+      // connection is established" (StrictMode remount). Defer until open,
+      // and drop handlers so the abandoned socket cannot flip `connected`
+      // or schedule a reconnect after the remount.
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      if (ws.readyState === WebSocket.CONNECTING) {
+        ws.onopen = () => { try { ws.close(); } catch { /* ignore */ } };
+      } else {
+        try { ws.close(); } catch { /* ignore */ }
+      }
     };
   }, [connect]);
 
@@ -2280,9 +2317,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                         : hb.p_up >= 0.6 ? COLORS.buy
                         : hb.p_up <= 0.4 ? COLORS.sell
                         : COLORS.warn;
-                      const hbLabel = !hb ? null
-                        : ok ? `P(up) ${(hb.p_up * 100).toFixed(1)}%`
-                        : `P(up) ${hb.why || hb.status || "—"}`;
+                      const hbLabel = heartbeatDisplayLabel(hb);
                       const s3Active = s3 && s3.active;
                       return (
                         <div style={{
@@ -2305,7 +2340,13 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                                   fontSize: 8, fontWeight: 700, letterSpacing: "0.06em",
                                   textTransform: "uppercase", color: COLORS.blue,
                                 }}>HB</span>
-                                <span style={{ fontWeight: 700, color: pColor }}>{hbLabel}</span>
+                                <span
+                                  style={{ fontWeight: 700, color: pColor }}
+                                  title={ok ? undefined
+                                    : hb.why === "missing"
+                                      ? "No heartbeat process — P(up) is no_opinion (not a crash; never fabricated)"
+                                      : `Heartbeat ${hb.why || hb.status || "no_opinion"} — display only`}
+                                >{hbLabel}</span>
                                 {ok && hb.candle_progress != null && (
                                   <span style={{ color: COLORS.textMuted, fontSize: 10 }}>
                                     bar {(Number(hb.candle_progress) * 100).toFixed(0)}%
@@ -2315,7 +2356,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                                   <span style={{
                                     fontSize: 8, fontWeight: 700, color: COLORS.warn,
                                     textTransform: "uppercase",
-                                  }} title="Flow classifier FAIL on this asset — display only">
+                                  }} title="Research verdict: flow classifier FAIL on this asset (HONEST_FINDINGS) — display only, not a runtime crash">
                                     flow-fail
                                   </span>
                                 )}
@@ -2449,7 +2490,10 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                         the band self-hides. */}
                     {ps.ai_decision && !ps.ai_decision.fallback && (() => {
                       const ai = ps.ai_decision;
-                      const actionColor = ai.action === "CONFIRM" ? COLORS.buy : ai.action === "ADJUST" ? COLORS.warn : COLORS.sell;
+                      const actionColor = ai.action === "CONFIRM" ? COLORS.buy
+                        : ai.action === "ADJUST" ? COLORS.warn
+                        : ai.action === "RULES_ONLY" ? COLORS.textDim
+                        : COLORS.sell;
                       const bias = (ai.positioning_bias || "").toLowerCase();
                       const biasMeta = bias === "crowded_long" ? { label: "CROWDED LONG", color: COLORS.sell }
                         : bias === "crowded_short" ? { label: "CROWDED SHORT", color: COLORS.buy }
@@ -2740,7 +2784,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
               <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`, borderRadius: 8, padding: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <div style={{ fontSize: 10, color: COLORS.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: mono }}>Kraken Account</div>
-                  {balanceUsd && (
+                  {balanceUsd && !state?.demo && (
                     <div style={{ fontSize: 11, color: COLORS.text, fontWeight: 700, fontFamily: mono }}>${balanceUsd.total_usd?.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                   )}
                 </div>
@@ -2760,7 +2804,9 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                     <span style={{ color: COLORS.text, fontWeight: 600 }}>{typeof amount === "number" ? amount.toFixed(6) : amount}</span>
                   </div>
                 )) : (
-                  <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: mono }}>Loading...</div>
+                  <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: mono }}>
+                    {krakenAccountEmptyCopy({ connected, isLoaded, demo: !!state?.demo })}
+                  </div>
                 )}
                 {balanceUsd && balanceUsd.staked_usd > 0 && (
                   <div style={{ marginTop: 6, paddingTop: 6, borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", fontFamily: mono, fontSize: 10 }}>
@@ -3025,7 +3071,11 @@ function AuthSurface({ onLogin }) {
       const ws = new WebSocket(DEFAULT_WS_URL);
       loginWsRef.current = ws;
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "login", username, password }));
+        ws.send(JSON.stringify({
+          type: "login",
+          username: username.trim(),
+          password,
+        }));
       };
       ws.onmessage = (event) => {
         let msg;

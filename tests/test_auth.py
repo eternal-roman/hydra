@@ -212,6 +212,91 @@ class TestCreateUserCli(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("Created admin user 'root'", r.stdout)
 
+    def test_cli_duplicate_points_at_reset_password(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _fresh_auth_env(Path(tmp), {"HYDRA_NEW_USER_PASSWORD": "s3cretpw"})
+            subprocess.run(
+                [sys.executable, "hydra_auth.py", "create-user", "bob"],
+                env=env, capture_output=True, text=True, cwd=str(ROOT),
+            )
+            r = subprocess.run(
+                [sys.executable, "hydra_auth.py", "create-user", "bob"],
+                env=env, capture_output=True, text=True, cwd=str(ROOT),
+            )
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("reset-password", r.stderr)
+
+    def test_cli_reset_password_rotates_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _fresh_auth_env(Path(tmp), {"HYDRA_NEW_USER_PASSWORD": "old-pass"})
+            subprocess.run(
+                [sys.executable, "hydra_auth.py", "create-user", "alice"],
+                env=env, capture_output=True, text=True, cwd=str(ROOT),
+            )
+            env["HYDRA_NEW_USER_PASSWORD"] = "new-pass"
+            r = subprocess.run(
+                [sys.executable, "hydra_auth.py", "reset-password", "alice"],
+                env=env, capture_output=True, text=True, cwd=str(ROOT),
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("Reset password for 'alice'", r.stdout)
+            r2 = _run_in_subprocess(env, (
+                "import hydra_auth;"
+                "assert hydra_auth.authenticate_user('alice', 'new-pass');"
+                "assert hydra_auth.authenticate_user('alice', 'old-pass') is None;"
+                "print('OK')"
+            ))
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            self.assertIn("OK", r2.stdout)
+
+    def test_cli_reset_password_unknown_user(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _fresh_auth_env(Path(tmp), {"HYDRA_NEW_USER_PASSWORD": "x"})
+            r = subprocess.run(
+                [sys.executable, "hydra_auth.py", "reset-password", "nobody"],
+                env=env, capture_output=True, text=True, cwd=str(ROOT),
+            )
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("not found", r.stderr)
+
+    def test_authenticate_strips_and_ignores_case(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _fresh_auth_env(Path(tmp), {"HYDRA_NEW_USER_PASSWORD": "s3cretpw"})
+            subprocess.run(
+                [sys.executable, "hydra_auth.py", "create-user", "eternal-roman"],
+                env=env, capture_output=True, text=True, cwd=str(ROOT),
+            )
+            r = _run_in_subprocess(env, (
+                "import hydra_auth;"
+                "u = hydra_auth.authenticate_user(' Eternal-Roman ', 's3cretpw');"
+                "assert u and u['username'] == 'eternal-roman', u;"
+                "print('OK')"
+            ))
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_login_jwt_sub_is_canonical_username(self):
+        """Typed case/whitespace must not leak into JWT sub or key lookup."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _fresh_auth_env(Path(tmp), {"HYDRA_NEW_USER_PASSWORD": "s3cretpw"})
+            subprocess.run(
+                [sys.executable, "hydra_auth.py", "create-user", "eternal-roman"],
+                env=env, capture_output=True, text=True, cwd=str(ROOT),
+            )
+            r = _run_in_subprocess(env, (
+                "import hydra_auth, hydra_ws_server;"
+                "b = hydra_ws_server.DashboardBroadcaster.__new__("
+                "    hydra_ws_server.DashboardBroadcaster);"
+                "ack = hydra_ws_server.DashboardBroadcaster._handle_login("
+                "    b, {'username': ' Eternal-Roman ', 'password': 's3cretpw'});"
+                "assert ack.get('success'), ack;"
+                "payload = hydra_auth.verify_token(ack['token']);"
+                "assert payload and payload.get('sub') == 'eternal-roman', payload;"
+                "keys = hydra_auth.get_api_keys_by_username('ETERNAL-ROMAN', 'kraken');"
+                "assert keys is None;"
+                "print('OK')"
+            ))
+            self.assertEqual(r.returncode, 0, r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
