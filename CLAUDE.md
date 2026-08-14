@@ -75,6 +75,10 @@ regression bug, not a style issue.
   hurdle were calibrated on 1h tape; 15m ran them off-calibration.
   `--candle-interval` still accepts 1/5/15/30/60; snapshot resume drops
   candle history on interval mismatch (positions/journal restore).
+  v2.29 three-core `--resume` remaps same-base stable keys
+  (BTC/USD snap → BTC/USDC engine) even when `triangle` is None;
+  mixed leftover quotes (ZEC/USD) stay exact — never a global
+  quote flip that would invent ZEC/USDC.
 - **Version pin:** v2.33.2
 
 ## Defaults (inherited)
@@ -196,7 +200,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 
 | id | path | ownership / notes |
 |---|---|---|
-| snapshot | `hydra_session_snapshot.json` | atomic `.tmp → os.replace`; `--resume` target; embeds v2.18.0 `derivatives_history` (OI + mark-price deques, rehydrated with 30 min staleness gate) |
+| snapshot | `hydra_session_snapshot.json` | atomic `.tmp → os.replace`; `--resume` target; embeds v2.18.0 `derivatives_history` (OI + mark-price deques, rehydrated with 30 min staleness gate). Same-base stable remap on resume when triangle is None (BTC/USD → BTC/USDC); journal pair fields stay on the market they traded |
 | order_journal | `hydra_order_journal.json` | snapshots immediately on any tick that appends (crash cannot lose since last successful tick); gitignored |
 | params | `hydra_params_<pair>.json` | per-pair learned tuning params; gitignored |
 | errors_log | `hydra_errors.log` | tick try/except writes here with full traceback; loop continues |
@@ -252,8 +256,8 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 - Engine demo (no keys): `python hydra_engine.py`
 
 **Launchers:**
-- `start_hydra.bat` — production watchdog (`--pairs auto --mode competition --resume` — **do not remove these flags**)
-- `start_all.bat` — full stack: agent + dashboard + heartbeat confirmer
+- `start_hydra.bat` — production watchdog (`--pairs auto --mode competition --resume` — **do not remove these flags**). Starts `start_heartbeat.bat` once before the restart loop (idempotent if heartbeat.exe is already up).
+- `start_all.bat` — full stack: dashboard + agent watchdog (heartbeat starts from `start_hydra.bat`)
 - `start_dashboard.bat` — dashboard only
 - `start_heartbeat.bat` — `heartbeat run` for BTC/USD + ETH/USD (research P(up) status files; **no order path**). USDC-quoted cores read the USD tape via `status_path_candidates`. ZEC is flow-FAIL and is not started.
 - `start_hydra_companion.bat` — paper-mode companion testing (no real money); same `--pairs auto` as production

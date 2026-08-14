@@ -90,6 +90,12 @@ class BaseStream:
             return True
         self._shutdown.clear()
         self._reader_exit_reason = None
+        # Reset liveness BEFORE spawn. Clearing `_got_data` after the
+        # reader thread starts races a snapshot frame that already set
+        # it True — the next health check then treated a live private
+        # stream as "no data since start" and restarted it.
+        self._got_data = False
+        self._started_at = 0.0
         self._on_start_reset()
         label = self._stream_label()
         # Credentials go through the environment via WSLENV, never into the
@@ -122,7 +128,6 @@ class BaseStream:
         now = time.monotonic()
         self._last_heartbeat = now
         self._started_at = now
-        self._got_data = False
         print(f"  [{label}] stream started")
         return True
 

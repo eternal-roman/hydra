@@ -15,6 +15,11 @@ REM long after v2.29 retired it as the default - 90d real tape found no SOL
 REM edge, AUC 0.56 FAIL, and the SOL/BTC bridge only ever drains exit_only.
 REM Production was therefore trading a rejected pair set with no ETH or ZEC.
 REM --mode competition --resume are load-bearing: do not remove them.
+REM Heartbeat confirmer is started once here -- before the watchdog loop --
+REM so an agent restart does not spawn extra windows. start_heartbeat.bat
+REM is idempotent if heartbeat.exe is already up. ZEC is not started
+REM (flow-FAIL). This is display/shadow only; no order path.
+call "%~dp0start_heartbeat.bat"
 :loop
 netstat -ano | findstr /R /C:":8765 .*LISTENING" >nul
 if not errorlevel 1 (

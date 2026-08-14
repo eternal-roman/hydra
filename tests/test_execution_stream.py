@@ -171,6 +171,75 @@ class TestHealthStatusReasons:
         finally:
             es._reader_thread.stop()
 
+    def test_exec_snapshot_message_marks_got_data(self):
+        """Health after a real executions snapshot frame — not a poked flag."""
+        es = _make_stream_with_fake_proc(rc=None, hb_age_s=60.0)
+        es._got_data = False
+        es._started_at = time.monotonic() - 60.0
+        try:
+            ok, reason = es.health_status()
+            assert ok is False
+            assert "no data" in reason
+            es._on_message({
+                "channel": "executions",
+                "type": "snapshot",
+                "data": [],
+                "sequence": 1,
+            })
+            assert es.health_status() == (True, "")
+        finally:
+            es._reader_thread.stop()
+
+    def test_balance_snapshot_message_marks_got_data(self):
+        from hydra_streams import BalanceStream
+        bs = BalanceStream(paper=False)
+        bs._proc = _FakeProc(rc=None)
+        bs._reader_thread = _LiveDaemon()
+        bs._got_data = False
+        bs._started_at = time.monotonic() - 60.0
+        try:
+            ok, reason = bs.health_status()
+            assert ok is False
+            assert "no data" in reason
+            bs._on_message({"channel": "balances", "data": []})
+            assert bs.health_status() == (True, "")
+        finally:
+            bs._reader_thread.stop()
+
+    def test_start_does_not_clear_got_data_after_reader_begins(self, monkeypatch):
+        """`_got_data = False` after Thread.start() raced a snapshot
+        that already marked the stream live."""
+        es = ExecutionStream(paper=False)
+        fake = _FakeProc(rc=None)
+        fake.stdout = []
+        fake.stderr = []
+
+        def fake_popen(*_a, **_k):
+            return fake
+
+        class _ImmediateThread:
+            def __init__(self, target=None, name=None, daemon=None):
+                self.target = target
+                self.name = name
+
+            def start(self):
+                es._on_heartbeat()
+
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                pass
+
+        monkeypatch.setattr("hydra_streams.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("hydra_streams.threading.Thread", _ImmediateThread)
+        assert es.start() is True
+        assert es._got_data is True
+        es._proc = fake
+        es._reader_thread = _ImmediateThread()
+        es._stderr_thread = _ImmediateThread()
+        es.stop()
+
     def test_exec_no_snapshot_still_unhealthy(self):
         es = _make_stream_with_fake_proc(rc=None, hb_age_s=60.0)
         es._got_data = False

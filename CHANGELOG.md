@@ -21,6 +21,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   if the process and reader are alive.
 - Heartbeat RESEARCH row: USDC engines read the calibrated USD tape;
   `start_heartbeat.bat` launches BTC/ETH `heartbeat run`.
+  `start_hydra.bat` starts it once before the watchdog loop.
+- `--resume` after a funded-stable core switch (BTC/USD snap,
+  BTC/USDC engines, `triangle=None`) restores same-base engine
+  state instead of dropping positions/peak/halt. Mixed leftover
+  quotes (ZEC/USD) stay exact — no global rewrite to ZEC/USDC.
+- S3 shadow maps BTC/USDC → BTC/USD universe so USDC cores are
+  not silently inert. Tainted heartbeat status does not fall
+  through to the USD tape.
+- Private-stream `start()` no longer clears `_got_data` after the
+  reader thread has begun (snapshot-vs-reset race).
 - Login: `python hydra_auth.py reset-password <user>` (`create-user` is insert-only). Usernames trim and match case-insensitively.
 - `RULES_ONLY` ticks no longer `KeyError: final_signal`.
 - Demo Kraken Account empty copy (not forever "Loading...").

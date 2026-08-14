@@ -174,8 +174,8 @@ class HeartbeatSurface:
             chosen = path
             if candidate.get("status") == "ok":
                 break
-            # missing → try the USD tape; stale/tainted on the exact
-            # file still fall through so a live USD feed can fill in.
+            # missing/stale → try the USD tape. tainted stays: a
+            # tainted exact file is an integrity signal, not a miss.
             if candidate.get("why") not in ("missing", "stale"):
                 break
         if chosen is not None:

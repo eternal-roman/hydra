@@ -1014,6 +1014,33 @@ class HydraAgent:
         return p.cli_format if p else pair
 
     @staticmethod
+    def _same_base_stable_key(keyed: dict, pair: str) -> Optional[str]:
+        """Key in `keyed` that restores `pair`.
+
+        Exact match first. If the live pair is stable-quoted and the
+        snapshot stored the same base against a different STABLE quote
+        (BTC/USD snap, BTC/USDC engine — the v2.29 `--pairs auto`
+        funded-stable switch), use that unique other-stable key.
+        Two other-stable matches → None (do not guess). Non-stable
+        quotes (SOL/BTC) are never remapped.
+        """
+        if pair in keyed:
+            return pair
+        if not pair or "/" not in pair:
+            return None
+        base, quote = pair.split("/", 1)
+        if quote.upper() not in STABLE_QUOTES:
+            return None
+        found = []
+        for k in keyed:
+            if not isinstance(k, str) or "/" not in k:
+                continue
+            kb, kq = k.split("/", 1)
+            if kb.upper() == base.upper() and kq.upper() in STABLE_QUOTES:
+                found.append(k)
+        return found[0] if len(found) == 1 else None
+
+    @staticmethod
     def _normalize_journal_pairs(journal: list):
         """Normalize pair names in journal entries from XBT to BTC canonical."""
         for entry in journal:
@@ -1094,22 +1121,42 @@ class HydraAgent:
                       f"({snap_interval}m → {self.candle_interval}m) — "
                       f"dropping snapshot candle history; positions and "
                       f"journal restore normally.")
-            # Normalize legacy XBT pair names in engine keys
+            # Normalize legacy XBT pair names in engine keys, then restore
+            # by live engine identity. Exact key wins; otherwise a unique
+            # same-base other-stable key (BTC/USD snap → BTC/USDC engine).
+            # v2.29 three-core agents have triangle=None so the quote
+            # migrator above does not run — without this remap a
+            # funded-stable switch dropped every engine on --resume.
             engines_raw = snapshot.get("engines", {})
             engines = {self._normalize_pair_name(k): v for k, v in engines_raw.items()}
-            for pair, eng_snap in engines.items():
-                if pair in self.engines:
-                    if drop_candles:
-                        eng_snap = dict(eng_snap)
-                        eng_snap.pop("candles", None)
-                        eng_snap.pop("prices", None)
-                    self.engines[pair].restore_runtime(eng_snap)
-            # Normalize coordinator regime history keys
+            for pair in self.engines:
+                src_key = self._same_base_stable_key(engines, pair)
+                if src_key is None:
+                    continue
+                eng_snap = engines[src_key]
+                if src_key != pair:
+                    print(f"  [SNAPSHOT] {pair}: restored from {src_key} "
+                          f"(same-base stable remap)")
+                if drop_candles:
+                    eng_snap = dict(eng_snap)
+                    eng_snap.pop("candles", None)
+                    eng_snap.pop("prices", None)
+                self.engines[pair].restore_runtime(eng_snap)
+                if src_key != pair:
+                    # Inventory is the base; keep the live pair identity
+                    # so the next snapshot does not write BTC/USD under a
+                    # BTC/USDC engine.
+                    self.engines[pair].position.asset = pair
+            # Coordinator regime history: same exact-then-same-base lookup
             coord_raw = snapshot.get("coordinator_regime_history", {})
-            for pair, history in coord_raw.items():
-                norm_pair = self._normalize_pair_name(pair)
-                if norm_pair in self.coordinator.regime_history:
-                    self.coordinator.regime_history[norm_pair] = list(history)
+            coord_norm = {
+                self._normalize_pair_name(k): v for k, v in coord_raw.items()
+            }
+            for pair in list(self.coordinator.regime_history.keys()):
+                src_key = self._same_base_stable_key(coord_norm, pair)
+                if src_key is None:
+                    continue
+                self.coordinator.regime_history[pair] = list(coord_norm[src_key])
             self.order_journal = list(snapshot.get("order_journal", []))
             self._normalize_journal_pairs(self.order_journal)
             if snapshot.get("competition_start_balance") is not None:

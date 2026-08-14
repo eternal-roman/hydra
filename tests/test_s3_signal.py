@@ -41,6 +41,17 @@ class TestS3Adapter(unittest.TestCase):
         self.assertEqual(a.asset_by_pair["ETH/USD"], "ETH/USD")
         self.assertNotIn("SOL/USD", a.asset_by_pair)     # outside universe
 
+    def test_usdc_cores_map_to_usd_universe(self):
+        """S3 is calibrated on BTC/USD + ETH/USD. A USDC-quoted live
+        engine must still seed that model — otherwise shadow is dead
+        on the funded-stable cores `--pairs auto` actually runs."""
+        a = S3Adapter(["BTC/USDC", "ETH/USDT", "ZEC/USDC", "SOL/USDC"],
+                      interval_min=60)
+        self.assertEqual(a.asset_by_pair["BTC/USDC"], "BTC/USD")
+        self.assertEqual(a.asset_by_pair["ETH/USDT"], "ETH/USD")
+        self.assertEqual(a.asset_by_pair["ZEC/USDC"], "ZEC/USD")
+        self.assertNotIn("SOL/USDC", a.asset_by_pair)
+
     def test_block_shape_and_data_clock(self):
         a = S3Adapter(["BTC/USD"], interval_min=60)
         self.assertEqual(a.indicator_block("BTC/USD"),

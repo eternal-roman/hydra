@@ -176,6 +176,31 @@ class TestHeartbeatSurface(unittest.TestCase):
         blk = surf.indicator_block("BTC/USDC")
         self.assertAlmostEqual(blk["p_up"], 0.88)
 
+    def test_stale_exact_falls_through_to_usd_tape(self):
+        (self._dir / "heartbeat_status_BTC_USDC.json").write_text(json.dumps({
+            "pair": "BTC/USDC", "p_up": 0.11, "ts": 1.0, "tainted": False,
+        }), encoding="utf-8")
+        (self._dir / "heartbeat_status_BTC_USD.json").write_text(json.dumps({
+            "pair": "BTC/USD", "p_up": 0.64, "ts": time.time(), "tainted": False,
+        }), encoding="utf-8")
+        surf = hbs.HeartbeatSurface(["BTC/USDC"], status_dir=str(self._dir))
+        blk = surf.indicator_block("BTC/USDC")
+        self.assertEqual(blk["status"], "ok")
+        self.assertAlmostEqual(blk["p_up"], 0.64)
+
+    def test_tainted_exact_does_not_fall_through(self):
+        """A tainted exact file is an integrity signal, not a miss."""
+        (self._dir / "heartbeat_status_BTC_USDC.json").write_text(json.dumps({
+            "pair": "BTC/USDC", "p_up": 0.11, "ts": time.time(), "tainted": True,
+        }), encoding="utf-8")
+        (self._dir / "heartbeat_status_BTC_USD.json").write_text(json.dumps({
+            "pair": "BTC/USD", "p_up": 0.64, "ts": time.time(), "tainted": False,
+        }), encoding="utf-8")
+        surf = hbs.HeartbeatSurface(["BTC/USDC"], status_dir=str(self._dir))
+        blk = surf.indicator_block("BTC/USDC")
+        self.assertEqual(blk["why"], "tainted")
+        self.assertIsNone(blk.get("p_up"))
+
     def test_sol_zec_still_readable_but_flagged_fail_asset(self):
         """SOL/ZEC flow classifier FAIL — surface marks asset class, still no order."""
         path = self._dir / "heartbeat_status_SOL_USD.json"
