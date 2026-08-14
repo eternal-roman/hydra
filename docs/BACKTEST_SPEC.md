@@ -2,7 +2,7 @@
 
 **Status:** SHIPPED (live since v2.10.0) — **design archive + operator history**
 **Target version:** v2.10.0 (design-era); product pin is CLAUDE.md / `HYDRA_VERSION`
-**Author:** Claude Opus 4.6 (design) + eternal-roman (review)
+**Author:** eternal-roman
 **Date:** 2026-04-16
 
 > **Live defaults (code is authoritative):** `BacktestConfig.pairs = ("BTC/USD",)`,

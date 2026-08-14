@@ -6,26 +6,23 @@ Also 1h variant (act at first 1h close after day-score flip, prev-day score).
 """
 import sys
 from pathlib import Path
-sys.path.insert(0, r'C:\Users\elamj\AppData\Local\Temp\claude\C--Users-elamj-Dev-Hydra\ba835567-fa30-4c0a-b900-77433d84f85f\scratchpad')
 HB = Path(r'C:\Users\elamj\Dev\Hydra\heartbeat')
 sys.path.insert(0, str(HB/'src')); sys.path.insert(0, str(HB/'tools'))
 from bounce_geometry_study import candles_from_sqlite
-import importlib.util
-spec = importlib.util.spec_from_file_location('c3', r'C:\Users\elamj\AppData\Local\Temp\claude\C--Users-elamj-Dev-Hydra\ba835567-fa30-4c0a-b900-77433d84f85f\scratchpad\c3_exits.py')
-c3 = importlib.util.module_from_spec(spec); spec.loader.exec_module(c3)
+from exit_layer_lab import daily_scores, score_at
 
 DB = r'C:\Users\elamj\Dev\Hydra\hydra_history.sqlite'
 FEE = 0.0026
 
 for pair in ['BTC/USD','ETH/USD','ZEC/USD']:
     candles = candles_from_sqlite(DB, pair, 24)
-    scores = c3.daily_scores(pair)
+    scores = daily_scores(pair)
     # post-warmup segment only
-    seg = [c for c in candles if c3.score_at(scores, c.open_ts, 24) is not None]
+    seg = [c for c in candles if score_at(scores, c.open_ts, 24) is not None]
     eq, peak, mdd = 1.0, 1.0, 0.0
     in_pos = False; entry = None; n = 0; rets = []
     for c in seg:
-        s = c3.score_at(scores, c.open_ts, 24)
+        s = score_at(scores, c.open_ts, 24)
         if not in_pos and s >= 0.6:
             in_pos, entry = True, c.close; n += 1
         elif in_pos and s < 0.6:

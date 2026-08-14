@@ -1,6 +1,6 @@
 """Agent / MCP tool surface — pure schemas + dispatch (no MCP SDK).
 
-Hosts (Claude, Cursor, custom MCP wrappers) can:
+Hosts (IDE agents, custom MCP wrappers) can:
 
 1. Advertise ``TOOL_SCHEMAS`` (JSON-schema style dicts) as tools.
 2. Route invocations through ``call_tool(name, arguments) -> dict``.
