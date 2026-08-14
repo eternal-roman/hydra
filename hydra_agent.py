@@ -2177,7 +2177,7 @@ class HydraAgent:
         state = engine.tick(generate_only=True)
         return state
 
-    def _apply_quant_guardrails(self, pair: str, state: dict) -> dict:
+    def _apply_quant_guardrails(self, pair: str, state: dict, *, keep_brain: bool = False) -> dict:
         """Apply R1-R11 + QFE with NO brain. Mutates state in place.
 
         `hydra_quant_rules` describes itself as "the non-negotiable guardrails
@@ -2204,6 +2204,16 @@ class HydraAgent:
         if os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1":
             return state
 
+        cached = state.get("ai_decision") if keep_brain else None
+        if not isinstance(cached, dict):
+            cached = None
+        brain_size = 1.0
+        if cached is not None:
+            try:
+                brain_size = float(cached.get("size_multiplier") if cached.get("size_multiplier") is not None else 1.0)
+            except (TypeError, ValueError):
+                brain_size = 1.0
+
         engine_action = state["signal"]["action"]
         rules_triggered: list = []
         rules_force_hold = False
@@ -2229,7 +2239,7 @@ class HydraAgent:
             print(f"  [QUANT RULES] apply_rules error ({type(re).__name__}: {re})")
             return state
 
-        final_size_multiplier = max(0.0, min(1.5, rules_size_mult))
+        final_size_multiplier = max(0.0, min(1.5, rules_size_mult * (brain_size if keep_brain else 1.0)))
         if rules_force_hold:
             final_size_multiplier = 0.0
             state["signal"]["action"] = "HOLD"
@@ -2271,22 +2281,46 @@ class HydraAgent:
                 except Exception as qe:
                     print(f"  [QFE] evaluate_qfe error ({type(qe).__name__}: {qe})")
 
-        state["ai_decision"] = {
-            "action": "RULES_ONLY",
-            "size_multiplier": final_size_multiplier,
-            "size_multiplier_brain": 1.0,
-            "size_multiplier_rules": rules_size_mult,
-            "rules_triggered": rules_triggered,
-            "rules_force_hold": rules_force_hold,
-            "rules_force_hold_reason": rules_force_hold_reason,
-            "qfe_active": qfe_active,
-            "qfe_reason": qfe_reason,
-            "qfe_trigger_values": qfe_trigger_values,
-            "combined_summary": (
-                "Deterministic guardrails only — no LLM configured."
-            ),
-            "brain_available": False,
-        }
+        if keep_brain and cached is not None and not qfe_active:
+            cached_act = str(cached.get("action") or "").upper()
+            cached_final = str(cached.get("final_signal") or "").upper()
+            if cached_act == "OVERRIDE" or cached_final == "HOLD":
+                if state["signal"]["action"] == "BUY":
+                    state["signal"]["action"] = "HOLD"
+                    state["signal"]["reason"] = (
+                        f"[BRAIN CACHE] {cached.get('combined_summary') or 'OVERRIDE HOLD'}"
+                    )
+                    final_size_multiplier = 0.0
+
+        if keep_brain and cached is not None:
+            merged = dict(cached)
+            merged["size_multiplier"] = final_size_multiplier
+            merged["size_multiplier_brain"] = brain_size
+            merged["size_multiplier_rules"] = rules_size_mult
+            merged["rules_triggered"] = rules_triggered
+            merged["rules_force_hold"] = rules_force_hold
+            merged["rules_force_hold_reason"] = rules_force_hold_reason
+            merged["qfe_active"] = qfe_active
+            merged["qfe_reason"] = qfe_reason
+            merged["qfe_trigger_values"] = qfe_trigger_values
+            state["ai_decision"] = merged
+        else:
+            state["ai_decision"] = {
+                "action": "RULES_ONLY",
+                "size_multiplier": final_size_multiplier,
+                "size_multiplier_brain": 1.0,
+                "size_multiplier_rules": rules_size_mult,
+                "rules_triggered": rules_triggered,
+                "rules_force_hold": rules_force_hold,
+                "rules_force_hold_reason": rules_force_hold_reason,
+                "qfe_active": qfe_active,
+                "qfe_reason": qfe_reason,
+                "qfe_trigger_values": qfe_trigger_values,
+                "combined_summary": (
+                    "Deterministic guardrails only — no LLM configured."
+                ),
+                "brain_available": False,
+            }
         return state
 
     def _apply_brain(self, pair: str, state: dict, all_engine_states: dict) -> dict:
@@ -2324,7 +2358,7 @@ class HydraAgent:
             # Intra-candle: skip the LLM, not R1–R11. Funding/OI/CVD can
             # print mid-bar; a cached OVERRIDE must not let a SELL through
             # a later R10 blackout, and must not skip a new force_hold.
-            return self._apply_quant_guardrails(pair, state)
+            return self._apply_quant_guardrails(pair, state, keep_brain=True)
 
         # Inject cross-pair triangle context and portfolio-level awareness
         state["triangle_context"] = self._build_triangle_context(pair, all_engine_states)

@@ -1718,7 +1718,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                 window.dispatchEvent(new CustomEvent("hydra_start_agent_ack", { detail: msg }));
               } catch { /* ignore */ }
               if (msg.success && Number.isInteger(msg.port) && msg.port > 0 && msg.port < 65536) {
-                const newUrl = sanitizeWsUrl(`ws://localhost:${msg.port}`);
+                const newUrl = sanitizeWsUrl(`ws://127.0.0.1:${msg.port}`);
                 localStorage.setItem("hydra_ws_url", newUrl);
                 setWsUrl(newUrl);
               }

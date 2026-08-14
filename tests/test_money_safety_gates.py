@@ -357,6 +357,24 @@ def test_tape_stop_does_not_block_on_full_queue(tmp_path):
     t.stop()  # must return without hang
 
 
+def test_keep_brain_does_not_wipe_cached_override(monkeypatch):
+    """Same-candle path: rules re-run, cached OVERRIDE/size survive."""
+    monkeypatch.delenv("HYDRA_QUANT_INDICATORS_DISABLED", raising=False)
+    agent = _guardrail_agent()
+    state = _guardrail_state()
+    state["ai_decision"] = {
+        "action": "OVERRIDE",
+        "final_signal": "HOLD",
+        "size_multiplier": 0.3,
+        "combined_summary": "RM de-risk",
+    }
+    agent._apply_quant_guardrails("BTC/USD", state, keep_brain=True)
+    assert state["signal"]["action"] == "HOLD"
+    assert state["ai_decision"]["action"] == "OVERRIDE"
+    assert state["ai_decision"]["size_multiplier_brain"] == 0.3
+    assert state["ai_decision"].get("brain_available") is not False
+
+
 def test_coerce_bool_does_not_treat_false_string_as_true():
     from hydra_brain import _coerce_bool
     assert _coerce_bool("false") is False
