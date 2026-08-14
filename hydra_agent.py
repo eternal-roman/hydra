@@ -4843,8 +4843,14 @@ def discover_portfolio_pairs(default_quote: str = "USD") -> List[str]:
     always seeded so the highest-conviction pairs trade regardless of what
     is currently held) plus one satellite pair per additional held base
     asset. Held SOL is a satellite like any other asset — it trades freely
-    (all balance is operational) but is no longer a default core. Quote
-    selection per satellite:
+    (all balance is operational) but is no longer a default core.
+
+    Core quote: keep `default_quote` when that stable's holding exceeds
+    costmin; otherwise switch cores to the largest funded stable (USDC
+    typically) so engines are not sized against a $0 USD pool while
+    USDC sits idle. Unlisted cores (ZEC/USDC) still fall back to BASE/USD.
+
+    Quote selection per satellite:
 
       1. `HYDRA_AUTO_QUOTE` env (USD | USDC | USDT), if set, wins outright.
       2. Otherwise prefer BASE/USDC (idle USDC earns yield) **when the
@@ -4863,6 +4869,47 @@ def discover_portfolio_pairs(default_quote: str = "USD") -> List[str]:
     """
     from hydra_pair_registry import default_registry, STABLE_QUOTES
 
+    bal = KrakenCLI.balance()
+    if not isinstance(bal, dict) or "error" in bal:
+        print(f"  [AUTO-PAIRS] balance fetch failed ({bal!r}) — "
+              f"falling back to the default core pairs")
+        cores = [f"BTC/{default_quote}", f"ETH/{default_quote}",
+                 f"ZEC/{default_quote}"]
+        return cores
+
+    # Aggregate spot holdings by canonical asset name.
+    holdings: Dict[str, float] = {}
+    for asset, amount in bal.items():
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            continue
+        if amount <= 0 or KrakenCLI._is_staked(asset):
+            continue
+        canon = KrakenCLI._normalize_asset(asset)
+        holdings[canon] = holdings.get(canon, 0.0) + amount
+
+    # Cores must spend a stable the account actually holds. `--pairs auto`
+    # help text and the satellite path already say "USDC if funded"; cores
+    # used to ignore that and stay on DEFAULT_QUOTE (USD). A USDC-only
+    # book then printed live prices on BTC/USD+ETH/USD+ZEC/USD with $0
+    # engine cash — sizer refused every BUY, equity printed 0, dashboard
+    # looked dead. Keep the requested quote when its pool is funded.
+    _costmin = 0.5
+    requested_pool = float(holdings.get(default_quote, 0.0) or 0.0)
+    if requested_pool <= _costmin:
+        funded = {
+            q: float(holdings.get(q, 0.0) or 0.0)
+            for q in STABLE_QUOTES
+            if float(holdings.get(q, 0.0) or 0.0) > _costmin
+        }
+        if funded:
+            alt = max(funded, key=funded.get)
+            print(f"  [AUTO-PAIRS] {default_quote} pool ${requested_pool:.2f} "
+                  f"unfunded — switching cores to {alt} "
+                  f"(${funded[alt]:,.2f} held)")
+            default_quote = alt
+
     cores = [f"BTC/{default_quote}", f"ETH/{default_quote}",
              f"ZEC/{default_quote}"]
     if default_quote != "USD":
@@ -4877,23 +4924,6 @@ def discover_portfolio_pairs(default_quote: str = "USD") -> List[str]:
         except Exception as e:
             print(f"  [AUTO-PAIRS] core listing check failed ({e!r}) — "
                   f"keeping {default_quote}-quoted cores")
-    bal = KrakenCLI.balance()
-    if not isinstance(bal, dict) or "error" in bal:
-        print(f"  [AUTO-PAIRS] balance fetch failed ({bal!r}) — "
-              f"falling back to the default core pairs")
-        return cores
-
-    # Aggregate spot holdings by canonical asset name.
-    holdings: Dict[str, float] = {}
-    for asset, amount in bal.items():
-        try:
-            amount = float(amount)
-        except (TypeError, ValueError):
-            continue
-        if amount <= 0 or KrakenCLI._is_staked(asset):
-            continue
-        canon = KrakenCLI._normalize_asset(asset)
-        holdings[canon] = holdings.get(canon, 0.0) + amount
 
     forced_quote = (os.environ.get("HYDRA_AUTO_QUOTE") or "").upper().strip()
     if forced_quote and forced_quote not in STABLE_QUOTES:

@@ -173,6 +173,53 @@ class TestLoadPairConstants:
             stub.restore()
         assert result == {}
 
+    def test_batch_unknown_pair_retries_individually(self):
+        """`kraken pairs --pair A,B,C` fails the WHOLE batch if one pair is
+        unlisted (ZEC/USDC). Auto-pairs then treated every core as unlisted
+        and fell back to USD — undoing the funded-USDC switch and leaving
+        engines at $0 cash. Recover listed pairs one at a time."""
+        err = {"error": "EQuery:Unknown asset pair"}
+        btc = {"XBTUSDC": REAL_KRAKEN_RESPONSE["XBTUSDC"]}
+        eth = {
+            "ETHUSDC": {
+                "pair_decimals": 2, "ordermin": "0.001", "costmin": "0.5",
+                "base": "XETH", "quote": "USDC", "lot_decimals": 8,
+                "tick_size": "0.01", "wsname": "ETH/USDC",
+                "altname": "ETHUSDC", "status": "online",
+            }
+        }
+        calls = []
+        original = KrakenCLI._run
+
+        def fake(args, timeout=20):
+            calls.append(list(args))
+            pair_arg = ""
+            if "--pair" in args:
+                pair_arg = args[args.index("--pair") + 1]
+            if "," in pair_arg:
+                return err
+            if pair_arg.replace("/", "").upper() in ("ZECUSDC",):
+                return err
+            if "BTC" in pair_arg.upper() or "XBT" in pair_arg.upper():
+                return btc
+            if "ETH" in pair_arg.upper():
+                return eth
+            return err
+
+        KrakenCLI._run = staticmethod(fake)
+        try:
+            result = KrakenCLI.load_pair_constants(
+                ["BTC/USDC", "ETH/USDC", "ZEC/USDC"]
+            )
+        finally:
+            KrakenCLI._run = staticmethod(original)
+
+        assert "BTC/USDC" in result
+        assert "ETH/USDC" in result
+        assert "ZEC/USDC" not in result
+        assert any("," in (c[c.index("--pair") + 1] if "--pair" in c else "")
+                   for c in calls), "should try the batch first"
+
     def test_non_dict_response_returns_empty(self):
         stub = _StubRun("not a dict")
         stub.install()

@@ -144,14 +144,41 @@ class TestHealthStatusReasons:
         assert "unknown" in reason
 
     def test_heartbeat_stale_includes_age(self):
-        # Force a stale heartbeat by setting it 60s in the past (well over
-        # the 30s threshold).
-        es = _make_stream_with_fake_proc(rc=None, hb_age_s=60.0)
+        # Public streams still require a stdout heartbeat (ticker/ohlc
+        # traffic). Private streams do not — see test_exec_quiet_*.
+        from hydra_streams import TickerStream
+        ts = TickerStream(["BTC/USD"], paper=False)
+        ts._proc = _FakeProc(rc=None)
+        ts._last_heartbeat = time.monotonic() - 60.0
+        ts._reader_thread = _LiveDaemon()
         try:
-            ok, reason = es.health_status()
+            ok, reason = ts.health_status()
             assert ok is False
             assert "no heartbeat" in reason
             assert "60s" in reason
+        finally:
+            ts._reader_thread.stop()
+
+    def test_exec_quiet_after_snapshot_is_healthy(self):
+        """kraken-cli 0.4.1 swallows Event::Heartbeat at the JSON sink
+        (stdout is command data only). After snap-orders, a quiet
+        executions socket is not a dead stream — restarting it every
+        300s tick dropped fills."""
+        es = _make_stream_with_fake_proc(rc=None, hb_age_s=60.0)
+        es._got_data = True
+        try:
+            assert es.health_status() == (True, "")
+        finally:
+            es._reader_thread.stop()
+
+    def test_exec_no_snapshot_still_unhealthy(self):
+        es = _make_stream_with_fake_proc(rc=None, hb_age_s=60.0)
+        es._got_data = False
+        es._started_at = time.monotonic() - 60.0
+        try:
+            ok, reason = es.health_status()
+            assert ok is False
+            assert "no data" in reason
         finally:
             es._reader_thread.stop()
 

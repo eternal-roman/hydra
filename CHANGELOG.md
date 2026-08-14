@@ -10,6 +10,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **kraken-cli v0.4.1 `ohlc` object-array** was parsed as empty, so warmup
+  left engines with one forming bar and the dashboard hid every chart.
+- **`--pairs auto` cores stayed on unfunded USD** while the book held
+  USDC — engines printed `$0` equity. Cores now follow the funded
+  stable; `pairs --pair A,B,C` retries per-pair when one name is unlisted
+  (ZEC/USDC).
+- **EXEC/BALANCE streams restarted every 300s tick.** v0.4.1 swallows
+  WS heartbeats on stdout; private streams are healthy after snapshot
+  if the process and reader are alive.
+- Heartbeat RESEARCH row: USDC engines read the calibrated USD tape;
+  `start_heartbeat.bat` launches BTC/ETH `heartbeat run`.
 - Login: `python hydra_auth.py reset-password <user>` (`create-user` is insert-only). Usernames trim and match case-insensitively.
 - `RULES_ONLY` ticks no longer `KeyError: final_signal`.
 - Demo Kraken Account empty copy (not forever "Loading...").

@@ -241,14 +241,16 @@ class S3Adapter:
         the shadow log (both arms are written). Shared contract with
         hydra_heartbeat_surface (pair-named status files)."""
         try:
-            from hydra_heartbeat_surface import read_status, resolve_status_path
-            path = resolve_status_path(CONFIRMER_STATUS_DIR, asset)
-            block = read_status(path, now=now_wall, stale_s=CONFIRMER_STALE_S)
-            if block.get("status") != "ok":
-                return {"status": "no_opinion",
+            from hydra_heartbeat_surface import read_status, status_path_candidates
+            last = {"status": "no_opinion", "why": "missing"}
+            for path in status_path_candidates(CONFIRMER_STATUS_DIR, asset):
+                block = read_status(path, now=now_wall, stale_s=CONFIRMER_STALE_S)
+                if block.get("status") == "ok":
+                    return {"status": "ok", "p_up": block.get("p_up"),
+                            "ts": block.get("ts")}
+                last = {"status": "no_opinion",
                         "why": block.get("why") or "missing"}
-            return {"status": "ok", "p_up": block.get("p_up"),
-                    "ts": block.get("ts")}
+            return last
         except Exception:
             return {"status": "no_opinion", "why": "missing"}
 
