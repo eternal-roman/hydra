@@ -7,31 +7,23 @@ see [`BACKTEST_SPEC.md`](./BACKTEST_SPEC.md).
 > (no full AI brain). Positive metrics are not go-live. Default engine includes
 > hold-through rails (`docs/HOLD_THROUGH.md`).
 
-> **v2.26.0 note:** the **AI Reviewer** and **Shadow Validator** were archived
-> (built + CI-tested, never production-wired). Live research surface is engine
-> replay + experiments + walk-forward in the **RESEARCH** tab. Design history
-> remains in `BACKTEST_SPEC.md`.
+> Live research surface: engine replay + experiments + walk-forward in
+> **RESEARCH**. The v2.26.0 AI Reviewer / Shadow Validator were never
+> production-wired; design history is in `BACKTEST_SPEC.md`.
 
 ---
 
 ## What it is
 
-A backtesting and experimentation layer that reuses live engine code without
-placing exchange orders. You can:
+A backtesting layer that reuses live `HydraEngine` code without placing
+exchange orders:
 
-1. Run historical simulations with the same `HydraEngine` logic as live
-   (`tests/test_backtest_drift.py` guards drift for the Phase-1 path).
-2. Compare presets and parameter sweeps (Sharpe, drawdown, win rate — **not**
-   automatic proof of live edge).
-3. Stream results in the dashboard **RESEARCH** tab (observer modal).
-4. Optionally invoke backtests from the AI brain **tool-use** path mid-session
-   (when enabled) — still subject to the engine-only replay limitations above.
+1. Historical replay (`tests/test_backtest_drift.py` guards Phase-1 drift).
+2. Preset / sweep compare (Sharpe, drawdown, win rate — not live-edge proof).
+3. Stream results in the dashboard **RESEARCH** tab.
+4. Optional brain tool-use mid-session (engine-only replay, same limits).
 
 Kill switch: `HYDRA_BACKTEST_DISABLED=1`.
-
-> The **AI Reviewer** (rigor gates) and **Shadow Validator** were archived in
-> v2.26.0 — built and CI-tested but never wired into production. Their design
-> lives in `BACKTEST_SPEC.md` (§Layer 5, §Phase 11) as history.
 
 ---
 
@@ -64,7 +56,7 @@ src = SyntheticSource(seed=42, n_candles=300)
 runner = BacktestRunner(cfg, sources_override={'BTC/USD': src})
 result = runner.run()
 print(f'status={result.status} trades={result.metrics.total_trades} '
-      f'sharpe={result.metrics.sharpe_ratio:.2f}')
+      f'sharpe={result.metrics.sharpe:.2f}')
 "
 ```
 
@@ -85,7 +77,7 @@ cfg = BacktestConfig(name="regime_volatile_smoke", pairs=("BTC/USD",),
 result = BacktestRunner(
     cfg, sources_override={"BTC/USD": SyntheticSource(seed=7, n_candles=250)}
 ).run()
-print(result.status, result.metrics.total_trades, result.metrics.sharpe_ratio)
+print(result.status, result.metrics.total_trades, result.metrics.sharpe)
 ```
 
 Presets live in `hydra_experiments.PRESET_LIBRARY` / `.hydra-experiments/`;
@@ -114,19 +106,8 @@ carry a `name`, `description`, and `overrides` dict keyed by engine parameter.
 
 ---
 
-## AI Reviewer & Shadow Validator (archived v2.26.0)
-
-The post-backtest **AI Reviewer** (seven code-enforced rigor gates →
-`ReviewDecision`) and the single-slot FIFO **Shadow Validator** were built and
-CI-tested but never wired into production, and were archived in v2.26.0. Their
-full design — the gate definitions, verdict types, PR-draft flow, and phantom-
-trade validation loop — is retained as history in `BACKTEST_SPEC.md` (§Layer 5,
-§Phase 11). No reviewer runs after a backtest today.
-
-Manual parameter promotion still flows through the tuner directly:
-`HydraTuner.apply_external_param_update(params)`, with one-step rollback via
-`HydraTuner.rollback_to_previous()` (bounded depth=1 — reverts exactly one apply,
-never cascades).
+Manual parameter promotion: `HydraTuner.apply_external_param_update` with
+one-step `rollback_to_previous()` (depth=1).
 
 ---
 

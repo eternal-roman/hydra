@@ -54,17 +54,28 @@ def test_triangle_for_usdc():
     assert t.quote == "USDC"
 
 
+def test_triangle_for_usdt():
+    """USDT is a first-class stable quote — fallback catalog must build a triangle."""
+    reg = default_registry()
+    cfg = HydraConfig.from_quote("USDT", registry=reg)
+    t = cfg.triangle
+    assert t.stable_sol.cli_format == "SOL/USDT"
+    assert t.stable_btc.cli_format == "BTC/USDT"
+    assert t.bridge.cli_format == "SOL/BTC"
+    assert t.quote == "USDT"
+
+
 def test_triangle_quote_consistency():
     """The two stable-quoted legs must share the same quote currency."""
     reg = default_registry()
-    for q in ("USD", "USDC"):
+    for q in ("USD", "USDC", "USDT"):
         cfg = HydraConfig.from_quote(q, registry=reg)
         assert cfg.triangle.stable_sol.quote == cfg.triangle.stable_btc.quote == q
 
 
 def test_triangle_bridge_is_always_sol_btc():
     reg = default_registry()
-    for q in ("USD", "USDC"):
+    for q in ("USD", "USDC", "USDT"):
         cfg = HydraConfig.from_quote(q, registry=reg)
         assert cfg.triangle.bridge.base == "SOL"
         assert cfg.triangle.bridge.quote == "BTC"

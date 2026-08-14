@@ -102,7 +102,7 @@ cd dashboard && npm run dev
 
 # Windows launchers
 start_all.bat              # agent + dashboard
-start_hydra.bat            # production: --mode competition --resume
+start_hydra.bat            # production: --pairs auto --mode competition --resume
 ```
 
 ### Config
@@ -110,7 +110,7 @@ start_hydra.bat            # production: --mode competition --resume
 | Source | Purpose |
 |--------|---------|
 | `.env` / `.env.example` | API keys, kill switches (`HYDRA_*`) |
-| `--pairs` / `--quote` / `HYDRA_QUOTE` | Pairs + stable quote (default USD; triangle only if SOL triple configured) |
+| `--pairs` / `--quote` / `HYDRA_QUOTE` | Pairs (default BTC/ETH/ZEC USD). `--quote` only changes `--pairs auto` fallback quote |
 | `--demo` / `--paper` / `--resume` / `--mode` | Offline demo, paper, snapshot resume, Kelly mode |
 
 Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`](SKILL.md)

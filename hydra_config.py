@@ -1,47 +1,12 @@
-"""Hydra runtime configuration — role-bound trading triangle.
+"""Role-bound trading triangle + quote CLI.
 
-WHY THIS MODULE EXISTS
-──────────────────────
-The pre-v2.19 codebase encoded the trading triangle as bare string
-literals scattered across CrossPairCoordinator (44 hits in
-hydra_engine.py alone), the agent's argparse defaults, the brain's
-prompts, and every test fixture. Those literals played two distinct
-roles that were conflated in code:
+`TradingTriangle` names pairs by role (`stable_sol`, `stable_btc`,
+`bridge`) so coordinator/agent code never hardcodes `SOL/USD`.
+`HydraConfig.from_quote` builds a triangle. `add_config_args` registers
+`--quote` (env `HYDRA_QUOTE`, default USD) for `--pairs auto`.
 
-  ROLE                           | LITERAL (USDC era)  | LITERAL (USD era)
-  ───────────────────────────────┼─────────────────────┼──────────────────
-  the SOL pair quoted in stable  |  "SOL/USDC"         |  "SOL/USD"
-  the BTC pair quoted in stable  |  "BTC/USDC"         |  "BTC/USD"
-  the cross-asset bridge         |  "SOL/BTC"          |  "SOL/BTC"
-
-CrossPairCoordinator's logic — "BTC leads SOL down → defend SOL",
-"SOL weakening vs USD but strong vs BTC → rotate to BTC", etc. — is
-written in terms of the ROLES, not the literal pair names. The fix is
-to give the roles type-safe names and let downstream code address
-pairs by role rather than by literal.
-
-DESIGN
-──────
-- `TradingTriangle` is the role-binding: three Pair fields named after
-  what they DO in the strategy (stable_sol, stable_btc, bridge), not
-  what they're called on Kraken. Coordinator code references
-  `triangle.stable_sol`, never `"SOL/USDC"`.
-
-- `HydraConfig` is the boot-time facade. It owns the registry and the
-  triangle. Everything downstream receives a HydraConfig instance.
-
-- Quote selection is a ONE-LINE decision (CLI flag, env var, or the
-  v2.19 default of USD). Switching from USD → USDC, or USD → USDT
-  in the future, requires no code change in any consumer — they all
-  read `cfg.triangle.stable_*` and `cfg.primary_quote`.
-
-INVARIANTS
-──────────
-- `triangle.stable_sol.quote == triangle.stable_btc.quote == triangle.quote`
-- `triangle.bridge.base == "SOL"` and `triangle.bridge.quote == "BTC"`
-  (Hydra's strategy is fundamentally a SOL-vs-BTC vs USD-stable thesis;
-  changing the bridge would be a different strategy, not a config flip.)
-- `quote in STABLE_QUOTES` (no fiat-other-than-USD-stables)
+Invariants: both stable legs share `quote ∈ STABLE_QUOTES`; bridge is
+always SOL/BTC.
 """
 
 from __future__ import annotations
@@ -230,7 +195,8 @@ def add_config_args(parser: argparse.ArgumentParser) -> None:
         type=lambda s: s.strip().upper(),
         choices=sorted(STABLE_QUOTES),
         help=(
-            f"Stable quote currency for the triangle (default: {default}; "
-            f"env: HYDRA_QUOTE; choices: {sorted(STABLE_QUOTES)})"
+            f"Fallback quote for --pairs auto (default: {default}; "
+            f"env: HYDRA_QUOTE; choices: {sorted(STABLE_QUOTES)}). "
+            f"Explicit --pairs is unchanged."
         ),
     )

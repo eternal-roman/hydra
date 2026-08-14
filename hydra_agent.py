@@ -69,7 +69,7 @@ except ImportError:
 
 from hydra_kraken_cli import KrakenCLI, describe_error
 from hydra_pair_registry import STABLE_QUOTES
-from hydra_config import TradingTriangle
+from hydra_config import TradingTriangle, add_config_args
 from hydra_ws_server import DashboardBroadcaster
 from hydra_streams import CandleStream, TickerStream, BalanceStream, BookStream, ExecutionStream, _is_fully_filled
 
@@ -354,7 +354,7 @@ class HydraAgent:
                 self.backtest_pool = None
                 self.backtest_dispatcher = None
 
-        # AI Brain (optional — Claude for analysis, Grok for strategic depth)
+        # AI Brain (optional — Quant + RM analysis, Grok for strategic depth)
         self.brain = None
         if HAS_BRAIN:
             anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -1985,21 +1985,34 @@ class HydraAgent:
                     import logging; logging.warning(f"Ignored exception: {e}")  # if error log write fails, at least we printed to stdout
 
             finally:
-                # Market data stream health — auto-restart if dead.
-                #
-                # MUST run in `finally`. This used to sit near the end of the
-                # try body, which made recovery conditional on the whole tick
-                # succeeding — and the most common reason a tick crashes is a
-                # dead stream. That is a self-sustaining wedge: the stream dies,
-                # the tick crashes before reaching recovery, so the stream is
-                # never restarted, so the next tick crashes identically. The
-                # agent stops trading permanently while looking merely "noisy"
-                # in the log. Recovery is exactly the work that must still
-                # happen when everything else failed.
-                #
-                # ensure_healthy() is individually try/except-wrapped so one
-                # stream's restart failure cannot stop the others from
-                # recovering, and cannot escape the finally.
+                # Stream health MUST run in `finally`. Recovery used to sit
+                # in the try body, so a dead stream that crashed the tick
+                # never restarted — next tick crashed the same way, forever,
+                # including no exits. ExecutionStream is the same class of
+                # bug: a dead exec subprocess stalls fill true-up and
+                # CANCELLED/REJECTED rollback while inventory is open.
+                # Drain here too so a crash before the try-body drain still
+                # applies terminal events (second drain is a no-op).
+                try:
+                    _es = getattr(self, "execution_stream", None)
+                    if _es is not None and not _es.paper:
+                        healthy, reason = _es.ensure_healthy()
+                        if not healthy:
+                            if self._exec_stream_warned_reason != reason:
+                                print(
+                                    f"  [WARN] execution stream unhealthy — {reason} "
+                                    f"(lifecycle finalization stalled)"
+                                )
+                                self._exec_stream_warned_reason = reason
+                        elif self._exec_stream_warned_reason is not None:
+                            print("  [EXECSTREAM] stream healthy again")
+                            self._exec_stream_warned_reason = None
+                    if _es is not None:
+                        for term in _es.drain_events():
+                            self._apply_execution_event(term)
+                except Exception as _se:
+                    print(f"  [WARN] execution_stream recover/drain failed: "
+                          f"{type(_se).__name__}: {_se}")
                 if not self.paper:
                     for _stream_name in ("candle_stream", "ticker_stream",
                                          "balance_stream", "book_stream"):
@@ -2164,7 +2177,7 @@ class HydraAgent:
         state = engine.tick(generate_only=True)
         return state
 
-    def _apply_quant_guardrails(self, pair: str, state: dict) -> dict:
+    def _apply_quant_guardrails(self, pair: str, state: dict, *, keep_brain: bool = False) -> dict:
         """Apply R1-R11 + QFE with NO brain. Mutates state in place.
 
         `hydra_quant_rules` describes itself as "the non-negotiable guardrails
@@ -2191,6 +2204,16 @@ class HydraAgent:
         if os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1":
             return state
 
+        cached = state.get("ai_decision") if keep_brain else None
+        if not isinstance(cached, dict):
+            cached = None
+        brain_size = 1.0
+        if cached is not None:
+            try:
+                brain_size = float(cached.get("size_multiplier") if cached.get("size_multiplier") is not None else 1.0)
+            except (TypeError, ValueError):
+                brain_size = 1.0
+
         engine_action = state["signal"]["action"]
         rules_triggered: list = []
         rules_force_hold = False
@@ -2216,7 +2239,7 @@ class HydraAgent:
             print(f"  [QUANT RULES] apply_rules error ({type(re).__name__}: {re})")
             return state
 
-        final_size_multiplier = max(0.0, min(1.5, rules_size_mult))
+        final_size_multiplier = max(0.0, min(1.5, rules_size_mult * (brain_size if keep_brain else 1.0)))
         if rules_force_hold:
             final_size_multiplier = 0.0
             state["signal"]["action"] = "HOLD"
@@ -2258,22 +2281,46 @@ class HydraAgent:
                 except Exception as qe:
                     print(f"  [QFE] evaluate_qfe error ({type(qe).__name__}: {qe})")
 
-        state["ai_decision"] = {
-            "action": "RULES_ONLY",
-            "size_multiplier": final_size_multiplier,
-            "size_multiplier_brain": 1.0,
-            "size_multiplier_rules": rules_size_mult,
-            "rules_triggered": rules_triggered,
-            "rules_force_hold": rules_force_hold,
-            "rules_force_hold_reason": rules_force_hold_reason,
-            "qfe_active": qfe_active,
-            "qfe_reason": qfe_reason,
-            "qfe_trigger_values": qfe_trigger_values,
-            "combined_summary": (
-                "Deterministic guardrails only — no LLM configured."
-            ),
-            "brain_available": False,
-        }
+        if keep_brain and cached is not None and not qfe_active:
+            cached_act = str(cached.get("action") or "").upper()
+            cached_final = str(cached.get("final_signal") or "").upper()
+            if cached_act == "OVERRIDE" or cached_final == "HOLD":
+                if state["signal"]["action"] == "BUY":
+                    state["signal"]["action"] = "HOLD"
+                    state["signal"]["reason"] = (
+                        f"[BRAIN CACHE] {cached.get('combined_summary') or 'OVERRIDE HOLD'}"
+                    )
+                    final_size_multiplier = 0.0
+
+        if keep_brain and cached is not None:
+            merged = dict(cached)
+            merged["size_multiplier"] = final_size_multiplier
+            merged["size_multiplier_brain"] = brain_size
+            merged["size_multiplier_rules"] = rules_size_mult
+            merged["rules_triggered"] = rules_triggered
+            merged["rules_force_hold"] = rules_force_hold
+            merged["rules_force_hold_reason"] = rules_force_hold_reason
+            merged["qfe_active"] = qfe_active
+            merged["qfe_reason"] = qfe_reason
+            merged["qfe_trigger_values"] = qfe_trigger_values
+            state["ai_decision"] = merged
+        else:
+            state["ai_decision"] = {
+                "action": "RULES_ONLY",
+                "size_multiplier": final_size_multiplier,
+                "size_multiplier_brain": 1.0,
+                "size_multiplier_rules": rules_size_mult,
+                "rules_triggered": rules_triggered,
+                "rules_force_hold": rules_force_hold,
+                "rules_force_hold_reason": rules_force_hold_reason,
+                "qfe_active": qfe_active,
+                "qfe_reason": qfe_reason,
+                "qfe_trigger_values": qfe_trigger_values,
+                "combined_summary": (
+                    "Deterministic guardrails only — no LLM configured."
+                ),
+                "brain_available": False,
+            }
         return state
 
     def _apply_brain(self, pair: str, state: dict, all_engine_states: dict) -> dict:
@@ -2308,7 +2355,10 @@ class HydraAgent:
             cached = self._last_ai_decision.get(pair)
             if cached:
                 state["ai_decision"] = cached
-            return state  # Same candle as last brain evaluation — skip
+            # Intra-candle: skip the LLM, not R1–R11. Funding/OI/CVD can
+            # print mid-bar; a cached OVERRIDE must not let a SELL through
+            # a later R10 blackout, and must not skip a new force_hold.
+            return self._apply_quant_guardrails(pair, state, keep_brain=True)
 
         # Inject cross-pair triangle context and portfolio-level awareness
         state["triangle_context"] = self._build_triangle_context(pair, all_engine_states)
@@ -3302,17 +3352,6 @@ class HydraAgent:
                     side = entry.get("side", "?")
                     print(f"  [HYDRA] {pair} {side} {txid}: {state} "
                           f"(vol={vol_exec:.8f}, reconciled on resume)")
-                    if state in ("FILLED", "PARTIALLY_FILLED"):
-                        # When engines were rebased from exchange balances,
-                        # fees are already reflected in cash — only stamp
-                        # fee_applied. Debit only when balances are still
-                        # the optimistic snapshot / --balance fallback.
-                        apply_debit = not getattr(
-                            self, "_balances_from_exchange", False)
-                        self._deduct_fill_fee(
-                            self.engines.get(pair), entry,
-                            apply_debit=apply_debit)
-
                     # PR-C/C2: `pre_trade_snapshot` IS persisted — _place_order
                     # writes it onto the journal entry and
                     # _journal_for_persistence does not strip it — so a
@@ -3385,6 +3424,17 @@ class HydraAgent:
                             print(f"  [WARN] {pair} {side} was never filled and has no "
                                   f"pre_trade_snapshot — engine position may be "
                                   f"stale from snapshot. Operator should verify.")
+                    # Fee after true-up. restore_position wipes any earlier
+                    # debit; live drain already does true-up then fee. When
+                    # books were rebuilt from a snapshot, always debit.
+                    # If there was no snap and cash was already exchange-
+                    # rebased, stamp only.
+                    if state in ("FILLED", "PARTIALLY_FILLED"):
+                        apply_debit = True if snap is not None else (
+                            not getattr(self, "_balances_from_exchange", False)
+                        )
+                        self._deduct_fill_fee(
+                            engine, entry, apply_debit=apply_debit)
                     reconciled += 1
 
                 elif status in ("open", "pending", "pending_new", "new"):
@@ -4701,7 +4751,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.33.1",
+            "version": "2.33.2",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
@@ -4876,6 +4926,7 @@ def main():
                         help="Resume from last session snapshot (engines + coordinator state)")
     parser.add_argument("--user", type=str, default=None,
                         help="Run agent as specific user (fetches API keys from DB)")
+    add_config_args(parser)
 
     args = parser.parse_args()
     if args.pairs.strip().lower() == "auto":
@@ -4883,9 +4934,7 @@ def main():
             print("  [AUTO-PAIRS] --demo has no exchange account; using the default core pairs")
             pairs = ["BTC/USD", "ETH/USD", "ZEC/USD"]
         else:
-            from hydra_config import DEFAULT_QUOTE
-            _env_q = os.environ.get("HYDRA_QUOTE", "").strip().upper()
-            _dq = _env_q if _env_q in STABLE_QUOTES else DEFAULT_QUOTE
+            _dq = args.quote
             print(f"\n  [AUTO-PAIRS] Discovering held assets (quote preference: "
                   f"USDC if funded, else {_dq})...")
             pairs = discover_portfolio_pairs(default_quote=_dq)

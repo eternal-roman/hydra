@@ -259,8 +259,10 @@ export default function LabPane({
 
   const progressMsgs = labProgress || [];
   const startMsg = progressMsgs.find((m) => m.phase === "started");
-  const doneMsg = progressMsgs.find((m) => m.phase === "done");
-  const errorMsg = progressMsgs.find((m) => m.phase === "error");
+  const doneMsg = progressMsgs.find((m) => m.phase === "done")
+    || (labResult?.phase === "done" ? labResult : null);
+  const errorMsg = progressMsgs.find((m) => m.phase === "error")
+    || (labResult?.phase === "error" ? labResult : null);
   const foldMetricsMsgs = progressMsgs.filter((m) => "fold_idx" in m);
   const foldsCompleted = new Set(foldMetricsMsgs.map((m) => `${m.fold_idx}|${m.side}`)).size;
   const totalSteps = (startMsg?.n_folds || labResult?.n_folds || 1) * 2;

@@ -7,7 +7,7 @@ import ResearchTab from "./components/ResearchTab";
 // ═══════════════════════════════════════════════════════════════
 
 // Override at build time with VITE_HYDRA_WS_URL for non-localhost deployments.
-const DEFAULT_WS_URL = import.meta.env.VITE_HYDRA_WS_URL || "ws://localhost:8765";
+const DEFAULT_WS_URL = import.meta.env.VITE_HYDRA_WS_URL || "ws://127.0.0.1:8765";
 
 // Constrain any wsUrl that can be influenced by client-side state (localStorage,
 // server-provided `start_agent_ack.port`) to `ws[s]://<loopback>[:<port>][/path]`.
@@ -1442,7 +1442,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       // The server holds new sockets unauthenticated and sends NO state until
       // this handshake succeeds, so it must go out before anything else.
       // `connected` flips on auth_ack, not on socket open.
-      ws.send(JSON.stringify({ type: "auth", auth: token || "" }));
+      ws.send(JSON.stringify({ type: "auth", auth: token || "", jwt: jwtToken || "" }));
     };
     ws.onmessage = (event) => {
       if (!mountedRef.current) return;
@@ -1718,7 +1718,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                 window.dispatchEvent(new CustomEvent("hydra_start_agent_ack", { detail: msg }));
               } catch { /* ignore */ }
               if (msg.success && Number.isInteger(msg.port) && msg.port > 0 && msg.port < 65536) {
-                const newUrl = sanitizeWsUrl(`ws://localhost:${msg.port}`);
+                const newUrl = sanitizeWsUrl(`ws://127.0.0.1:${msg.port}`);
                 localStorage.setItem("hydra_ws_url", newUrl);
                 setWsUrl(newUrl);
               }
@@ -1737,7 +1737,6 @@ export function HydraDashboard({ jwtToken, onLogout }) {
               return;
             case "research_lab_result":
               setResearchLabResult(msg);
-              setResearchLabProgress(null);  // clear progress accumulator
               return;
             case "research_params_current_ack":
               setResearchParamsSchema(msg);
@@ -1796,13 +1795,17 @@ export function HydraDashboard({ jwtToken, onLogout }) {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     try {
-      ws.send(JSON.stringify({ ...msg, auth: wsTokenRef.current || "" }));
+      ws.send(JSON.stringify({
+        ...msg,
+        auth: wsTokenRef.current || "",
+        jwt: jwtToken || "",
+      }));
       return true;
     } catch (e) {
       console.error("[HYDRA] WS send error:", e);
       return false;
     }
-  }, []);
+  }, [jwtToken]);
 
   // ─── Companion send/switch + connect kickoff ───
   const companionConnect = useCallback(() => {
@@ -2058,7 +2061,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
               the brain is active so it pops cleanly against the blue-tinted
               pill background instead of blending with the blue border/text. */}
           <div title={aiBrain
-                ? "Market Quant (Claude) + Risk Manager (Claude) + Grok Strategist are reasoning over engine signals."
+                ? "Market Quant + Risk Manager + Grok Strategist are reasoning over engine signals."
                 : "Pure engine execution — no AI brain attached. Signals run straight from the engine to the order layer."}
                style={{ padding: "0 14px", minHeight: 38, borderRadius: 4,
                         fontSize: 12, fontWeight: 700, fontFamily: mono,
@@ -2891,6 +2894,28 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                 </div>
               )}
 
+              {(() => {
+                const haltedPairs = pairNames.filter((p) => pairs[p]?.halted);
+                const pdd = state?.portfolio_drawdown?.current_pct;
+                const portHalt = typeof pdd === "number" && pdd >= 15;
+                if (!haltedPairs.length && !portHalt) return null;
+                return (
+                  <div style={{
+                    background: `${COLORS.danger}14`,
+                    border: `1px solid ${COLORS.danger}50`,
+                    borderRadius: 8, padding: 10, marginBottom: 8,
+                    fontSize: 10, fontFamily: mono, color: COLORS.danger,
+                  }}>
+                    {haltedPairs.length
+                      ? `HALTED ${haltedPairs.join(", ")}`
+                      : null}
+                    {portHalt
+                      ? `${haltedPairs.length ? " · " : ""}Portfolio DD ${pdd.toFixed(1)}% — new BUYs blocked`
+                      : null}
+                  </div>
+                );
+              })()}
+
               {/* Session Info */}
               <div style={{ background: `${COLORS.purple}08`, border: `1px solid ${COLORS.purple}25`, borderRadius: 8, padding: 12 }}>
                 <div style={{ fontSize: 10, color: COLORS.purple, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6, fontFamily: mono, fontWeight: 700 }}>Session</div>
@@ -2944,7 +2969,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.33.1 | kraken-cli v0.4.1 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.33.2 | kraken-cli v0.4.1 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]

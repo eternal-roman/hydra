@@ -389,6 +389,36 @@ _FALLBACK_PAIRS: tuple[Pair, ...] = (
         price_decimals=2, ordermin=0.01, costmin=0.5,
         lot_decimals=8, tick_size=None,
     ),
+    Pair(
+        cli_format="ETH/USDC", api_format="ETHUSDC", ws_format="ETH/USDC",
+        base="ETH", quote="USDC",
+        price_decimals=2, ordermin=0.001, costmin=0.5,
+        lot_decimals=8, tick_size=None,
+    ),
+    Pair(
+        cli_format="ZEC/USDC", api_format="ZECUSDC", ws_format="ZEC/USDC",
+        base="ZEC", quote="USDC",
+        price_decimals=2, ordermin=0.01, costmin=0.5,
+        lot_decimals=8, tick_size=None,
+    ),
+    Pair(
+        cli_format="SOL/USDT", api_format="SOLUSDT", ws_format="SOL/USDT",
+        base="SOL", quote="USDT",
+        price_decimals=2, ordermin=0.02, costmin=0.5,
+        lot_decimals=8, tick_size=None,
+    ),
+    Pair(
+        cli_format="BTC/USDT", api_format="BTCUSDT", ws_format="BTC/USDT",
+        base="BTC", quote="USDT",
+        price_decimals=1, ordermin=0.0001, costmin=0.5,
+        lot_decimals=8, tick_size=None,
+    ),
+    Pair(
+        cli_format="ETH/USDT", api_format="ETHUSDT", ws_format="ETH/USDT",
+        base="ETH", quote="USDT",
+        price_decimals=2, ordermin=0.001, costmin=0.5,
+        lot_decimals=8, tick_size=None,
+    ),
 )
 
 

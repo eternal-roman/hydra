@@ -1,4 +1,4 @@
-name: Claude Code
+name: Issue assistant
 
 on:
   issue_comment:
@@ -23,14 +23,14 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read # Required to read CI results on PRs
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - name: Run Claude Code
+      - name: Run issue assistant
         id: claude
         uses: anthropics/claude-code-action@v1
         with:

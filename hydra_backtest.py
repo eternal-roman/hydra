@@ -47,7 +47,7 @@ from hydra_engine import (
     SIZING_CONSERVATIVE,  # noqa: F401 — re-exported for callers
 )
 
-HYDRA_VERSION = "2.33.1"
+HYDRA_VERSION = "2.33.2"
 
 # Reasonable defaults; enforced at config construction and runtime.
 DEFAULT_MAX_TICKS = 200_000
@@ -896,13 +896,26 @@ class BacktestRunner:
                 # on next-bar fill (v2.27.6; avoids reject skew on holding stats).
 
             # 6) Record per-tick series for result + UI streaming.
-            for pair, state in engine_states.items():
+            # EVERY configured pair gets a point at this frontier, even if it
+            # had no bar (v2.32.1 timestamp-align). A pair without a candle
+            # keeps last mark-to-market (cash + last price × size). Recording
+            # only `engine_states` left curves different lengths; _finalize_metrics
+            # then index-zipped them, summing pair A at time T with pair B at
+            # a later T+n. That is the same class of bug the loop itself fixed.
+            for pair in cfg.pairs:
                 engine = self.engines[pair]
                 price = engine.prices[-1] if engine.prices else 0.0
                 equity = engine.balance + engine.position.size * price
                 result.equity_curve[pair].append(equity)
-                result.regime_ribbon[pair].append(state.get("regime", "RANGING"))
-                sig = state.get("signal", {})
+                state = engine_states.get(pair) or {}
+                if state:
+                    regime = state.get("regime", "RANGING")
+                    sig = state.get("signal", {})
+                else:
+                    prev = result.regime_ribbon[pair]
+                    regime = prev[-1] if prev else "RANGING"
+                    sig = {"action": "HOLD", "confidence": 0.0}
+                result.regime_ribbon[pair].append(regime)
                 result.signal_log[pair].append({
                     "tick": tick,
                     "action": sig.get("action", "HOLD"),
@@ -996,7 +1009,9 @@ class BacktestRunner:
             gross_profit_all += engine.gross_profit
             gross_loss_all += engine.gross_loss
 
-        # Aggregate equity = sum across pairs at each tick
+        # Aggregate equity = sum across pairs at each tick. Curves are
+        # tick-aligned in _loop (one point per pair per frontier, gaps
+        # forward-filled). min() still guards a malformed persisted result.
         if result.equity_curve:
             n = min(len(v) for v in result.equity_curve.values())
             agg_equity = [

@@ -105,6 +105,21 @@ def test_allow_extreme_overbought_sell():
     assert out.action == SignalAction.SELL
 
 
+def test_qfe_profit_exit_not_swallowed_by_ride_trend():
+    """Agent rewrites the reason to [QFE PROFIT EXIT]; ride-trend must not HOLD it."""
+    eng = _engine(True)
+    eng.position.size = 1.0
+    eng.position.avg_entry = 100.0
+    sig = Signal(
+        SignalAction.SELL,
+        0.80,
+        "[QFE PROFIT EXIT] profit 1.4% >= 1.0%",
+        Strategy.MOMENTUM,
+    )
+    out = eng._apply_hold_through(Regime.TREND_UP, sig)
+    assert out.action == SignalAction.SELL
+
+
 def test_high_conf_alone_does_not_exit_mid_trend():
     """Calibration: conf is not a useful mid-trend exit gate — ride instead."""
     eng = _engine(True)
