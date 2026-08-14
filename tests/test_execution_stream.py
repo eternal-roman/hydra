@@ -14,6 +14,7 @@ import sys
 import os
 import time
 import threading
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hydra_streams import FakeExecutionStream  # noqa: E402
@@ -144,14 +145,111 @@ class TestHealthStatusReasons:
         assert "unknown" in reason
 
     def test_heartbeat_stale_includes_age(self):
-        # Force a stale heartbeat by setting it 60s in the past (well over
-        # the 30s threshold).
-        es = _make_stream_with_fake_proc(rc=None, hb_age_s=60.0)
+        # Public streams still require a stdout heartbeat (ticker/ohlc
+        # traffic). Private streams do not — see test_exec_quiet_*.
+        from hydra_streams import TickerStream
+        ts = TickerStream(["BTC/USD"], paper=False)
+        ts._proc = _FakeProc(rc=None)
+        ts._last_heartbeat = time.monotonic() - 60.0
+        ts._reader_thread = _LiveDaemon()
         try:
-            ok, reason = es.health_status()
+            ok, reason = ts.health_status()
             assert ok is False
             assert "no heartbeat" in reason
             assert "60s" in reason
+        finally:
+            ts._reader_thread.stop()
+
+    def test_exec_quiet_after_snapshot_is_healthy(self):
+        """kraken-cli 0.4.1 swallows Event::Heartbeat at the JSON sink
+        (stdout is command data only). After snap-orders, a quiet
+        executions socket is not a dead stream — restarting it every
+        300s tick dropped fills."""
+        es = _make_stream_with_fake_proc(rc=None, hb_age_s=60.0)
+        es._got_data = True
+        try:
+            assert es.health_status() == (True, "")
+        finally:
+            es._reader_thread.stop()
+
+    def test_exec_snapshot_message_marks_got_data(self):
+        """Health after a real executions snapshot frame — not a poked flag."""
+        es = _make_stream_with_fake_proc(rc=None, hb_age_s=60.0)
+        es._got_data = False
+        es._started_at = time.monotonic() - 60.0
+        try:
+            ok, reason = es.health_status()
+            assert ok is False
+            assert "no data" in reason
+            es._on_message({
+                "channel": "executions",
+                "type": "snapshot",
+                "data": [],
+                "sequence": 1,
+            })
+            assert es.health_status() == (True, "")
+        finally:
+            es._reader_thread.stop()
+
+    def test_balance_snapshot_message_marks_got_data(self):
+        from hydra_streams import BalanceStream
+        bs = BalanceStream(paper=False)
+        bs._proc = _FakeProc(rc=None)
+        bs._reader_thread = _LiveDaemon()
+        bs._got_data = False
+        bs._started_at = time.monotonic() - 60.0
+        try:
+            ok, reason = bs.health_status()
+            assert ok is False
+            assert "no data" in reason
+            bs._on_message({"channel": "balances", "data": []})
+            assert bs.health_status() == (True, "")
+        finally:
+            bs._reader_thread.stop()
+
+    def test_start_does_not_clear_got_data_after_reader_begins(self):
+        """`_got_data = False` after Thread.start() raced a snapshot
+        that already marked the stream live.
+
+        CI runs this file as `python tests/test_execution_stream.py`
+        (plain unittest runner, no pytest fixtures).
+        """
+        es = ExecutionStream(paper=False)
+        fake = _FakeProc(rc=None)
+        fake.stdout = []
+        fake.stderr = []
+
+        def fake_popen(*_a, **_k):
+            return fake
+
+        class _ImmediateThread:
+            def __init__(self, target=None, name=None, daemon=None):
+                self.target = target
+                self.name = name
+
+            def start(self):
+                es._on_heartbeat()
+
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                pass
+
+        with patch("hydra_streams.subprocess.Popen", fake_popen), \
+             patch("hydra_streams.threading.Thread", _ImmediateThread):
+            assert es.start() is True
+        assert es._got_data is True
+        es.stop()
+
+    def test_exec_no_snapshot_still_unhealthy(self):
+        es = _make_stream_with_fake_proc(rc=None, hb_age_s=60.0)
+        es._got_data = False
+        es._started_at = time.monotonic() - 60.0
+        try:
+            ok, reason = es.health_status()
+            assert ok is False
+            assert "no data" in reason
         finally:
             es._reader_thread.stop()
 

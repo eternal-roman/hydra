@@ -58,9 +58,12 @@ regression bug, not a style issue.
   remain fully supported: `--pairs SOL/USD,SOL/BTC,BTC/USD` re-activates
   the TradingTriangle + CrossPairCoordinator unchanged.
   `STABLE_QUOTES = {USD, USDC, USDT}` are first-class. **`--pairs auto`**
-  seeds the three cores and adds one satellite pair per additional held
-  asset — held SOL becomes a normal tradable satellite (USDC-quoted when
-  USDC is funded, else USD; `HYDRA_AUTO_QUOTE` forces) —
+  seeds the three cores in the *funded* stable quote (keep `--quote` /
+  `HYDRA_QUOTE` when that pool is above costmin; otherwise switch to the
+  largest funded stable — a USDC-only book must not run USD cores at $0
+  cash) and adds one satellite pair per additional held asset — held SOL
+  becomes a normal tradable satellite (USDC-quoted when USDC is funded,
+  else USD; `HYDRA_AUTO_QUOTE` forces) —
   `hydra_agent.discover_portfolio_pairs`.
 - **Bridge is signal-only by default (v2.28):** when a SOL triangle is
   explicitly configured, SOL/BTC engines run `exit_only` drain mode
@@ -72,6 +75,10 @@ regression bug, not a style issue.
   hurdle were calibrated on 1h tape; 15m ran them off-calibration.
   `--candle-interval` still accepts 1/5/15/30/60; snapshot resume drops
   candle history on interval mismatch (positions/journal restore).
+  v2.29 three-core `--resume` remaps same-base stable keys
+  (BTC/USD snap → BTC/USDC engine) even when `triangle` is None;
+  mixed leftover quotes (ZEC/USD) stay exact — never a global
+  quote flip that would invent ZEC/USDC.
 - **Version pin:** v2.33.2
 
 ## Defaults (inherited)
@@ -83,7 +90,12 @@ regression bug, not a style issue.
   (distro from `hydra_kraken_cli.WSL_DISTRO`, default `Ubuntu`; verify via `wsl -l -v`).
   Flag-by-flag compatibility notes and the deliberately-unused v0.4.1 surface
   (`order amend`/`batch`, `workspace`/`tape`/`lab`/`mcp`, …) live in the
-  `KrakenCLI` docstring.
+  `KrakenCLI` docstring. v0.4.1 `ohlc` emits `{candles:[{time,open,...}],last,pair}`
+  (object array, not the legacy pair-keyed list-of-lists) — `ohlc_paged`
+  accepts both. v0.4.1 WS **does not print** `{"channel":"heartbeat"}` on
+  stdout (swallowed at the JSON sink; `--monitor` health is stderr).
+  ExecutionStream / BalanceStream therefore treat process+reader+snapshot
+  as healthy; a 30s stdout-heartbeat timeout is public-stream only.
 - Kraken REST min interval: **2s** between calls
 - min_confidence: 0.65 (both modes); warmup_candles: 50
 - Circuit breaker: **15% drawdown sticky-halts new BUYs for session; SELL flatten still allowed (PR-A)**
@@ -164,7 +176,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | pair_registry | `hydra_pair_registry.py` | single source of truth for pair metadata; `Pair` value object + `PairRegistry` (alias resolution, kraken-pairs bootstrap); `STABLE_QUOTES`, `normalize_asset` |
 | config | `hydra_config.py` | `TradingTriangle` role-binding + `HydraConfig.from_quote`; `--quote` / `HYDRA_QUOTE` select the `--pairs auto` fallback quote (`DEFAULT_QUOTE = USD`) |
 | state_migrator | `hydra_state_migrator.py` | one-shot quote-currency migration of `hydra_session_snapshot.json` (engines, regime history, derivatives); preserves `order_journal` audit trail |
-| heartbeat | `heartbeat/` + `hydra_heartbeat_surface.py` | Order-flow P(up) confirmer (BTC/ETH PASS). **No order path.** Separate `heartbeat run`; status `heartbeat_status_<PAIR>.json`; agent → `quant_indicators["heartbeat"]` + dashboard; kill `HYDRA_HEARTBEAT_SURFACE=0`. Ledger: `heartbeat/HONEST_FINDINGS.md` |
+| heartbeat | `heartbeat/` + `hydra_heartbeat_surface.py` | Order-flow P(up) confirmer (BTC/ETH PASS). **No order path.** Separate `heartbeat run` (`start_heartbeat.bat`); status `heartbeat_status_<PAIR>.json`; USDC/USDT engines fall back to the USD tape (same-base order flow). Agent → `quant_indicators["heartbeat"]` + dashboard; kill `HYDRA_HEARTBEAT_SURFACE=0`. Ledger: `heartbeat/HONEST_FINDINGS.md` |
 | s3 | `hydra_s3.py` + `s3bounce/` | Daily bounce X1 signal (BTC/ETH; ZEC breadth-only). Read-only QI + **shadow** (`HYDRA_S3_STRATEGY=1`, default off, `.hydra-s3/`). **No order path.** Evidence: `heartbeat/evidence/bakeoffs/s3_*`, `research/S3_*` |
 | flywheel | `hydra_flywheel.py` | paper capital allocator (CLI-only, NO live order path, not wired into agent capital): signal-driven daily trend ensemble + carry monitor + cash; **only** the legacy engine sleeve is evidence-gated (0% until `validation_results.json` clears). Research tools: `tools/flywheel_validation.py`, `tools/carry_backtest.py`, `tools/trend_backtest.py` (trend/carry JSONs are research-only) |
 
@@ -188,7 +200,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 
 | id | path | ownership / notes |
 |---|---|---|
-| snapshot | `hydra_session_snapshot.json` | atomic `.tmp → os.replace`; `--resume` target; embeds v2.18.0 `derivatives_history` (OI + mark-price deques, rehydrated with 30 min staleness gate) |
+| snapshot | `hydra_session_snapshot.json` | atomic `.tmp → os.replace`; `--resume` target; embeds v2.18.0 `derivatives_history` (OI + mark-price deques, rehydrated with 30 min staleness gate). Same-base stable remap on resume when triangle is None (BTC/USD → BTC/USDC); journal pair fields stay on the market they traded |
 | order_journal | `hydra_order_journal.json` | snapshots immediately on any tick that appends (crash cannot lose since last successful tick); gitignored |
 | params | `hydra_params_<pair>.json` | per-pair learned tuning params; gitignored |
 | errors_log | `hydra_errors.log` | tick try/except writes here with full traceback; loop continues |
@@ -212,7 +224,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | `HYDRA_POSTEDIT_HOOK_DISABLED` | tooling | silence hook during heavy refactors |
 | `HYDRA_RM_FEATURES_DISABLED` | rm_features | `=1` skips engine-internal feature computation in `_build_quant_indicators`; instant rollback without redeploy. Default off (features enabled). |
 | `HYDRA_BUY_OFFSET_DISABLED` | execution | `=1` reverts BUYs to raw bid (default off). Offset table: `hydra_agent.py:_BUY_LIMIT_OFFSET_BPS` keyed by `(base, quote_class, regime)`; only SOL bases in `VOLATILE`/`TREND_DOWN` carry offsets — BTC bases and RANGING/TREND_UP stay at raw bid (avoid missed fills). Empirical derivation in the code comment. |
-| `HYDRA_QUOTE` | config | Fallback quote for `--pairs auto` (`USD`/`USDC`/`USDT`). `--quote` > env > `DEFAULT_QUOTE` (USD). Explicit `--pairs` is unchanged. |
+| `HYDRA_QUOTE` | config | Fallback quote for `--pairs auto` (`USD`/`USDC`/`USDT`). `--quote` > env > `DEFAULT_QUOTE` (USD). If that pool is unfunded, cores switch to the largest funded stable. Explicit `--pairs` is unchanged. |
 | `HYDRA_BRIDGE_TRADING` | agent | `=1` re-enables SOL/BTC bridge trading. Default OFF (v2.28): the bridge runs exit_only drain mode — evidence in `.hydra-flywheel/bridge_isolation.json` (0 trades/1y; Sharpe drag 2y). Candles/synthetic funding still stream as signal input. |
 | `HYDRA_TREND_OVERLAY` | engine | **Default ON** (v2.28). Daily trend-ensemble gate: BUY additionally requires daily ensemble long (0.4·sma200 + 0.4·ema20x100 + 0.2·don55 on daily closes, long ≥ 0.6); open positions flatten on ensemble flip. Fails OPEN (None) below 210 daily closes or when `=0`. Won 6/6 real-tape windows (`.hydra-flywheel/trend_overlay_gate.json`). |
 | `HYDRA_TREND_CONVICTION_SIZING` | engine | **Default ON** (v2.28). Overlay-long entries allocate vol-target × max_position_pct of balance (Kelly is the floor). `=0` reverts to pure Kelly sizing. Won 3/3 windows (`.hydra-flywheel/conviction_sizing_gate.json`). |
@@ -244,9 +256,10 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 - Engine demo (no keys): `python hydra_engine.py`
 
 **Launchers:**
-- `start_hydra.bat` — production watchdog (`--pairs auto --mode competition --resume` — **do not remove these flags**)
-- `start_all.bat` — full stack: agent + dashboard
+- `start_hydra.bat` — production watchdog (`--pairs auto --mode competition --resume` — **do not remove these flags**). Starts `start_heartbeat.bat` once before the restart loop (idempotent if heartbeat.exe is already up).
+- `start_all.bat` — full stack: dashboard + agent watchdog (heartbeat starts from `start_hydra.bat`)
 - `start_dashboard.bat` — dashboard only
+- `start_heartbeat.bat` — `heartbeat run` for BTC/USD + ETH/USD (research P(up) status files; **no order path**). USDC-quoted cores read the USD tape via `status_path_candidates`. ZEC is flow-FAIL and is not started.
 - `start_hydra_companion.bat` — paper-mode companion testing (no real money); same `--pairs auto` as production
 
 **A launcher's explicit `--pairs` overrides the code default and does not

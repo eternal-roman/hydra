@@ -26,7 +26,13 @@ from typing import Any, Deque, Dict, List, Optional
 # Assets whose flow classifier failed the real-tape promote gate
 # (HONEST_FINDINGS). Surface still shows p_up if a process is running,
 # but flags flow_gate_fail so the UI does not present them as edge.
+# Bases — quote does not change the verdict (ZEC/USDC is still ZEC flow).
 FLOW_GATE_FAIL_ASSETS = frozenset({"SOL/USD", "ZEC/USD"})
+FLOW_GATE_FAIL_BASES = frozenset({"SOL", "ZEC"})
+
+# Quotes that share a USD order-flow tape. `heartbeat run` is calibrated
+# on BTC/USD and ETH/USD; USDC-quoted engines must still read those files.
+_STABLE_QUOTES = frozenset({"USD", "USDC", "USDT"})
 
 DEFAULT_STATUS_DIR = os.environ.get(
     "HYDRA_S3_HEARTBEAT_STATUS_DIR",
@@ -57,6 +63,28 @@ def resolve_status_path(status_file_or_dir: str | Path, pair: str) -> Path:
         return raw / pair_name
     # Generic single-file name → Hydra multi-pair sibling
     return raw.parent / pair_name
+
+
+def status_path_candidates(status_file_or_dir: str | Path, pair: str):
+    """Exact pair file, then same-base USD tape for other stables.
+
+    Yields Paths in preference order. `heartbeat run --pair BTC/USD`
+    writes `heartbeat_status_BTC_USD.json`; a BTC/USDC engine that only
+    looks at `..._BTC_USDC.json` prints RESEARCH HB "no heartbeat"
+    forever even while the calibrated feed is live.
+    """
+    seen = set()
+    primary = resolve_status_path(status_file_or_dir, pair)
+    yield primary
+    seen.add(primary)
+    if "/" not in pair:
+        return
+    base, quote = pair.split("/", 1)
+    quote = quote.upper()
+    if quote in _STABLE_QUOTES and quote != "USD":
+        alias = resolve_status_path(status_file_or_dir, f"{base}/USD")
+        if alias not in seen:
+            yield alias
 
 
 def read_status(
@@ -133,10 +161,27 @@ class HeartbeatSurface:
         """Build quant_indicators['heartbeat'] for one pair. {} if killed."""
         if self.disabled():
             return {}
-        path = resolve_status_path(self.status_dir, pair)
-        block = read_status(path, now=time.time(), stale_s=self.stale_s)
-        block["path"] = str(path)
-        if pair in FLOW_GATE_FAIL_ASSETS:
+        now = time.time()
+        block: Dict[str, Any] = {
+            "status": "no_opinion", "why": "missing", "p_up": None,
+            "active": False,
+        }
+        chosen = None
+        for path in status_path_candidates(self.status_dir, pair):
+            candidate = read_status(path, now=now, stale_s=self.stale_s)
+            candidate["path"] = str(path)
+            block = candidate
+            chosen = path
+            if candidate.get("status") == "ok":
+                break
+            # missing/stale → try the USD tape. tainted stays: a
+            # tainted exact file is an integrity signal, not a miss.
+            if candidate.get("why") not in ("missing", "stale"):
+                break
+        if chosen is not None:
+            block["path"] = str(chosen)
+        base = pair.split("/", 1)[0] if "/" in pair else pair
+        if pair in FLOW_GATE_FAIL_ASSETS or base in FLOW_GATE_FAIL_BASES:
             block["flow_gate_fail"] = True
 
         # Append history only on fresh ok samples with a new ts

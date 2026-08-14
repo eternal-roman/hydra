@@ -225,7 +225,15 @@ def _write_status(cfg, pair, tf, pipe, monitor) -> None:
 
 async def _serve_tcp(cfg, pair, tf, pipe, monitor):
     server = TcpStatusServer(lambda: status_payload(pair, tf, pipe, monitor))
-    await server.start(cfg["api"]["tcp_host"], cfg["api"]["tcp_port"])
+    try:
+        await server.start(cfg["api"]["tcp_host"], cfg["api"]["tcp_port"])
+    except OSError as e:
+        # Second pair (ETH) shares the default 8790. Status files are the
+        # Hydra contract; TCP is optional. Don't kill the WS feed.
+        print(f"WARNING: TCP status {cfg['api']['tcp_host']}:"
+              f"{cfg['api']['tcp_port']} unavailable ({e}); "
+              f"status file still live", file=sys.stderr)
+        return
     await server.serve_forever()
 
 

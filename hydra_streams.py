@@ -41,6 +41,13 @@ class BaseStream:
     HEARTBEAT_TIMEOUT_S = 30.0
     READER_JOIN_TIMEOUT_S = 5.0
     RESTART_COOLDOWN_S = 30.0
+    # kraken-cli 0.4.1 swallows Event::Heartbeat at the JSON sink
+    # (`src/sink/driver.rs`: stdout is command data only). Public
+    # market streams still get frequent ohlc/ticker/book frames, so a
+    # 30s stdout silence is a real stall. Private streams (executions,
+    # balances) are quiet by design after the snapshot — requiring a
+    # stdout heartbeat restarted them every 300s tick and dropped fills.
+    STDOUT_HEARTBEAT_REQUIRED = True
 
     def __init__(self, paper: bool = False):
         self.paper = paper
@@ -48,6 +55,8 @@ class BaseStream:
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_thread: Optional[threading.Thread] = None
         self._last_heartbeat: float = 0.0
+        self._started_at: float = 0.0
+        self._got_data: bool = False
         self._lock = threading.Lock()
         self._shutdown = threading.Event()
         self._reader_exit_reason: Optional[str] = None
@@ -70,6 +79,7 @@ class BaseStream:
         """Bump the heartbeat timestamp. Call from _on_message on any
         liveness-indicating traffic."""
         self._last_heartbeat = time.monotonic()
+        self._got_data = True
 
     # ───────── lifecycle ─────────
 
@@ -80,6 +90,12 @@ class BaseStream:
             return True
         self._shutdown.clear()
         self._reader_exit_reason = None
+        # Reset liveness BEFORE spawn. Clearing `_got_data` after the
+        # reader thread starts races a snapshot frame that already set
+        # it True — the next health check then treated a live private
+        # stream as "no data since start" and restarted it.
+        self._got_data = False
+        self._started_at = 0.0
         self._on_start_reset()
         label = self._stream_label()
         # Credentials go through the environment via WSLENV, never into the
@@ -109,7 +125,9 @@ class BaseStream:
             target=self._stderr_loop, name=f"{label}-stderr", daemon=True,
         )
         self._stderr_thread.start()
-        self._last_heartbeat = time.monotonic()
+        now = time.monotonic()
+        self._last_heartbeat = now
+        self._started_at = now
         print(f"  [{label}] stream started")
         return True
 
@@ -156,12 +174,21 @@ class BaseStream:
         if self._reader_thread is None or not self._reader_thread.is_alive():
             reason = self._reader_exit_reason or "exited (reason unknown)"
             return False, f"reader thread {reason}"
-        age = time.monotonic() - self._last_heartbeat
-        if age > self.HEARTBEAT_TIMEOUT_S:
-            return False, (
-                f"no heartbeat for {age:.0f}s "
-                f"(threshold {self.HEARTBEAT_TIMEOUT_S:.0f}s)"
-            )
+        if self.STDOUT_HEARTBEAT_REQUIRED:
+            age = time.monotonic() - self._last_heartbeat
+            if age > self.HEARTBEAT_TIMEOUT_S:
+                return False, (
+                    f"no heartbeat for {age:.0f}s "
+                    f"(threshold {self.HEARTBEAT_TIMEOUT_S:.0f}s)"
+                )
+        elif not self._got_data:
+            started = self._started_at or self._last_heartbeat
+            age = time.monotonic() - started if started else self.HEARTBEAT_TIMEOUT_S + 1
+            if age > self.HEARTBEAT_TIMEOUT_S:
+                return False, (
+                    f"no data since start for {age:.0f}s "
+                    f"(threshold {self.HEARTBEAT_TIMEOUT_S:.0f}s)"
+                )
         return True, ""
 
     def ensure_healthy(self) -> Tuple[bool, str]:
@@ -493,6 +520,8 @@ class BalanceStream(BaseStream):
     def _stream_label(self) -> str:
         return "BALANCE_WS"
 
+    STDOUT_HEARTBEAT_REQUIRED = False
+
     def _on_message(self, msg: Dict[str, Any]) -> None:
         channel = msg.get("channel")
         if channel == "heartbeat":
@@ -619,6 +648,8 @@ class ExecutionStream(BaseStream):
 
     def _stream_label(self) -> str:
         return "EXECSTREAM"
+
+    STDOUT_HEARTBEAT_REQUIRED = False
 
     def _on_start_reset(self) -> None:
         # Reset sequence on (re)start — new WS connection starts at seq 1.
