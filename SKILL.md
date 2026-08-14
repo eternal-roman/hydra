@@ -239,7 +239,7 @@ END LOOP
 - **Trades per Hour** (activity level)
 - **Regime Detection Accuracy** (compare detected vs. retrospective)
 
-## Example Claude Code Session
+## Example operator session
 
 ```
 > Install kraken-cli, then run HYDRA in paper mode on BTC/USD for 10 minutes.
