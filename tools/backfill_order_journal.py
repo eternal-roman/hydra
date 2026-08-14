@@ -31,8 +31,10 @@ from typing import Dict, List, Set, Tuple
 
 
 HYDRA_RELEVANT_PAIRS = (
-    "SOL/USD", "SOL/USDC", "SOL/BTC",
-    "BTC/USD", "BTC/USDC",
+    "BTC/USD", "BTC/USDC", "BTC/USDT",
+    "ETH/USD", "ETH/USDC", "ETH/USDT",
+    "ZEC/USD", "ZEC/USDC",
+    "SOL/USD", "SOL/USDC", "SOL/USDT", "SOL/BTC",
 )
 
 

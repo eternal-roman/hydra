@@ -951,10 +951,13 @@ def _paired_return_p_value(a: Experiment, b: Experiment, n_iter: int = 500, seed
 
 
 def _flatten_equity(result: BacktestResult) -> List[float]:
-    """Sum per-pair equity at each tick. Assumes all pairs share tick count.
-    Persisted equity curves can contain None for ticks where a non-finite
-    value was sanitised on save — treat those as 0.0 so downstream stats
-    stay numeric."""
+    """Sum per-pair equity at each tick.
+
+    Live runners append one point per pair per frontier tick (gaps
+    forward-fill). Persisted curves can contain None for ticks where a
+    non-finite value was sanitised on save — treat those as 0.0 so
+    downstream stats stay numeric. min() still guards a malformed file.
+    """
     curves = list(result.equity_curve.values())
     if not curves:
         return []

@@ -1627,7 +1627,7 @@ class HydraEngine:
         cvd_series = [sum(self.signed_volumes[: i + 1]) for i in range(len(self.signed_volumes))]
         window = samples_1h
         diffs: List[float] = []
-        for end in range(window, len(cvd_series)):
+        for end in range(window, len(cvd_series) + 1):
             cvd_seg = cvd_series[end - window : end]
             px_seg = self.prices[end - window : end]
             cvd_slope = _linear_slope(cvd_seg)
@@ -1817,11 +1817,17 @@ class HydraEngine:
                     reason=f"HOLD_THROUGH:low_conf|{signal.reason}",
                     strategy=signal.strategy,
                 )
+        _reason_l = (signal.reason or "").lower()
+        _midtrend_exit_ok = (
+            "extreme overbought" in _reason_l
+            or "[qfe profit exit]" in _reason_l
+            or "halt flatten" in _reason_l
+        )
         if (
             signal.action == SignalAction.SELL
             and self.position.size > 0
             and regime == Regime.TREND_UP
-            and "extreme overbought" not in (signal.reason or "").lower()
+            and not _midtrend_exit_ok
         ):
             return Signal(
                 action=SignalAction.HOLD,
@@ -2333,16 +2339,22 @@ class HydraEngine:
             return 0.0
         # Anything below ordermin is unsellable on Kraken — clear books.
         written = size
+        leftover = float(self.position.realized_pnl or 0.0)
         self.position.size = 0.0
         self.position.avg_entry = 0.0
         self.position.params_at_entry = None
         self.position.unrealized_pnl = 0.0
-        # realized_pnl belongs to the position being written off, not to the
-        # next one. Both ordinary close paths clear it; this one did not, so a
-        # partial-fill residue carried its parent's realized P&L into the next
-        # position, which then reported that stale profit on a flat close —
-        # inflating win_count/gross_profit and feeding ParameterTracker a
-        # fabricated win to learn from.
+        # Book accumulated close P&L the same as a full SELL, then clear.
+        # Dropping it here discarded the closed-leg stats on the next
+        # write-off after a partial that left residue in [0.1×ordermin, ordermin).
+        if leftover != 0.0:
+            self.total_trades += 1
+            if leftover > 0:
+                self.win_count += 1
+                self.gross_profit += leftover
+            else:
+                self.loss_count += 1
+                self.gross_loss += abs(leftover)
         self.position.realized_pnl = 0.0
         return written
 

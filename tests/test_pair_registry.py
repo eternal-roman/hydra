@@ -64,7 +64,9 @@ def test_stable_quotes_membership():
 
 def test_default_registry_includes_core_pairs():
     reg = default_registry()
-    for sym in ("SOL/USD", "SOL/USDC", "BTC/USD", "BTC/USDC", "SOL/BTC"):
+    for sym in ("SOL/USD", "SOL/USDC", "SOL/USDT", "BTC/USD", "BTC/USDC",
+                "BTC/USDT", "ETH/USD", "ETH/USDC", "ETH/USDT", "ZEC/USD",
+                "ZEC/USDC", "SOL/BTC"):
         assert reg.get(sym) is not None, f"missing {sym}"
 
 

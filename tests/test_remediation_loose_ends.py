@@ -112,20 +112,33 @@ class TestQuantKillSwitch:
         assert r.force_hold is True  # R10 without kill switch
 
     def test_kill_switch_env_skips_rules_in_agent_branch(self, monkeypatch):
-        """Agent gates apply_rules behind HYDRA_QUANT_INDICATORS_DISABLED=1."""
+        """Drive HydraAgent._apply_quant_guardrails, not a local reimplementation."""
+        import hydra_quant_rules
+        from hydra_agent import HydraAgent
+
         monkeypatch.setenv("HYDRA_QUANT_INDICATORS_DISABLED", "1")
-        assert os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1"
-        # Simulate agent branch: when flag set, do not call apply_rules.
-        _quant_rules_disabled = (
-            os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1"
-        )
-        rules_force_hold = False
-        if not _quant_rules_disabled:
-            rules_force_hold = apply_rules("BUY", {}, {
-                "funding_bps_8h": None, "oi_delta_1h_pct": None,
-                "basis_apr_pct": None, "staleness_s": 10.0,
-            }).force_hold
-        assert rules_force_hold is False
+        called = []
+        real = hydra_quant_rules.apply_rules
+
+        def _spy(*a, **k):
+            called.append(1)
+            return real(*a, **k)
+
+        monkeypatch.setattr(hydra_quant_rules, "apply_rules", _spy)
+        agent = HydraAgent.__new__(HydraAgent)
+        agent.brain = None
+        agent.engines = {"BTC/USD": HydraEngine(initial_balance=1000, asset="BTC/USD")}
+        state = {
+            "signal": {"action": "BUY", "confidence": 0.8, "reason": "momentum"},
+            "quant_indicators": {
+                "funding_bps_8h": 140.0, "oi_price_regime": "neutral",
+                "cvd_divergence_sigma": 0.1, "basis_apr_pct": 5.0,
+                "staleness_s": 10.0,
+            },
+        }
+        agent._apply_quant_guardrails("BTC/USD", state)
+        assert called == []
+        assert state["signal"]["action"] == "BUY"
 
 
 class TestJournalSnapshotKey:

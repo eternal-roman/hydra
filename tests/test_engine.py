@@ -1209,15 +1209,26 @@ class TestTradableFlag:
         assert eng.position.size == 0.0
         assert eng.balance == 1.0
 
-    def test_execute_signal_sell_returns_none_when_not_tradable(self):
-        eng = self._seeded_engine(tradable=False)
+    def test_execute_signal_sell_flattens_when_not_tradable(self):
+        """PR-A: tradable=False blocks entries only. SELL must flatten."""
+        import os
+        os.environ["HYDRA_HOLD_THROUGH"] = "0"
+        eng = HydraEngine(
+            initial_balance=1.0, asset="SOL/BTC", tradable=False,
+            hold_through=False,
+        )
+        for i in range(60):
+            price = 0.0011 + i * 0.000001
+            eng.ingest_candle({
+                "open": price, "high": price, "low": price,
+                "close": price, "volume": 100.0,
+                "timestamp": float(1700000000 + i * 300),
+            })
         eng.position.size = 0.5
         eng.position.avg_entry = 0.001
-        pre_balance = eng.balance
         result = eng.execute_signal("SELL", 0.85, "test")
-        assert result is None
-        assert eng.balance == pre_balance
-        assert eng.position.size == 0.5, "position must not change on non-tradable engine"
+        assert result is not None
+        assert eng.position.size == 0.0
 
     def test_circuit_breaker_suppressed_when_not_tradable(self):
         eng = self._seeded_engine(tradable=False)

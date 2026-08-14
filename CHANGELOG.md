@@ -6,6 +6,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.33.2] — 2026-08-14
+
+Audit patch. Accounting, rails, dashboard, and docs. No new live gates
+(S3 / heartbeat stay display/shadow).
+
+### Fixed
+
+- **Portfolio equity in gapped backtests was index-zipped.** After
+  timestamp-align in `_loop`, a pair without a bar did not record
+  equity, so `_finalize_metrics` summed pair A at time T with pair B
+  at T+n. Every pair now gets a frontier point (forward-fill last
+  mark). Flywheel validation reads this curve.
+- **Resume applied the fill fee then `true_up_fill`.** Restore wiped
+  the debit; live P&L was ~16 bps/fill rich vs backtest. True-up
+  first, then fee.
+- **`bool("false")` was True** on Quant `force_hold`. A string false
+  from the LLM halted the pair. `_coerce_bool` treats only
+  true/1/yes as true.
+- **QFE / HALT FLATTEN SELLs died in ride-trend.** The agent rewrites
+  the reason; hold-through only allowed `"extreme overbought"`. Those
+  prefixes now pass.
+- **Same-candle brain cache skipped R1–R11.** Intra-bar ticks reused
+  the LLM decision and never re-ran rules. Cache still skips the LLM;
+  `_apply_quant_guardrails` still runs.
+- **ExecutionStream `ensure_healthy` lived in the try body.** A tick
+  crash skipped exec restart and fill drain. Both now run in
+  `finally` with the market streams.
+- **`write_off_dust` dropped accumulated `realized_pnl`** instead of
+  booking the close like a full SELL.
+- **CVD slope window dropped the latest bar** (`range` exclusive of
+  `len`). Inclusive of the current candle.
+- **`tradable=False` SELL test asserted the pre–PR-A contract**
+  (block flatten). It now requires flatten; hold-through off.
+- **Lab `research_lab_result` cleared progress**, so the pane never
+  saw `done`/`error` and stayed on Running. Result is terminal.
+- **Dashboard WS default `localhost` misses IPv6 `::1`** on Windows
+  when the agent binds `127.0.0.1`. Default is now `ws://127.0.0.1:8765`.
+- **Auth handshake / sends omitted `jwt`.** Production WS reads `jwt`.
+  Handshake and `sendMessage` now send both `auth` and `jwt`.
+- **Circuit-breaker halt was invisible** in the sidebar. Banner when
+  a pair is `halted` or portfolio DD ≥ 15%.
+- **`--quote` / `HYDRA_QUOTE` were advertised but unused.**
+  `add_config_args` now drives `--pairs auto` fallback quote.
+- **USDT (and ETH/USDC, ZEC/USDC) missing from the fallback catalog**,
+  so `HydraConfig.from_quote("USDT")` raised. Catalog complete.
+- Docs: `metrics.sharpe` (not `sharpe_ratio`), BTC ordermin 0.0001,
+  kraken-cli pin v0.4.1, launcher `--pairs auto`, journal_maintenance
+  and `--quote` semantics.
+
+### Not done (evidence / scope)
+
+S3 and heartbeat stay off the live BUY/SELL path (`HONEST_FINDINGS`).
+Companion live-exec rails, same-tick CB flatten, and Lab worker-pool
+cap remain follow-ups.
+
+---
+
 ## [2.33.1] — 2026-08-08
 
 Launcher fix. Production was starting on the pair set v2.29 retired.

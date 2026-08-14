@@ -274,6 +274,53 @@ class TestBacktestRunner(unittest.TestCase):
         runner2 = BacktestRunner(cfg)
         self.assertIsNot(runner.engines["BTC/USD"], runner2.engines["BTC/USD"])
 
+    def test_gapped_pairs_equity_curves_tick_aligned(self):
+        """A pair missing bars at the frontier must still record equity.
+
+        Pre-fix, only engine_states (pairs with a bar) appended, so a
+        5-bar series zipped with a 3-bar series at index i — the same
+        class of bug v2.32.1 fixed in _loop. Both curves must be one
+        point per unique timestamp, gaps forward-filled.
+        """
+        from hydra_engine import Candle
+
+        class _SeqSource:
+            def __init__(self, candles):
+                self._c = list(candles)
+
+            def iter_candles(self, pair):
+                return iter(self._c)
+
+            def describe(self):
+                return {"kind": "seq", "n": len(self._c)}
+
+        def _bars(timestamps, px=100.0):
+            return [
+                Candle(open=px, high=px, low=px, close=px, volume=1.0,
+                       timestamp=float(t))
+                for t in timestamps
+            ]
+
+        cfg = finalize_stamps(BacktestConfig(
+            name="gap-align",
+            pairs=("AAA/USD", "BBB/USD"),
+            candle_interval=60,
+            max_ticks=20,
+            coordinator_enabled=False,
+        ))
+        runner = BacktestRunner(cfg, sources_override={
+            "AAA/USD": _SeqSource(_bars([100, 200, 300, 400, 500])),
+            "BBB/USD": _SeqSource(_bars([100, 300, 500])),
+        })
+        result = runner.run()
+        self.assertEqual(result.status, "complete")
+        ea = result.equity_curve["AAA/USD"]
+        eb = result.equity_curve["BBB/USD"]
+        self.assertEqual(len(ea), 5, "full series should have 5 frontier ticks")
+        self.assertEqual(len(eb), 5, "gapped series must forward-fill, not shrink")
+        # Flat 100 close, no trades → equity stays at the seeded balance.
+        self.assertEqual(len(set(round(x, 8) for x in eb)), 1)
+
 
 class TestMetricHelpers(unittest.TestCase):
     def test_annualize_zero_ticks(self):

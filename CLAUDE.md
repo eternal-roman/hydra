@@ -72,7 +72,7 @@ regression bug, not a style issue.
   hurdle were calibrated on 1h tape; 15m ran them off-calibration.
   `--candle-interval` still accepts 1/5/15/30/60; snapshot resume drops
   candle history on interval mismatch (positions/journal restore).
-- **Version pin:** v2.33.1
+- **Version pin:** v2.33.2
 
 ## Defaults (inherited)
 
@@ -158,11 +158,11 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | backtest_server | `hydra_backtest_server.py` | `BacktestWorkerPool` (max=2 daemon, queue=20) + WS via `mount_backtest_routes` |
 | backtest_tool | `hydra_backtest_tool.py` | 8 Anthropic tool schemas + dispatcher + `QuotaTracker` (10/d caller, 3 concurrent, 50/d global) |
 | experiments | `hydra_experiments.py` | `Experiment` + `ExperimentStore` (RLock); 8 presets; sweep/compare |
-| journal_maintenance | `journal_maintenance.py` | order journal compaction/rotation |
+| journal_maintenance | `journal_maintenance.py` | journal audit + lockstep purge (agent must be stopped) |
 | journal_migrator | `hydra_journal_migrator.py` | one-shot legacy journal migration (auto on first start) |
-| dashboard | `dashboard/src/App.jsx` | single-file React, inline styles; tabs LIVE/RESEARCH/SETTINGS |
+| dashboard | `dashboard/src/App.jsx` | React LIVE/RESEARCH/SETTINGS; RESEARCH split under `components/` |
 | pair_registry | `hydra_pair_registry.py` | single source of truth for pair metadata; `Pair` value object + `PairRegistry` (alias resolution, kraken-pairs bootstrap); `STABLE_QUOTES`, `normalize_asset` |
-| config | `hydra_config.py` | `TradingTriangle` role-binding + `HydraConfig` boot-time facade; `add_config_args()` registers `--quote` (env `HYDRA_QUOTE`); `DEFAULT_QUOTE = "USD"` |
+| config | `hydra_config.py` | `TradingTriangle` role-binding + `HydraConfig.from_quote`; `--quote` / `HYDRA_QUOTE` select the `--pairs auto` fallback quote (`DEFAULT_QUOTE = USD`) |
 | state_migrator | `hydra_state_migrator.py` | one-shot quote-currency migration of `hydra_session_snapshot.json` (engines, regime history, derivatives); preserves `order_journal` audit trail |
 | heartbeat | `heartbeat/` + `hydra_heartbeat_surface.py` | Order-flow P(up) confirmer (BTC/ETH PASS). **No order path.** Separate `heartbeat run`; status `heartbeat_status_<PAIR>.json`; agent → `quant_indicators["heartbeat"]` + dashboard; kill `HYDRA_HEARTBEAT_SURFACE=0`. Ledger: `heartbeat/HONEST_FINDINGS.md` |
 | s3 | `hydra_s3.py` + `s3bounce/` | Daily bounce X1 signal (BTC/ETH; ZEC breadth-only). Read-only QI + **shadow** (`HYDRA_S3_STRATEGY=1`, default off, `.hydra-s3/`). **No order path.** Evidence: `heartbeat/evidence/bakeoffs/s3_*`, `research/S3_*` |
@@ -212,12 +212,12 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | `HYDRA_POSTEDIT_HOOK_DISABLED` | tooling | silence hook during heavy refactors |
 | `HYDRA_RM_FEATURES_DISABLED` | rm_features | `=1` skips engine-internal feature computation in `_build_quant_indicators`; instant rollback without redeploy. Default off (features enabled). |
 | `HYDRA_BUY_OFFSET_DISABLED` | execution | `=1` reverts BUYs to raw bid (default off). Offset table: `hydra_agent.py:_BUY_LIMIT_OFFSET_BPS` keyed by `(base, quote_class, regime)`; only SOL bases in `VOLATILE`/`TREND_DOWN` carry offsets — BTC bases and RANGING/TREND_UP stay at raw bid (avoid missed fills). Empirical derivation in the code comment. |
-| `HYDRA_QUOTE` | config | Default stable quote when `--quote` is not passed and no `--pairs` override. Choices: `USD` (v2.19+ default), `USDC`, `USDT`. Resolution order: explicit `--quote` > `HYDRA_QUOTE` env > `DEFAULT_QUOTE` (USD). |
+| `HYDRA_QUOTE` | config | Fallback quote for `--pairs auto` (`USD`/`USDC`/`USDT`). `--quote` > env > `DEFAULT_QUOTE` (USD). Explicit `--pairs` is unchanged. |
 | `HYDRA_BRIDGE_TRADING` | agent | `=1` re-enables SOL/BTC bridge trading. Default OFF (v2.28): the bridge runs exit_only drain mode — evidence in `.hydra-flywheel/bridge_isolation.json` (0 trades/1y; Sharpe drag 2y). Candles/synthetic funding still stream as signal input. |
 | `HYDRA_TREND_OVERLAY` | engine | **Default ON** (v2.28). Daily trend-ensemble gate: BUY additionally requires daily ensemble long (0.4·sma200 + 0.4·ema20x100 + 0.2·don55 on daily closes, long ≥ 0.6); open positions flatten on ensemble flip. Fails OPEN (None) below 210 daily closes or when `=0`. Won 6/6 real-tape windows (`.hydra-flywheel/trend_overlay_gate.json`). |
 | `HYDRA_TREND_CONVICTION_SIZING` | engine | **Default ON** (v2.28). Overlay-long entries allocate vol-target × max_position_pct of balance (Kelly is the floor). `=0` reverts to pure Kelly sizing. Won 3/3 windows (`.hydra-flywheel/conviction_sizing_gate.json`). |
 | `HYDRA_TREND_TARGET_VOL` | engine | Annualized vol target (percent) for overlay sizing. Default `30.0`. |
-| `HYDRA_AUTO_QUOTE` | agent | Forces the satellite quote for `--pairs auto` (`USD`/`USDC`/`USDT`). Default unset: prefer USDC when the account holds USDC above costmin (yield), else the triangle quote. USD remains essential for USD-only listings (e.g. NIGHT/USD) and fill-rate-sensitive flow. |
+| `HYDRA_AUTO_QUOTE` | agent | Forces the satellite quote for `--pairs auto` (`USD`/`USDC`/`USDT`). Default unset: prefer USDC when funded, else `--quote`/`HYDRA_QUOTE`. USD stays required for USD-only listings (e.g. NIGHT/USD). |
 | `HYDRA_TAPE_CAPTURE` | history | `=1` (default) wires CandleStream candle-close pushes into a bounded-queue writer that upserts to `hydra_history.sqlite` (`source='tape'`). Set `=0` to disable (e.g. paper-mode tests on a shared DB). |
 | `HYDRA_HISTORY_DB` | history | Path override for the canonical OHLC store. Defaults to `hydra_history.sqlite` in the working directory. Used by the agent (tape capture), `tools/refresh_history.py`, and the SqliteSource backtest path. |
 | `HYDRA_WSL_DISTRO` | cli | WSL distribution name for all `kraken` CLI invocations. Defaults to `Ubuntu`. Override if your distro is named differently (e.g. `Ubuntu-24.04`). Single source of truth: `hydra_kraken_cli.WSL_DISTRO`; isolated modules read the env var directly. |

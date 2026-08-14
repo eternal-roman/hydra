@@ -192,16 +192,12 @@ class TestLoadPairConstants:
         assert result == {}
 
     def test_unknown_pair_in_response_passes_through(self):
-        """Pairs returned by Kraken that we didn't request and that the
-        registry recognizes still come through (registry knows about them).
-        ETH/USDC is not in the static fallback, but since the test response
-        provides full metadata, the registry's bootstrap_from_kraken would
-        accept it. load_pair_constants returns it iff the registry resolves
-        the pair name — which only happens if it's pre-registered or it
-        matches a slashless requested form. ETH/USDC is neither here."""
-        resp = {"ETH/USDC": {"pair_decimals": 2, "ordermin": "0.01", "costmin": "0.5",
-                              "base": "ETH", "quote": "USDC", "lot_decimals": 8,
-                              "wsname": "ETH/USDC", "altname": "ETHUSDC"}}
+        """Kraken extra pairs that the registry cannot resolve are dropped
+        unless their slashless altname matches a requested form. NIGHT/USD
+        is not in the fallback catalog and is not in FRIENDLY_PAIRS."""
+        resp = {"NIGHT/USD": {"pair_decimals": 4, "ordermin": "1", "costmin": "0.5",
+                              "base": "NIGHT", "quote": "USD", "lot_decimals": 8,
+                              "wsname": "NIGHT/USD", "altname": "NIGHTUSD"}}
         stub = _StubRun(resp)
         stub.install()
         try:

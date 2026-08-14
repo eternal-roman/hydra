@@ -67,11 +67,24 @@ class TestMaxPositionAfterMultiplier:
 
 class TestPeakEquityNoDownRebase:
     def test_seed_peak_never_lowers(self):
-        eng = HydraEngine(initial_balance=100.0, asset="SOL/USD")
+        """PR-B B3: _set_engine_balances must not rebase peak downward.
+
+        The previous version assigned `peak_equity = max(...)` inside the
+        test and then asserted it — that tests Python's max(), not the
+        agent. This drives the real helper.
+        """
+        from hydra_agent import HydraAgent
+
+        eng = HydraEngine(initial_balance=100.0, asset="BTC/USD")
         eng.peak_equity = 150.0
         eng.max_drawdown = 10.0
-        # Simulate agent re-seed helper
-        eng.peak_equity = max(eng.peak_equity, 100.0)
+        agent = object.__new__(HydraAgent)
+        agent.pairs = ["BTC/USD"]
+        agent.engines = {"BTC/USD": eng}
+        agent.paper = True
+        agent._get_asset_prices = lambda: {}
+        agent._get_real_quote_balance = lambda q: 100.0
+        agent._set_engine_balances(100.0)
         assert eng.peak_equity == 150.0
 
 

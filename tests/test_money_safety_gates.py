@@ -357,5 +357,13 @@ def test_tape_stop_does_not_block_on_full_queue(tmp_path):
     t.stop()  # must return without hang
 
 
+def test_coerce_bool_does_not_treat_false_string_as_true():
+    from hydra_brain import _coerce_bool
+    assert _coerce_bool("false") is False
+    assert _coerce_bool("true") is True
+    assert _coerce_bool(False) is False
+    assert _coerce_bool(True) is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])

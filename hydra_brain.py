@@ -406,6 +406,17 @@ def _coerce_size_mult(v, default: float = 1.0) -> float:
         return default
 
 
+def _coerce_bool(v, default: bool = False) -> bool:
+    """JSON/LLM bools often arrive as the string 'false' — bool('false') is True."""
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes")
+    return bool(v)
+
+
 class HydraBrain:
     """3-agent AI reasoning: Claude Analyst + Claude Risk Manager + Grok Strategist.
     Grok only fires on genuine disagreements (OVERRIDE or analyst disagrees at low conviction)."""
@@ -681,7 +692,7 @@ class HydraBrain:
             # or be blocked"), so the Strategist outranking the RM there is
             # intentional, not a missed force_hold. Deterministic R1–R11 on the
             # agent side remain the final guardrail.
-            quant_force_hold = bool(analyst_output.get("force_hold"))
+            quant_force_hold = _coerce_bool(analyst_output.get("force_hold"))
             force_hold_reason = analyst_output.get("force_hold_reason", "") if quant_force_hold else ""
 
             if strategist_output and not quant_force_hold:
@@ -1071,7 +1082,7 @@ class HydraBrain:
                     clamped = 1.0
                 parsed["size_multiplier"] = clamped
             if "force_hold" in parsed:
-                parsed["force_hold"] = bool(parsed.get("force_hold"))
+                parsed["force_hold"] = _coerce_bool(parsed.get("force_hold"))
             else:
                 # Schema marks force_hold required; a truncated response that
                 # omits it must read as an explicit no-hold, loudly — not as a

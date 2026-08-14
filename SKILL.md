@@ -44,12 +44,12 @@ Matrix:
 ## Prerequisites
 
 ```bash
-# Install Kraken CLI
+# Install Kraken CLI (pin v0.4.1 — see CLAUDE.md)
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/krakenfx/kraken-cli/releases/latest/download/kraken-cli-installer.sh | sh
+  https://github.com/krakenfx/kraken-cli/releases/download/v0.4.1/kraken-cli-installer.sh | sh
 
 # Verify installation
-kraken --version
+kraken --version   # expect 0.4.1
 
 # For live trading only (paper trading needs no keys):
 kraken setup
@@ -124,7 +124,7 @@ position_size = position_value / current_price
 
 **Hard limits:**
 - Minimum trade cost: pair-aware (Kraken costmin — 0.5 USDC, 0.00002 BTC)
-- Minimum order size: pair-aware (Kraken ordermin — 0.02 SOL, 0.00005 BTC)
+- Minimum order size: pair-aware (Kraken ordermin — 0.02 SOL, 0.0001 BTC)
 - Sell-side dust: positions below ordermin are **written off** (not left as permanent bags)
 - Confidence threshold for **entries**: 0.65 (both modes); **exits ignore min_confidence**
 - Gross inventory + size_mult cannot exceed max_position_pct of equity
