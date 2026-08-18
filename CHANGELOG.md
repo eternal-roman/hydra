@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Watermark Gate CI job** (`watermark-gate`): deterministic check of
+  PR diffs vs `main` for `Co-Authored-By` / Generated-with banners and
+  actionable invisible Unicode. Blocks merge. Script:
+  `scripts/watermark_gate.py`. Not a Layer B rewrite and not an
+  official-detector claim.
+
 ### Fixed
 
 - **kraken-cli v0.4.1 `ohlc` object-array** was parsed as empty, so warmup

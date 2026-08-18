@@ -100,8 +100,8 @@ regression bug, not a style issue.
 - min_confidence: 0.65 (both modes); warmup_candles: 50
 - Circuit breaker: **15% drawdown sticky-halts new BUYs for session; SELL flatten still allowed (PR-A)**
 - WS dashboard port: 8765; Vite dev: 3000 (`strictPort: true`)
-- CI authority: `.github/workflows/ci.yml` (jobs: `engine-tests`,
-  `dashboard-build`)
+- CI authority: `.github/workflows/ci.yml` (jobs: `watermark-gate`,
+  `engine-tests`, `dashboard-build`)
 
 ## Cross-cutting invariants (HIGH severity if violated)
 
@@ -292,7 +292,11 @@ these two files — nothing else does it, and no test covers `.bat` content.
 ## Release PR workflow
 
 - **Cycle:** branch → tests pass → PR → CI green → merge → signed tag
-- **Tests pass:** both CI jobs green (`engine-tests` + `dashboard-build`). Mock harness (`tests/live_harness/harness.py --mode mock`) **MANDATORY** for any PR touching execution path.
+- **Tests pass:** CI green (`watermark-gate` + `engine-tests` +
+  `dashboard-build`). Mock harness (`tests/live_harness/harness.py --mode mock`)
+  **MANDATORY** for any PR touching execution path. `watermark-gate` is a
+  merge blocker: agent trailers / Generated-with banners / actionable
+  invisible Unicode on files changed vs `main`. Not Layer B.
 - **Enumerate first:** `git grep -nE 'v?[0-9]+\.[0-9]+\.[0-9]+'` before bumping (Rule 5)
 - **Tag:** signed; verify (Rule 3)
 - **Automation:** `/release` skill codifies the cycle. Never merge with red or pending CI.
