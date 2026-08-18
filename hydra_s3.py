@@ -42,7 +42,7 @@ if _S3_DIR not in sys.path:
 from s3bounce import S3Strategy, ShadowLedger, load_artifact  # noqa: E402
 from s3bounce.strategy import S3Signal  # noqa: E402
 
-from hydra_pair_registry import normalize_asset  # noqa: E402
+from hydra_pair_registry import STABLE_QUOTES, normalize_asset  # noqa: E402
 
 logger = logging.getLogger("hydra.s3")
 
@@ -55,14 +55,26 @@ CONFIRMER_STALE_S = 300.0
 
 def _canonical(pair: str) -> Optional[str]:
     """Agent pair name -> universe asset name via registry normalization
-    (XBT->BTC, ZUSD->USD, case, slashless), never a local alias dict."""
+    (XBT->BTC, ZUSD->USD, case, slashless), never a local alias dict.
+
+    USDC/USDT cores map to the USD universe member (same-base). S3 is
+    calibrated on BTC/USD and ETH/USD; a BTC/USDC engine must still
+    seed/evaluate that model. ZEC/USDC → ZEC/USD (breadth-only).
+    """
     try:
-        if "/" in pair:
-            base, quote = pair.split("/", 1)
-        else:
+        if "/" not in pair:
             return None
-        canon = f"{normalize_asset(base)}/{normalize_asset(quote)}"
-        return canon if canon in UNIVERSE else None
+        base, quote = pair.split("/", 1)
+        nbase = normalize_asset(base)
+        nquote = normalize_asset(quote)
+        canon = f"{nbase}/{nquote}"
+        if canon in UNIVERSE:
+            return canon
+        if nquote in STABLE_QUOTES and nquote != "USD":
+            usd = f"{nbase}/USD"
+            if usd in UNIVERSE:
+                return usd
+        return None
     except Exception:
         return None
 
@@ -241,14 +253,21 @@ class S3Adapter:
         the shadow log (both arms are written). Shared contract with
         hydra_heartbeat_surface (pair-named status files)."""
         try:
-            from hydra_heartbeat_surface import read_status, resolve_status_path
-            path = resolve_status_path(CONFIRMER_STATUS_DIR, asset)
-            block = read_status(path, now=now_wall, stale_s=CONFIRMER_STALE_S)
-            if block.get("status") != "ok":
-                return {"status": "no_opinion",
+            from hydra_heartbeat_surface import read_status, status_path_candidates
+            last = {"status": "no_opinion", "why": "missing"}
+            for path in status_path_candidates(CONFIRMER_STATUS_DIR, asset):
+                block = read_status(path, now=now_wall, stale_s=CONFIRMER_STALE_S)
+                if block.get("status") == "ok":
+                    return {"status": "ok", "p_up": block.get("p_up"),
+                            "ts": block.get("ts")}
+                last = {"status": "no_opinion",
                         "why": block.get("why") or "missing"}
-            return {"status": "ok", "p_up": block.get("p_up"),
-                    "ts": block.get("ts")}
+                # tainted exact file is an integrity signal — do not
+                # paper over it with the USD tape (same contract as
+                # HeartbeatSurface.indicator_block).
+                if block.get("why") == "tainted":
+                    break
+            return last
         except Exception:
             return {"status": "no_opinion", "why": "missing"}
 

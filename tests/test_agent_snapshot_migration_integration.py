@@ -203,3 +203,116 @@ def test_load_snapshot_corrupt_file_starts_fresh(tmp_path):
     # Engines retain their initial state — no crash.
     for engine in agent.engines.values():
         assert engine.candles == []
+
+
+def _build_core_agent(tmp_path, pairs):
+    """v2.29 three-core shell: no TradingTriangle, mixed leftover quotes."""
+    agent = object.__new__(HydraAgent)
+    agent.pairs = list(pairs)
+    agent.triangle = None
+    agent.candle_interval = 60
+    agent._snapshot_dir = str(tmp_path)
+    agent.engines = {
+        p: HydraEngine(initial_balance=100.0, asset=p) for p in pairs
+    }
+    agent.coordinator = CrossPairCoordinator(pairs)
+    agent.order_journal = []
+    agent._competition_start_balance = None
+    agent._portfolio_peak_usd = 0.0
+    agent._portfolio_max_drawdown_pct = 0.0
+    agent._portfolio_buy_halted = False
+    agent._userref_counter = 0
+    return agent
+
+
+def test_load_snapshot_same_base_remap_when_triangle_is_none(tmp_path):
+    """`--pairs auto` on a USDC-only book runs BTC/USDC+ETH/USDC+ZEC/USD
+    with triangle=None. A previous-session USD snapshot must still
+    restore BTC/ETH engines (positions, peak, halt). A global USD→USDC
+    rewrite would rename ZEC/USD → ZEC/USDC and drop that engine."""
+    pairs = ["BTC/USDC", "ETH/USDC", "ZEC/USD"]
+    agent = _build_core_agent(tmp_path, pairs)
+    snap_path = os.path.join(str(tmp_path), "hydra_session_snapshot.json")
+    snap = {
+        "version": 1,
+        "timestamp": "2026-08-14T12:00:00Z",
+        "pairs": ["BTC/USD", "ETH/USD", "ZEC/USD"],
+        "engines": {
+            "BTC/USD": {
+                "candles": [{"open": 95000, "high": 95100, "low": 94900,
+                             "close": 95050, "volume": 0.5, "timestamp": 1.0}],
+                "trades": [],
+                "balance": 13534.0,
+                "peak_equity": 14000.0,
+                "max_drawdown": 0.03,
+                "position": {"asset": "BTC/USD", "size": 0.085,
+                             "avg_entry": 94000.0, "unrealized_pnl": 0.0,
+                             "realized_pnl": 12.0},
+                "win_count": 2, "loss_count": 1, "halted": False,
+            },
+            "ETH/USD": {
+                "candles": [{"open": 3200, "high": 3210, "low": 3190,
+                             "close": 3205, "volume": 2.0, "timestamp": 1.0}],
+                "trades": [],
+                "balance": 13534.0,
+                "win_count": 0, "loss_count": 0,
+            },
+            "ZEC/USD": {
+                "candles": [{"open": 40, "high": 41, "low": 39,
+                             "close": 40.5, "volume": 10.0, "timestamp": 1.0}],
+                "trades": [],
+                "win_count": 0, "loss_count": 0,
+            },
+        },
+        "coordinator_regime_history": {
+            "BTC/USD": ["TREND_UP"],
+            "ETH/USD": ["RANGING"],
+            "ZEC/USD": ["VOLATILE"],
+        },
+        "order_journal": [
+            {"pair": "BTC/USD", "side": "BUY",
+             "lifecycle": {"state": "FILLED"}},
+        ],
+        "portfolio_drawdown": {"peak_usd": 28000.0, "max_pct": 0.03},
+    }
+    with open(snap_path, "w") as f:
+        json.dump(snap, f)
+
+    agent._load_snapshot()
+
+    btc = agent.engines["BTC/USDC"]
+    assert len(btc.candles) == 1
+    assert btc.candles[0].close == 95050
+    assert btc.balance == 13534.0
+    assert btc.peak_equity == 14000.0
+    assert btc.position.size == 0.085
+    assert btc.position.avg_entry == 94000.0
+    assert btc.position.asset == "BTC/USDC"
+    eth = agent.engines["ETH/USDC"]
+    assert len(eth.candles) == 1
+    assert eth.candles[0].close == 3205
+    zec = agent.engines["ZEC/USD"]
+    assert len(zec.candles) == 1
+    assert zec.candles[0].close == 40.5
+    assert agent.coordinator.regime_history["BTC/USDC"] == ["TREND_UP"]
+    assert agent.coordinator.regime_history["ETH/USDC"] == ["RANGING"]
+    assert agent.coordinator.regime_history["ZEC/USD"] == ["VOLATILE"]
+    # Journal stays on the market it actually traded.
+    assert agent.order_journal[0]["pair"] == "BTC/USD"
+    # Disk is not globally rewritten (that would invent ZEC/USDC).
+    on_disk = json.loads(open(snap_path).read())
+    assert "ZEC/USD" in on_disk["engines"]
+    assert "ZEC/USDC" not in on_disk["engines"]
+
+
+def test_same_base_stable_key_exact_wins_and_ambiguous_skips():
+    assert HydraAgent._same_base_stable_key(
+        {"BTC/USDC": 1}, "BTC/USDC") == "BTC/USDC"
+    assert HydraAgent._same_base_stable_key(
+        {"BTC/USD": 1}, "BTC/USDC") == "BTC/USD"
+    assert HydraAgent._same_base_stable_key(
+        {"BTC/USD": 1, "BTC/USDT": 1}, "BTC/USDC") is None
+    assert HydraAgent._same_base_stable_key(
+        {"SOL/BTC": 1}, "SOL/USDC") is None
+    assert HydraAgent._same_base_stable_key(
+        {"SOL/BTC": 1}, "SOL/BTC") == "SOL/BTC"

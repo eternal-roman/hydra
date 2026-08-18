@@ -33,6 +33,16 @@ class TestStatusPathContract(unittest.TestCase):
         raw = "heartbeat/data/heartbeat_status_BTC_USD.json"
         self.assertEqual(hbs.resolve_status_path(raw, "BTC/USD"), Path(raw))
 
+    def test_usdc_pair_candidates_include_usd_tape(self):
+        """Heartbeat is BTC/ETH order-flow on the USD book (PASS tape).
+        A USDC-quoted engine must still read that file — not invent a
+        BTC_USDC status the `heartbeat run --pair BTC/USD` process never
+        writes."""
+        paths = [p.name for p in hbs.status_path_candidates(
+            "heartbeat/data", "BTC/USDC")]
+        self.assertEqual(paths[0], "heartbeat_status_BTC_USDC.json")
+        self.assertIn("heartbeat_status_BTC_USD.json", paths)
+
 
 class TestReadStatusSemantics(unittest.TestCase):
     def setUp(self):
@@ -143,6 +153,53 @@ class TestHeartbeatSurface(unittest.TestCase):
         blk2 = surf.indicator_block("BTC/USD")
         self.assertGreaterEqual(len(blk2.get("history") or []), 1)
         self.assertIn("p_up", blk2["history"][-1])
+
+    def test_usdc_engine_reads_usd_status_file(self):
+        (self._dir / "heartbeat_status_BTC_USD.json").write_text(json.dumps({
+            "pair": "BTC/USD", "tf": "1h", "p_up": 0.64, "L": 0.5,
+            "ts": time.time(), "tainted": False,
+        }), encoding="utf-8")
+        surf = hbs.HeartbeatSurface(["BTC/USDC"], status_dir=str(self._dir))
+        blk = surf.indicator_block("BTC/USDC")
+        self.assertEqual(blk["status"], "ok")
+        self.assertAlmostEqual(blk["p_up"], 0.64)
+        self.assertTrue(str(blk["path"]).endswith("heartbeat_status_BTC_USD.json"))
+
+    def test_exact_usdc_file_wins_over_usd_alias(self):
+        (self._dir / "heartbeat_status_BTC_USD.json").write_text(json.dumps({
+            "pair": "BTC/USD", "p_up": 0.11, "ts": time.time(), "tainted": False,
+        }), encoding="utf-8")
+        (self._dir / "heartbeat_status_BTC_USDC.json").write_text(json.dumps({
+            "pair": "BTC/USDC", "p_up": 0.88, "ts": time.time(), "tainted": False,
+        }), encoding="utf-8")
+        surf = hbs.HeartbeatSurface(["BTC/USDC"], status_dir=str(self._dir))
+        blk = surf.indicator_block("BTC/USDC")
+        self.assertAlmostEqual(blk["p_up"], 0.88)
+
+    def test_stale_exact_falls_through_to_usd_tape(self):
+        (self._dir / "heartbeat_status_BTC_USDC.json").write_text(json.dumps({
+            "pair": "BTC/USDC", "p_up": 0.11, "ts": 1.0, "tainted": False,
+        }), encoding="utf-8")
+        (self._dir / "heartbeat_status_BTC_USD.json").write_text(json.dumps({
+            "pair": "BTC/USD", "p_up": 0.64, "ts": time.time(), "tainted": False,
+        }), encoding="utf-8")
+        surf = hbs.HeartbeatSurface(["BTC/USDC"], status_dir=str(self._dir))
+        blk = surf.indicator_block("BTC/USDC")
+        self.assertEqual(blk["status"], "ok")
+        self.assertAlmostEqual(blk["p_up"], 0.64)
+
+    def test_tainted_exact_does_not_fall_through(self):
+        """A tainted exact file is an integrity signal, not a miss."""
+        (self._dir / "heartbeat_status_BTC_USDC.json").write_text(json.dumps({
+            "pair": "BTC/USDC", "p_up": 0.11, "ts": time.time(), "tainted": True,
+        }), encoding="utf-8")
+        (self._dir / "heartbeat_status_BTC_USD.json").write_text(json.dumps({
+            "pair": "BTC/USD", "p_up": 0.64, "ts": time.time(), "tainted": False,
+        }), encoding="utf-8")
+        surf = hbs.HeartbeatSurface(["BTC/USDC"], status_dir=str(self._dir))
+        blk = surf.indicator_block("BTC/USDC")
+        self.assertEqual(blk["why"], "tainted")
+        self.assertIsNone(blk.get("p_up"))
 
     def test_sol_zec_still_readable_but_flagged_fail_asset(self):
         """SOL/ZEC flow classifier FAIL — surface marks asset class, still no order."""

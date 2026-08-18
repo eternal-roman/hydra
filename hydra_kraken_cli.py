@@ -471,6 +471,19 @@ class KrakenCLI:
         """
         data = cls.asset_pairs(pairs)
         if not isinstance(data, dict) or "error" in data:
+            # `kraken pairs --pair A,B,C` fails the entire batch if ANY
+            # name is unlisted (ZEC/USDC). Auto-pairs then saw {} and
+            # treated every core as missing — USD fallback on a USDC-only
+            # book, $0 engines. Recover the listed pairs one at a time.
+            if pairs and len(pairs) > 1:
+                recovered = {}
+                for p in pairs:
+                    recovered.update(cls.load_pair_constants([p]))
+                if recovered:
+                    err = data.get("error") if isinstance(data, dict) else data
+                    print(f"  [WARN] pairs batch failed ({err}); "
+                          f"recovered {len(recovered)}/{len(pairs)} individually")
+                    return recovered
             return {}
 
         # Build a friendly-name lookup using the registry for input forms.
@@ -577,6 +590,42 @@ class KrakenCLI:
         """Fetch OHLC candles. Returns list of candle dicts."""
         return cls.ohlc_paged(pair, interval=interval, since=0)[0]
 
+    @staticmethod
+    def _parse_ohlc_row(row) -> Optional[dict]:
+        """Normalize one CLI OHLC row into Hydra's ingest_candle dict.
+
+        Accepts both shapes kraken-cli has emitted:
+          - v0.4.1+ object: {time, open, high, low, close, volume, ...}
+          - legacy REST list: [ts, open, high, low, close, vwap, volume, count]
+        Returns None on a malformed row rather than raising — one bad bar
+        must not blank the whole warmup (that hid every dashboard chart).
+        """
+        try:
+            if isinstance(row, dict):
+                ts = row.get("time", row.get("timestamp"))
+                if ts is None:
+                    return None
+                return {
+                    "timestamp": float(ts),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row.get("volume") or 0),
+                }
+            if isinstance(row, (list, tuple)) and len(row) >= 7:
+                return {
+                    "timestamp": float(row[0]),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(row[6]),
+                }
+        except (TypeError, ValueError, KeyError):
+            return None
+        return None
+
     @classmethod
     def ohlc_paged(cls, pair: str, interval: int = 1, since: int = 0) -> tuple:
         """Like ohlc() but exposes the `last` cursor for pagination.
@@ -584,6 +633,11 @@ class KrakenCLI:
         Returns (candles: list, last_cursor: int). last_cursor is the timestamp
         of the most recent candle returned; pass it back as `since` for the
         next page. Returns (candles, 0) if no more data.
+
+        Parses both the v0.4.1+ `{candles: [{time, open, ...}], last, pair}`
+        envelope and the legacy `{PAIR: [[ts, o, h, l, c, vwap, vol, n], ...]}`
+        REST shape. A shape the parser does not recognize logs a warning and
+        returns empty — never a fabricated bar.
         """
         p = cls._resolve_pair(pair)
         args = ["ohlc", p, "--interval", str(interval)]
@@ -602,19 +656,20 @@ class KrakenCLI:
                 except (TypeError, ValueError):
                     last_cursor = 0
             for key, values in data.items():
-                if key in ("error", "last"):
+                if key in ("error", "last", "pair"):
                     continue
-                if isinstance(values, list):
-                    for row in values:
-                        if isinstance(row, list) and len(row) >= 7:
-                            candles.append({
-                                "timestamp": float(row[0]),
-                                "open": float(row[1]),
-                                "high": float(row[2]),
-                                "low": float(row[3]),
-                                "close": float(row[4]),
-                                "volume": float(row[6]),
-                            })
+                if not isinstance(values, list):
+                    continue
+                for row in values:
+                    parsed = cls._parse_ohlc_row(row)
+                    if parsed is not None:
+                        candles.append(parsed)
+        if isinstance(data, dict) and not candles and data.get("candles") is None:
+            # Legacy pair-key missing AND no `candles` array: schema we do
+            # not know. Loud so the next drift does not silently starve
+            # warmup / dashboard charts again.
+            print(f"  [WARN] OHLC unrecognized shape for {pair}: "
+                  f"keys={sorted(data.keys())}")
         return candles, last_cursor
 
     # ─── Private Account ───
