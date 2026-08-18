@@ -14,6 +14,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  watermark-gate:
+    name: Watermark Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Deterministic watermark gate vs main
+        env:
+          WATERMARK_GATE_BASE: origin/${{ github.base_ref || 'main' }}
+        run: |
+          git fetch origin "${{ github.base_ref || 'main' }}" --depth=1
+          python scripts/watermark_gate.py --base "$WATERMARK_GATE_BASE" --json
+
   engine-tests:
     name: Engine Tests (Python)
     runs-on: ubuntu-latest
