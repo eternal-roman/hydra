@@ -101,6 +101,13 @@ def test_usd_only_listing_resolves_to_usd(monkeypatch):
     assert discover_portfolio_pairs("USD") == CORES + ["NIGHT/USD"]
 
 
+BTC_USDC = {"price_decimals": 1, "ordermin": 0.0001, "costmin": 0.5,
+            "base": "BTC", "quote": "USDC", "lot_decimals": 8}
+ETH_USDC = {"price_decimals": 2, "ordermin": 0.001, "costmin": 0.5,
+            "base": "ETH", "quote": "USDC", "lot_decimals": 8}
+USDC_CORES = ["BTC/USDC", "ETH/USDC", "ZEC/USD"]
+
+
 def test_usdc_preferred_when_funded(monkeypatch):
     """Both quotes listed + USDC held → USDC wins (idle USDC earns yield)."""
     monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
@@ -108,9 +115,35 @@ def test_usdc_preferred_when_funded(monkeypatch):
         monkeypatch,
         {"USDC": 100.0, "SOL": 1.0},
         {"SOL/USDC": SOL_USDC,
-         "SOL/USD": {**SOL_USDC, "quote": "USD"}},
+         "SOL/USD": {**SOL_USDC, "quote": "USD"},
+         "BTC/USDC": BTC_USDC, "ETH/USDC": ETH_USDC},
     )
-    assert discover_portfolio_pairs("USD") == CORES + ["SOL/USDC"]
+    assert discover_portfolio_pairs("USD") == USDC_CORES + ["SOL/USDC"]
+
+
+def test_cores_follow_funded_stable_when_usd_empty(monkeypatch):
+    """`--pairs auto` advertised USDC-if-funded, but cores stayed on the
+    DEFAULT_QUOTE (USD). A USDC-only account then ran BTC/USD+ETH/USD+ZEC/USD
+    at $0 cash — prices printed, sizer refused every BUY, dashboard looked
+    dead. Cores must spend the stable that is actually held."""
+    monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
+    _stub_kraken(
+        monkeypatch,
+        {"USDC": 27068.32, "XXBT": 0.085},
+        {"BTC/USDC": BTC_USDC, "ETH/USDC": ETH_USDC},
+    )
+    assert discover_portfolio_pairs("USD") == USDC_CORES
+
+
+def test_cores_keep_usd_when_usd_funded(monkeypatch):
+    """Requested USD stays when the USD pool can actually fund engines."""
+    monkeypatch.delenv("HYDRA_AUTO_QUOTE", raising=False)
+    _stub_kraken(
+        monkeypatch,
+        {"ZUSD": 500.0, "USDC": 27000.0},
+        {"BTC/USDC": BTC_USDC, "ETH/USDC": ETH_USDC},
+    )
+    assert discover_portfolio_pairs("USD") == CORES
 
 
 def test_usd_preferred_when_usdc_unfunded(monkeypatch):
@@ -132,9 +165,11 @@ def test_auto_quote_env_forces(monkeypatch):
         monkeypatch,
         {"USDC": 100.0, "SOL": 1.0},
         {"SOL/USDC": SOL_USDC,
-         "SOL/USD": {**SOL_USDC, "quote": "USD"}},
+         "SOL/USD": {**SOL_USDC, "quote": "USD"},
+         "BTC/USDC": BTC_USDC, "ETH/USDC": ETH_USDC},
     )
-    assert discover_portfolio_pairs("USD") == CORES + ["SOL/USD"]
+    # Satellite quote is forced to USD; cores still follow the funded stable.
+    assert discover_portfolio_pairs("USD") == USDC_CORES + ["SOL/USD"]
 
 
 def test_staked_and_dust_excluded(monkeypatch):

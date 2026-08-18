@@ -555,6 +555,87 @@ class TestFreeBalance:
 
 
 # ═══════════════════════════════════════════════════════════════
+# TEST: KrakenCLI.ohlc / ohlc_paged — CLI schema drift
+# ═══════════════════════════════════════════════════════════════
+
+class TestOhlcParsing:
+    """kraken-cli v0.4.1+ emits object-array candles (`time`/`open`/...).
+
+    The pre-v0.4 REST envelope was `{PAIR: [[ts, o, h, l, c, vwap, vol, n], ...], last}`.
+    Hydra's parser only accepted that list-of-lists shape, so warmup ingested
+    0 bars, engines kept only the live forming WS candle, and the dashboard
+    hid every chart (`candles.length > 5`).
+    """
+
+    _OBJECT_CANDLES = {
+        "candles": [
+            {
+                "close": 64805.0, "count": 2250, "high": 65086.2,
+                "low": 64787.1, "open": 65009.2, "time": 1784138400,
+                "volume": 107.00569074, "vwap": 64925.8,
+            },
+            {
+                "close": 64926.0, "count": 2029, "high": 64959.3,
+                "low": 64705.9, "open": 64805.6, "time": 1784142000,
+                "volume": 101.88685432, "vwap": 64850.0,
+            },
+        ],
+        "last": 1784142000,
+        "pair": "BTC/USD",
+    }
+
+    _LEGACY_CANDLES = {
+        "XXBTZUSD": [
+            [1784138400, 65009.2, 65086.2, 64787.1, 64805.0, 64925.8, 107.0, 2250],
+            [1784142000, 64805.6, 64959.3, 64705.9, 64926.0, 64850.0, 101.8, 2029],
+        ],
+        "last": 1784142000,
+    }
+
+    def test_object_array_shape_parses_candles(self):
+        candles, last = _with_stub(
+            self._OBJECT_CANDLES,
+            lambda: KrakenCLI.ohlc_paged("BTC/USD", interval=60),
+        )[0]
+        assert last == 1784142000
+        assert len(candles) == 2
+        assert candles[0]["timestamp"] == 1784138400.0
+        assert candles[0]["open"] == 65009.2
+        assert candles[0]["high"] == 65086.2
+        assert candles[0]["low"] == 64787.1
+        assert candles[0]["close"] == 64805.0
+        assert candles[0]["volume"] == 107.00569074
+        assert candles[1]["close"] == 64926.0
+
+    def test_ohlc_wrapper_returns_object_array_rows(self):
+        candles, _ = _with_stub(
+            self._OBJECT_CANDLES,
+            lambda: KrakenCLI.ohlc("BTC/USD", interval=60),
+        )
+        assert len(candles) == 2
+        assert candles[-1]["timestamp"] == 1784142000.0
+
+    def test_legacy_list_of_lists_still_parses(self):
+        candles, last = _with_stub(
+            self._LEGACY_CANDLES,
+            lambda: KrakenCLI.ohlc_paged("BTC/USD", interval=60),
+        )[0]
+        assert last == 1784142000
+        assert len(candles) == 2
+        assert candles[0]["timestamp"] == 1784138400.0
+        assert candles[0]["close"] == 64805.0
+        assert candles[1]["volume"] == 101.8
+
+    def test_error_envelope_returns_empty(self):
+        candles, last = _with_stub(
+            {"error": "rate_limit", "message": "slow down"},
+            lambda: KrakenCLI.ohlc_paged("BTC/USD", interval=60),
+        )[0]
+        assert candles == []
+        assert last == 0
+
+
+# ═══════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════
 
@@ -577,6 +658,7 @@ def run_tests():
         TestPaperArgv,
         TestErrorEnvelope,
         TestFreeBalance,
+        TestOhlcParsing,
     ]
 
     for cls in test_classes:
