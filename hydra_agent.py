@@ -4111,6 +4111,25 @@ class HydraAgent:
 
             self.prev_regimes[pair] = current_regime
 
+    def _restored_quote_book(self, pair: str, engine) -> bool:
+        """True when resume cash must not be replaced by a free-quote split."""
+        try:
+            if float(engine.position.size) > 0:
+                return True
+        except (TypeError, ValueError, AttributeError):
+            pass
+        want = str(pair or "").upper()
+        journal = getattr(self, "order_journal", None) or []
+        for entry in journal:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("pair") or "").upper() != want:
+                continue
+            lifecycle = entry.get("lifecycle") or {}
+            if isinstance(lifecycle, dict) and lifecycle.get("state") == "PLACED":
+                return True
+        return False
+
     def _set_engine_balances(self, per_pair_usd: float):
         """Set engine balances and the per-engine `tradable` flag.
 
@@ -4134,6 +4153,15 @@ class HydraAgent:
         initial_balance = cash + position_value so that P&L starts at 0% from
         the point of the balance reset, rather than showing a bogus gain from
         the position being valued against a tiny converted initial balance.
+
+        A restored book with ``position.size > 0`` or a journal row still
+        ``PLACED`` keeps its cash. Free quote already excludes a resting
+        buy's hold, so writing ``free/N`` onto that book keeps the
+        optimistic coins and cash that cannot fund them. A later
+        ``restore_position(pre_trade_snapshot)`` would also put one
+        engine's pre-split cash back. Engines that are flat and have no
+        working order are still seeded, from the free pool minus cash
+        already sitting on a locked book.
         """
         prices = self._get_asset_prices()
 
@@ -4151,21 +4179,58 @@ class HydraAgent:
             if q in STABLE_QUOTES:
                 stable_quote_counts[q] = stable_quote_counts.get(q, 0) + 1
 
+        # Cash already on a restored book is inside the free pool (the
+        # resting buy's hold is not). Splitting the whole pool again would
+        # hand a flat sibling those same dollars.
+        locked_cash: Dict[str, float] = {}
+        seed_counts: Dict[str, int] = {}
+        for p in self.pairs:
+            q = p.split("/")[1]
+            if q not in STABLE_QUOTES:
+                continue
+            eng = self.engines[p]
+            if self._restored_quote_book(p, eng):
+                try:
+                    kept = float(eng.balance or 0.0)
+                except (TypeError, ValueError):
+                    kept = 0.0
+                if kept > 0.0:
+                    locked_cash[q] = locked_cash.get(q, 0.0) + kept
+            else:
+                seed_counts[q] = seed_counts.get(q, 0) + 1
+
         def _stable_slice(q: str) -> float:
+            n_seed = seed_counts.get(q, 0)
+            if n_seed <= 0:
+                return 0.0
+            n_all = stable_quote_counts.get(q, 1) or 1
             if self.paper:
-                return per_pair_usd
-            pool = self._get_real_quote_balance(q)
-            if pool is None:
-                return per_pair_usd  # no balance data yet — legacy behavior
-            n = stable_quote_counts.get(q, 1)
-            return pool / n if n else 0.0
+                pool: Optional[float] = per_pair_usd * n_all
+            else:
+                pool = self._get_real_quote_balance(q)
+                if pool is None:
+                    pool = per_pair_usd * n_all  # no balance data yet
+            remain = float(pool) - locked_cash.get(q, 0.0)
+            if remain < 0.0:
+                remain = 0.0
+            return remain / n_seed
 
         for pair in self.pairs:
             engine = self.engines[pair]
             quote = pair.split("/")[1]
             current_price = engine.prices[-1] if engine.prices else 0
             if quote in STABLE_QUOTES:
-                slice_quote = _stable_slice(quote)
+                if self._restored_quote_book(pair, engine):
+                    try:
+                        slice_quote = float(engine.balance or 0.0)
+                    except (TypeError, ValueError):
+                        slice_quote = 0.0
+                    print(
+                        f"  [HYDRA] {pair}: keeping restored {quote} cash "
+                        f"{slice_quote:.8f} (open position or working order)"
+                    )
+                else:
+                    slice_quote = _stable_slice(quote)
                 equity = slice_quote + engine.position.size * current_price
                 old_peak = float(engine.peak_equity or 0.0)
                 dummy_split = float(
@@ -4387,56 +4452,100 @@ class HydraAgent:
     def _get_real_quote_balance(self, quote: str) -> Optional[float]:
         """Return the SPENDABLE exchange balance for a quote currency.
 
-        Source order: real-time BalanceStream (already hold-netted) → the
-        hold-netted REST snapshot from startup → the gross REST snapshot.
-        Returns None only if no balance data is available at all (should not
-        happen after warmup).
+        Source order: real-time BalanceStream free view → the hold-netted
+        REST snapshot from startup → the gross REST snapshot. Returns None
+        only when no balance data is available at all (should not happen
+        after warmup).
 
         "Spendable" means net of funds locked behind our own resting
         post-only orders. Gross balance double-counts them, which is what
         drove the `PLACEMENT_FAILED: insufficient_<quote>_balance` loop: the
         sizer re-committed money an unfilled order already owned. Equity and
-        drawdown deliberately do NOT use this — they read `_cached_balance`,
-        because held funds are still ours.
+        drawdown deliberately do NOT use this — they read `_cached_balance`
+        / `latest_balances()`, because held funds are still ours.
 
-        Falling through to the gross snapshot is intentional: an unavailable
-        hold feed reproduces pre-v2.32 behavior rather than blocking trading.
+        A successful free read is authoritative at 0, including an explicit
+        0.0 and an empty map (every unit is on hold, or nothing is held).
+        Fall open to gross only when that read failed: error envelope,
+        exception, or no payload yet. An absent hold field is stored as
+        free == gross by the producers.
         """
-        def _asset_map(candidate) -> Optional[dict]:
-            if not candidate or not isinstance(candidate, dict):
-                return None
-            # CLI error envelopes are truthy dicts but not an asset map.
-            # Treating them as $0 cash starved every USD engine on tick 1.
-            keys = [k for k in candidate if k != "error"]
-            if "error" in candidate and not keys:
-                return None
+        _MISSING = object()
+        _META = {
+            "error", "message", "error_category", "error_message",
+            "retryable", "suggestion", "docs_url", "raw", "partial",
+            "result", "balances", "volume", "count",
+        }
+
+        def _as_free_map(candidate):
+            # None / non-dict / error envelope → unknown (fail open).
+            # {} is a successful read with nothing spendable.
+            if candidate is None or not isinstance(candidate, dict):
+                return _MISSING
+            if "error" in candidate:
+                for key, value in candidate.items():
+                    if key in _META or isinstance(value, bool):
+                        continue
+                    try:
+                        float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    return candidate
+                return _MISSING
             return candidate
 
-        bal = None
-        if not self.paper and self.balance_stream.healthy:
-            # FREE view: gross minus funds held in resting orders.
-            bal = _asset_map(self.balance_stream.latest_free_balances())
-            if not bal:
-                bal = _asset_map(self.balance_stream.latest_balances())
-        if not bal:
-            bal = _asset_map(getattr(self, "_cached_free_balance", None))
-        if not bal:
-            bal = _asset_map(getattr(self, "_cached_balance", None))
-        if not bal:
-            return None
-        # Sum all non-staked holdings that normalize to the quote currency.
-        total = 0.0
-        for asset, amount in bal.items():
-            if asset in ("error", "result", "balances", "volume", "count"):
-                continue
-            if KrakenCLI._is_staked(asset):
-                continue
-            if KrakenCLI._normalize_asset(asset) == quote:
-                try:
-                    total += float(amount)
-                except (TypeError, ValueError):
+        def _sum(bal: dict) -> float:
+            total, _matched = _sum_matched(bal)
+            return total
+
+        def _sum_matched(bal: dict):
+            total = 0.0
+            matched = False
+            for asset, amount in bal.items():
+                if asset in _META or not isinstance(asset, str):
                     continue
-        return total
+                if KrakenCLI._is_staked(asset):
+                    continue
+                if KrakenCLI._normalize_asset(asset) == quote:
+                    matched = True
+                    try:
+                        total += float(amount)
+                    except (TypeError, ValueError):
+                        continue
+            return total, matched
+
+        stream = getattr(self, "balance_stream", None)
+        if not self.paper and stream is not None and getattr(stream, "healthy", False):
+            free = _as_free_map(stream.latest_free_balances())
+            if free is not _MISSING:
+                total, matched = _sum_matched(free)
+                # A snapshot (or an empty map) is the whole account.
+                # An update before that must not zero assets it did not
+                # mention — those still fall open to gross.
+                complete = True
+                checker = getattr(stream, "free_view_is_complete", None)
+                if callable(checker):
+                    complete = bool(checker())
+                if matched or not free or complete:
+                    return total
+            gross = stream.latest_balances()
+            if isinstance(gross, dict) and gross:
+                mapped = _as_free_map(gross)
+                if mapped is not _MISSING:
+                    return _sum(mapped)
+
+        cached_free = getattr(self, "_cached_free_balance", None)
+        if cached_free is not None:
+            free = _as_free_map(cached_free)
+            if free is not _MISSING:
+                return _sum(free)
+
+        cached = getattr(self, "_cached_balance", None)
+        if isinstance(cached, dict) and cached:
+            mapped = _as_free_map(cached)
+            if mapped is not _MISSING:
+                return _sum(mapped)
+        return None
 
     def _extract_fee_tier(self, vol_response: dict) -> dict:
         """Normalize a `kraken volume` response into a compact fee-tier dict.

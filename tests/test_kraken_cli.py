@@ -549,9 +549,32 @@ class TestFreeBalance:
     def test_hold_exceeding_balance_floors_at_zero(self):
         assert KrakenCLI._extract_free({"balance": "1.0", "hold_trade": "5.0"}) == 0.0
 
-    def test_free_balance_returns_empty_on_cli_error(self):
+    def test_free_balance_returns_none_on_cli_error(self):
+        """None, not {}, so a fully locked account is not mistaken for an error."""
         result, _ = _with_stub({"error": "auth"}, KrakenCLI.free_balance)
+        assert result is None
+
+    def test_free_balance_keeps_zero_when_fully_held(self):
+        data = {"USD": {"balance": "100.0", "hold_trade": "100.0"}}
+        result, _ = _with_stub(data, KrakenCLI.free_balance)
+        assert result == {"USD": 0.0}
+
+    def test_free_balance_empty_payload_is_empty_dict(self):
+        result, _ = _with_stub({}, KrakenCLI.free_balance)
         assert result == {}
+
+    def test_free_balance_none_on_missing_payload(self):
+        result, _ = _with_stub(None, KrakenCLI.free_balance)
+        assert result is None
+
+    def test_free_balance_unrecognized_shape_is_none(self):
+        result, _ = _with_stub({"USD": {"credit": "5"}}, KrakenCLI.free_balance)
+        assert result is None
+
+    def test_free_balance_unwraps_result_envelope(self):
+        data = {"result": {"USD": {"balance": "10", "hold_trade": "10"}}}
+        result, _ = _with_stub(data, KrakenCLI.free_balance)
+        assert result == {"USD": 0.0}
 
 
 # ═══════════════════════════════════════════════════════════════
