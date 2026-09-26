@@ -313,3 +313,53 @@ class TestCircuitBreakerResetIsEffective:
             "an engine still underwater must re-arm on the next tick"
         )
         assert "CIRCUIT BREAKER" in eng.halt_reason
+
+
+class TestSameTickCircuitBreakerFlatten:
+    """The arming tick itself must emit the flatten, not the entry.
+
+    tick() used to choose (and, unless generate_only, fill) the signal and
+    only then set halted. The HALT FLATTEN SELL was the next tick's job —
+    one minute live, one bar in backtest — and a generate_only caller
+    placed the pre-halt signal. Flat books are not sold.
+    """
+
+    def _arm_at_exact_15pct(self, eng: HydraEngine) -> None:
+        price = eng.prices[-1]
+        equity = eng.balance + eng.position.size * price
+        eng.peak_equity = equity / 0.85
+        eng.max_drawdown = 0.0
+        eng.halted = False
+        eng.halt_reason = ""
+
+    def test_open_position_returns_halt_flatten_without_executing(self):
+        eng = _seeded()
+        eng.position.size = 0.5
+        eng.position.avg_entry = 100.0
+        self._arm_at_exact_15pct(eng)
+
+        state = eng.tick(generate_only=True)
+
+        assert eng.halted is True
+        assert state["halted"] is True
+        sig = state["signal"]
+        assert sig["action"] == "SELL"
+        assert sig["confidence"] == 1.0
+        assert sig["reason"].startswith("HALT FLATTEN")
+        # generate_only must not fill inside tick; the caller places it.
+        assert eng.position.size == 0.5
+        assert eng.trades == []
+
+    def test_flat_account_does_not_emit_a_sell(self):
+        eng = _seeded()
+        assert eng.position.size == 0.0
+        self._arm_at_exact_15pct(eng)
+
+        state = eng.tick(generate_only=True)
+
+        assert eng.halted is True
+        assert state["halted"] is True
+        assert state["signal"]["action"] != "SELL"
+        assert not str(state["signal"]["reason"]).startswith("HALT FLATTEN")
+        assert eng.position.size == 0.0
+        assert eng.trades == []
