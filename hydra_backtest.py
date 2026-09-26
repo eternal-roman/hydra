@@ -579,6 +579,118 @@ def _body_penetrates(candle: Candle, side: str, limit: float, threshold: float) 
     return depth >= threshold
 
 
+def _notional_buy_fee(raw_profit: float, sell_notional: float, maker_fee_bps: float) -> float:
+    """`maker_fee_bps` on the buy notional, once. Used when FIFO fee matching is ambiguous."""
+    try:
+        buy_notional = float(sell_notional) - float(raw_profit)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(buy_notional) or buy_notional < 0:
+        buy_notional = 0.0
+    try:
+        bps = float(maker_fee_bps)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(bps) or bps < 0:
+        return 0.0
+    return buy_notional * (bps / 10_000.0)
+
+
+def _buy_fee_for_close(
+    trade_log: List[Dict[str, Any]],
+    pair: str,
+    sell_amount: float,
+    raw_profit: float,
+    sell_notional: float,
+    maker_fee_bps: float,
+) -> float:
+    """Maker fee that opened the inventory this close liquidates.
+
+    FIFO-match `fee_paid` on still-open BUY fills for `pair`. If the match
+    is ambiguous (missing fee, or open size doesn't cover the sell), charge
+    `maker_fee_bps` on the buy notional once. Does not touch cash — the
+    balance debit already happened when the buy filled.
+    """
+    lots: List[Dict[str, Any]] = []
+    for entry in trade_log:
+        if entry.get("pair") != pair:
+            continue
+        side = str(entry.get("side", "")).upper()
+        try:
+            amount = float(entry.get("amount") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(amount) or amount <= 0:
+            continue
+        if side == "BUY":
+            fee: Optional[float] = None
+            raw_fee = entry.get("fee_paid", None)
+            if raw_fee is not None:
+                try:
+                    parsed = float(raw_fee)
+                except (TypeError, ValueError):
+                    parsed = None
+                if parsed is not None and math.isfinite(parsed) and parsed >= 0:
+                    fee = parsed
+            lots.append({"remaining": amount, "amount": amount, "fee": fee})
+        elif side == "SELL":
+            left = amount
+            for lot in lots:
+                if left <= 1e-12:
+                    break
+                take = min(float(lot["remaining"]), left)
+                lot["remaining"] = float(lot["remaining"]) - take
+                left -= take
+    try:
+        need = float(sell_amount)
+    except (TypeError, ValueError):
+        return _notional_buy_fee(raw_profit, sell_notional, maker_fee_bps)
+    if not math.isfinite(need) or need <= 0:
+        return _notional_buy_fee(raw_profit, sell_notional, maker_fee_bps)
+    matched = 0.0
+    for lot in lots:
+        if need <= 1e-12:
+            break
+        if float(lot["remaining"]) <= 1e-12:
+            continue
+        if lot["fee"] is None or float(lot["amount"]) <= 0:
+            return _notional_buy_fee(raw_profit, sell_notional, maker_fee_bps)
+        take = min(float(lot["remaining"]), need)
+        matched += float(lot["fee"]) * (take / float(lot["amount"]))
+        need -= take
+    tol = max(1e-8, abs(float(sell_amount)) * 1e-9)
+    if need > tol:
+        return _notional_buy_fee(raw_profit, sell_notional, maker_fee_bps)
+    return matched
+
+
+def _round_trip_closed(engine: Any, snapshot: Dict[str, Any]) -> bool:
+    """True when this fill booked a new win or loss (full close, not a partial)."""
+    before = int(snapshot.get("win_count", 0)) + int(snapshot.get("loss_count", 0))
+    after = int(engine.win_count) + int(engine.loss_count)
+    return after == before + 1
+
+
+def _book_net_round_trip(engine: Any, raw_profit: float, net_profit: float) -> None:
+    """Reclassify a close that was booked on price P&L before fees.
+
+    Cash is unchanged: the buy fee and the sell fee were already deducted
+    from `engine.balance` when each side filled.
+    """
+    if raw_profit > 0:
+        engine.win_count -= 1
+        engine.gross_profit -= raw_profit
+    else:
+        engine.loss_count -= 1
+        engine.gross_loss -= abs(raw_profit)
+    if net_profit > 0:
+        engine.win_count += 1
+        engine.gross_profit += net_profit
+    else:
+        engine.loss_count += 1
+        engine.gross_loss += abs(net_profit)
+
+
 # ═══════════════════════════════════════════════════════════════
 # BacktestRunner — the replay loop
 # ═══════════════════════════════════════════════════════════════
@@ -709,6 +821,19 @@ class BacktestRunner:
         on_tick: Optional[Callable[[Dict[str, Any]], None]],
         cancel_token: Optional[threading.Event],
     ) -> None:
+        # Settle before returning so _finalize_metrics (called after _loop)
+        # does not score an order the filler never saw.
+        try:
+            self._replay_loop(result, on_tick, cancel_token)
+        finally:
+            self._reject_unfilled_at_end(result)
+
+    def _replay_loop(
+        self,
+        result: BacktestResult,
+        on_tick: Optional[Callable[[Dict[str, Any]], None]],
+        cancel_token: Optional[threading.Event],
+    ) -> None:
         cfg = self.config
         sources = self._sources_override if self._sources_override is not None else (
             {p: make_candle_source(cfg) for p in cfg.pairs}
@@ -802,10 +927,32 @@ class BacktestRunner:
                     # which silently disabled both).
                     realized_profit = None
                     if applied and side == "SELL" and engine.trades:
-                        realized_profit = engine.trades[-1].profit
-                        if realized_profit is not None:
-                            # Net of the maker fee the engine books don't carry.
-                            realized_profit = float(realized_profit) - float(fill.fee_paid)
+                        raw_profit = engine.trades[-1].profit
+                        if raw_profit is not None:
+                            raw_f = float(raw_profit)
+                            sell_fee = float(fill.fee_paid)
+                            # Price P&L ignores both maker fees. Equity already
+                            # paid them out of balance — net them into the
+                            # close before win/loss and before the Monte Carlo
+                            # profit, without debiting balance again.
+                            if (math.isfinite(raw_f)
+                                    and _round_trip_closed(engine, order.pre_trade_snapshot)):
+                                buy_fee = _buy_fee_for_close(
+                                    result.trade_log,
+                                    pair,
+                                    float(order.size),
+                                    raw_f,
+                                    float(fill.fill_price) * float(order.size),
+                                    self.filler.maker_fee_bps,
+                                )
+                                net = raw_f - sell_fee - buy_fee
+                                _book_net_round_trip(engine, raw_f, net)
+                                engine.trades[-1].profit = net
+                                realized_profit = net
+                            elif math.isfinite(raw_f):
+                                realized_profit = raw_f - sell_fee
+                            else:
+                                realized_profit = raw_f
                     result.trade_log.append({
                         "tick": tick,
                         "pair": pair,
@@ -920,6 +1067,7 @@ class BacktestRunner:
                     "tick": tick,
                     "action": sig.get("action", "HOLD"),
                     "confidence": sig.get("confidence", 0.0),
+                    "timestamp": float(frontier),
                 })
 
             result.candles_processed = tick + 1
@@ -936,6 +1084,27 @@ class BacktestRunner:
                 time.sleep(pair_sleep_seconds)
 
             tick += 1
+
+    def _reject_unfilled_at_end(self, result: BacktestResult) -> None:
+        """Drop orders the filler never saw (no next bar) and fix the last mark.
+
+        execute_signal has already moved the books, and the equity curve's
+        last point includes that optimistic fill. Restore the pre-trade
+        snapshot, count a reject, and rewrite the last point to cash +
+        size * last price.
+        """
+        for pair, order in list(self._pending.items()):
+            if order is None:
+                continue
+            engine = self.engines[pair]
+            engine.restore_position(order.pre_trade_snapshot)
+            result.rejects += 1
+            self._pending[pair] = None
+            curve = result.equity_curve.get(pair)
+            if not curve or result.candles_processed <= order.placed_tick:
+                continue
+            price = engine.prices[-1] if engine.prices else 0.0
+            curve[-1] = engine.balance + engine.position.size * price
 
     def _build_progress_state(
         self,
@@ -1132,6 +1301,96 @@ def _max_dd_pct(equity: List[float]) -> float:
             if dd > max_dd:
                 max_dd = dd
     return max_dd
+
+
+def _frontier_timestamps(result: BacktestResult) -> List[float]:
+    """Per-frontier timestamps aligned with each pair's equity curve."""
+    logs = result.signal_log or {}
+    pairs = list(result.config.pairs) + [p for p in logs if p not in result.config.pairs]
+    for pair in pairs:
+        entries = logs.get(pair) or []
+        if not entries:
+            continue
+        ts: List[float] = []
+        for entry in entries:
+            raw = entry.get("timestamp") if isinstance(entry, dict) else None
+            if raw is None:
+                ts = []
+                break
+            try:
+                ts.append(float(raw))
+            except (TypeError, ValueError):
+                ts = []
+                break
+        if ts:
+            return ts
+    return []
+
+
+def _closes_between(trade_log: List[Dict[str, Any]], start_ts: float, end_ts: float) -> int:
+    """Filled closes whose fill timestamp is in [start_ts, end_ts)."""
+    n = 0
+    for entry in trade_log or []:
+        if str(entry.get("side", "")).upper() != "SELL":
+            continue
+        if entry.get("profit") is None:
+            continue
+        raw = entry.get("timestamp")
+        if raw is None:
+            continue
+        try:
+            ts = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if start_ts <= ts < end_ts:
+            n += 1
+    return n
+
+
+def metrics_between(
+    result: BacktestResult,
+    start_ts: float,
+    end_ts: float,
+) -> Dict[str, Any]:
+    """Sharpe, return, max drawdown, and close count on `[start_ts, end_ts)`.
+
+    The last mark strictly before `start_ts` is the starting equity, so a
+    warmup pad is not inside the return. The bar at `end_ts` is excluded.
+    """
+    start_ts = float(start_ts)
+    end_ts = float(end_ts)
+    out: Dict[str, Any] = {
+        "sharpe": 0.0,
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "n_trades": _closes_between(result.trade_log, start_ts, end_ts),
+    }
+    ts = _frontier_timestamps(result)
+    curves = result.equity_curve or {}
+    if not ts or not curves:
+        return out
+    n = min([len(ts), *[len(c) for c in curves.values()]])
+    if n <= 0:
+        return out
+    agg = [sum(curves[p][i] for p in curves) for i in range(n)]
+    anchor: Optional[float] = None
+    window: List[float] = []
+    for i in range(n):
+        t = ts[i]
+        if t < start_ts:
+            anchor = agg[i]
+        elif t < end_ts:
+            window.append(agg[i])
+    if not window:
+        return out
+    if anchor is None:
+        anchor = float(result.config.initial_balance_per_pair) * len(result.config.pairs)
+    series = [anchor] + window
+    ending = window[-1]
+    out["total_return_pct"] = (ending - anchor) / max(anchor, 1e-9) * 100.0
+    out["sharpe"] = _sharpe_from_equity(series, result.config.candle_interval)
+    out["max_drawdown_pct"] = _max_dd_pct(series)
+    return out
 
 
 def _avg_holding_ticks(trade_log: List[Dict[str, Any]], pair: str) -> float:

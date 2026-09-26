@@ -48,6 +48,7 @@ from hydra_backtest import (
     BacktestConfig,
     BacktestResult,
     BacktestRunner,
+    metrics_between,
     _iso_utc_now,
 )
 from hydra_experiments import (
@@ -443,6 +444,52 @@ class BacktestWorkerPool:
             import logging; logging.warning(f"Ignored exception: {e}")
 
 
+# Hourly bars. 60 of them cover the engine's 50-candle warmup before OOS.
+LAB_WARMUP_PAD_CANDLES = 60
+
+
+def run_lab_oos_fold(
+    *,
+    db_path: str,
+    job_id: str,
+    side: str,
+    pair: str,
+    overrides: Dict[str, Any],
+    fold: Any,
+) -> "FoldMetrics":
+    """Replay the warmup pad plus OOS, but score only `[oos_start, oos_end)`.
+
+    The pad stays in the tape so indicators are warm. Sharpe, return,
+    drawdown, and trade count returned for the fold do not include it,
+    and they stop before the bar timestamped `oos_end`.
+    """
+    from hydra_walk_forward import FoldMetrics
+
+    warmup_padded_start = max(
+        fold.is_start,
+        fold.oos_start - LAB_WARMUP_PAD_CANDLES * 3600,
+    )
+    cfg = BacktestConfig(
+        name=f"lab-{job_id}-{side}-{fold.idx}",
+        pairs=(pair,),
+        data_source="sqlite",
+        data_source_params_json=json.dumps({
+            "db_path": db_path, "grain_sec": 3600,
+            "start_ts": warmup_padded_start, "end_ts": fold.oos_end,
+        }),
+        param_overrides_json=json.dumps({pair: overrides}),
+    )
+    result = BacktestRunner(cfg).run()
+    scored = metrics_between(result, fold.oos_start, fold.oos_end)
+    return FoldMetrics(
+        sharpe=scored["sharpe"],
+        total_return_pct=scored["total_return_pct"],
+        max_dd_pct=scored["max_drawdown_pct"],
+        fee_adj_return_pct=scored["total_return_pct"],
+        n_trades=int(scored["n_trades"]),
+    )
+
+
 # ═══════════════════════════════════════════════════════════════
 # WS route mounting (inbound message handlers)
 # ═══════════════════════════════════════════════════════════════
@@ -686,34 +733,16 @@ def mount_backtest_routes(
                 print(f"  [LAB] broadcast error: {type(e).__name__}: {e}")
 
         def _runner_factory(side: str, overrides: Dict[str, float]):
-            # OOS isolation (option 3): warmup-pad before oos_start so the
-            # engine's warmup_candles=50 lookback is covered before scoring.
-            _WARMUP_PAD_CANDLES = 60
             def _run(pair_arg, params, fold) -> "FoldMetrics":
-                from hydra_backtest import BacktestConfig, BacktestRunner
-                warmup_padded_start = max(
-                    fold.is_start,
-                    fold.oos_start - _WARMUP_PAD_CANDLES * 3600,
-                )
-                cfg = BacktestConfig(
-                    name=f"lab-{job_id}-{side}-{fold.idx}",
-                    pairs=(pair_arg,),
-                    data_source="sqlite",
-                    data_source_params_json=json.dumps({
-                        "db_path": db_path, "grain_sec": 3600,
-                        "start_ts": warmup_padded_start, "end_ts": fold.oos_end,
-                    }),
-                    param_overrides_json=json.dumps({pair_arg: overrides}),
-                )
-                result = BacktestRunner(cfg).run()
-                m = result.metrics
-                return FoldMetrics(
-                    sharpe=m.sharpe,
-                    total_return_pct=m.total_return_pct,
-                    max_dd_pct=m.max_drawdown_pct,
-                    fee_adj_return_pct=getattr(m, "fee_adj_return_pct",
-                                              m.total_return_pct),
-                    n_trades=m.total_trades,
+                # `params` may carry _lab_side for routing. The engine sees
+                # the untagged overrides closed over here.
+                return run_lab_oos_fold(
+                    db_path=db_path,
+                    job_id=job_id,
+                    side=side,
+                    pair=pair_arg,
+                    overrides=overrides,
+                    fold=fold,
                 )
             return _run
 
