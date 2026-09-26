@@ -411,7 +411,7 @@ class HydraAgent:
                   "and will not fire)")
 
         # ─── Companion subsystem (v2.10.3+) ────────────────────────────
-        # Strictly additive. Off unless HYDRA_COMPANION_ENABLED=1.
+        # Strictly additive. On by default (hydra_companions.config.is_enabled).
         # Kill switch: HYDRA_COMPANION_DISABLED=1 wins over all.
         # Any init failure leaves the live agent completely unaffected.
         self.companion_coordinator = None
