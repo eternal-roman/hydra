@@ -180,6 +180,35 @@ def test_conviction_sizing_floors_kelly(monkeypatch):
     assert trade.value >= 0.9 * 10000.0 * 0.40
 
 
+def test_conviction_lifts_sub_lot_kelly(monkeypatch):
+    """Kelly under ordermin must not hide a conviction size that clears it.
+
+    Half-Kelly at the 0.65 floor on a $180 book is a $9 crumb. At
+    $200,000/BTC that is below the 0.00005 BTC lot, so calculate()
+    returns 0. The 40% conviction size is about $72 and is a legal lot.
+    A zero size multiplier is still a veto.
+    """
+    monkeypatch.delenv("HYDRA_TREND_CONVICTION_SIZING", raising=False)
+    monkeypatch.setenv("HYDRA_FRICTION_GATE_DISABLED", "1")
+    eng = HydraEngine(initial_balance=180.0, asset="BTC/USD",
+                      sizing=dict(SIZING_COMPETITION), hold_through=False)
+    eng.seed_daily_closes(_daily([100.0 + 0.05 * i for i in range(320)]))
+    assert eng.daily_trend_long() is True
+    eng.prices.append(200_000.0)
+    trade = eng.execute_signal("BUY", 0.65, "entry", "MOMENTUM")
+    assert trade is not None
+    assert trade.amount >= 0.00005
+    assert trade.value >= 50.0
+
+    vetoed = HydraEngine(initial_balance=180.0, asset="BTC/USD",
+                         sizing=dict(SIZING_COMPETITION), hold_through=False)
+    vetoed.seed_daily_closes(_daily([100.0 + 0.05 * i for i in range(320)]))
+    vetoed.prices.append(200_000.0)
+    assert vetoed.execute_signal(
+        "BUY", 0.65, "entry", "MOMENTUM", size_multiplier=0.0,
+    ) is None
+
+
 def test_conviction_kill_switch(monkeypatch):
     monkeypatch.setenv("HYDRA_TREND_CONVICTION_SIZING", "0")
     monkeypatch.setenv("HYDRA_FRICTION_GATE_DISABLED", "1")

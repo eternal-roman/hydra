@@ -9,23 +9,31 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
 
 # Make repo root importable when running this file directly
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from hydra_engine import Candle  # noqa: E402
+from hydra_engine import Candle, HydraEngine, Trade  # noqa: E402
 from hydra_backtest import (  # noqa: E402
     BacktestConfig,
+    BacktestResult,
     BacktestRunner,
     SimulatedFiller,
     PendingOrder,
     SyntheticSource,
     make_quick_config,
     finalize_stamps,
+    metrics_between,
     _annualize_return,
+    _buy_fee_for_close,
     _sharpe_from_equity,
     _sortino_from_equity,
     _max_dd_pct,
@@ -399,6 +407,355 @@ class TestTradeLogProfit(unittest.TestCase):
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+
+
+def _wide_bar(ts: float, close: float) -> Candle:
+    return Candle(
+        open=close, high=close + 5.0, low=max(0.01, close - 5.0),
+        close=close, volume=10.0, timestamp=float(ts),
+    )
+
+
+class _ListSource:
+    def __init__(self, candles):
+        self._candles = list(candles)
+
+    def iter_candles(self, pair):
+        yield from self._candles
+
+    def describe(self):
+        return {"kind": "list"}
+
+
+def _scripted_books(plan, sell_price=None):
+    """Replace tick/execute with a fixed BUY/SELL script. Returns a restore fn."""
+    orig_tick = HydraEngine.tick
+    orig_exec = HydraEngine.execute_signal
+
+    def tick(self, generate_only=False):
+        action = plan.get(len(self.prices), "HOLD")
+        return {
+            "regime": "RANGING",
+            "strategy": "MOMENTUM",
+            "signal": {"action": action, "confidence": 1.0, "reason": "test"},
+        }
+
+    def execute_signal(
+        self, action, confidence, reason="", strategy="MOMENTUM", size_multiplier=1.0,
+    ):
+        mark = float(self.prices[-1])
+        if action == "BUY":
+            price = mark
+            amount = 1.0
+            cost = amount * price
+            self.balance -= cost
+            self.position.size = amount
+            self.position.avg_entry = price
+            return Trade(
+                action="BUY", asset=self.asset, price=price, amount=amount,
+                value=cost, reason=reason or "test", confidence=float(confidence),
+                strategy=strategy or "MOMENTUM",
+            )
+        if action == "SELL" and self.position.size > 0:
+            price = mark if sell_price is None else float(sell_price)
+            amount = self.position.size
+            entry = self.position.avg_entry
+            revenue = amount * price
+            profit = (price - entry) * amount
+            self.balance += revenue
+            self.position.size = 0.0
+            self.position.avg_entry = 0.0
+            self.total_trades += 1
+            if profit > 0:
+                self.win_count += 1
+                self.gross_profit += profit
+            else:
+                self.loss_count += 1
+                self.gross_loss += abs(profit)
+            return Trade(
+                action="SELL", asset=self.asset, price=price, amount=amount,
+                value=revenue, reason=reason or "test", confidence=float(confidence),
+                strategy=strategy or "MOMENTUM", profit=profit,
+            )
+        return None
+
+    HydraEngine.tick = tick
+    HydraEngine.execute_signal = execute_signal
+
+    def restore():
+        HydraEngine.tick = orig_tick
+        HydraEngine.execute_signal = orig_exec
+
+    return restore
+
+
+class TestFinalBarBooks(unittest.TestCase):
+    """An order posted on the last frontier never reaches SimulatedFiller."""
+
+    def test_run_restores_open_position_and_rewrites_equity(self):
+        candles = [
+            _wide_bar(1_000_000 + i * 3600, px)
+            for i, px in enumerate((100.0, 100.0, 100.0, 130.0))
+        ]
+        cfg = replace(
+            make_quick_config(name="last-bar-books", n_candles=4, seed=1),
+            coordinator_enabled=False,
+            fill_model="optimistic",
+            maker_fee_bps=16.0,
+            initial_balance_per_pair=10_000.0,
+        )
+        runner = BacktestRunner(
+            cfg, sources_override={"BTC/USD": _ListSource(candles)},
+        )
+        restore = _scripted_books({2: "BUY", 4: "SELL"}, sell_price=50.0)
+        try:
+            result = runner.run()
+        finally:
+            restore()
+
+        engine = runner.engines["BTC/USD"]
+        buy = next(t for t in result.trade_log if t["side"] == "BUY")
+        post_buy_cash = 10_000.0 - float(buy["value"]) - float(buy["fee_paid"])
+        self.assertEqual(result.fills, 1)
+        self.assertEqual(result.rejects, 1)
+        self.assertEqual(result.metrics.total_trades, 0)
+        self.assertEqual(engine.total_trades, 0)
+        self.assertEqual(engine.win_count, 0)
+        self.assertEqual(engine.loss_count, 0)
+        self.assertAlmostEqual(engine.position.size, float(buy["amount"]))
+        self.assertAlmostEqual(engine.balance, post_buy_cash, places=6)
+        restored_mark = post_buy_cash + float(buy["amount"]) * 130.0
+        optimistic = post_buy_cash + float(buy["amount"]) * 50.0
+        self.assertAlmostEqual(result.equity_curve["BTC/USD"][-1], restored_mark, places=6)
+        self.assertNotAlmostEqual(
+            result.equity_curve["BTC/USD"][-1], optimistic, places=4,
+        )
+        self.assertIsNone(runner._pending["BTC/USD"])
+
+    def test_reject_unfilled_rewrites_poisoned_last_mark(self):
+        cfg = make_quick_config(name="settle", n_candles=3, seed=1)
+        runner = BacktestRunner(cfg)
+        pair = "BTC/USD"
+        engine = runner.engines[pair]
+        engine.prices.append(10.0)
+        engine.balance = 50.0
+        engine.position.size = 2.0
+        snap = engine.snapshot_position()
+        engine.balance = 70.0
+        engine.position.size = 0.0
+        engine.total_trades = 1
+        engine.win_count = 1
+        engine.gross_profit = 20.0
+        runner._pending[pair] = PendingOrder(
+            pair=pair, side="SELL", limit_price=10.0, size=2.0,
+            placed_tick=0, pre_trade_snapshot=snap,
+        )
+        result = BacktestResult(config=runner.config)
+        result.equity_curve[pair] = [123.0]
+        result.candles_processed = 1
+        runner._reject_unfilled_at_end(result)
+        self.assertEqual(result.rejects, 1)
+        self.assertIsNone(runner._pending[pair])
+        self.assertAlmostEqual(engine.balance, 50.0)
+        self.assertAlmostEqual(engine.position.size, 2.0)
+        self.assertEqual(engine.total_trades, 0)
+        self.assertEqual(engine.win_count, 0)
+        self.assertAlmostEqual(engine.gross_profit, 0.0)
+        self.assertAlmostEqual(result.equity_curve[pair][-1], 70.0)
+
+
+class TestRoundTripFees(unittest.TestCase):
+    def test_buy_fee_matcher_prefers_recorded_fee(self):
+        fee = _buy_fee_for_close(
+            [{"pair": "BTC/USD", "side": "BUY", "amount": 1.0, "fee_paid": 5.0}],
+            "BTC/USD", 1.0, raw_profit=1.0, sell_notional=101.0, maker_fee_bps=16.0,
+        )
+        self.assertAlmostEqual(fee, 5.0)
+
+    def test_ambiguous_buy_fee_uses_notional_once(self):
+        # No buy, a buy with no fee, a short lot, and another pair's buy
+        # are all ambiguous. Notional is sell_notional - raw_profit = 100.
+        expected = 100.0 * 16.0 / 10_000.0
+        cases = [
+            [],
+            [{"pair": "BTC/USD", "side": "BUY", "amount": 1.0}],
+            [{"pair": "BTC/USD", "side": "BUY", "amount": 0.5, "fee_paid": 5.0}],
+            [{"pair": "ETH/USD", "side": "BUY", "amount": 1.0, "fee_paid": 5.0}],
+        ]
+        for log in cases:
+            fee = _buy_fee_for_close(
+                log, "BTC/USD", 1.0, raw_profit=1.0, sell_notional=101.0,
+                maker_fee_bps=16.0,
+            )
+            self.assertAlmostEqual(fee, expected, msg=repr(log))
+
+    def test_fifo_sums_open_buys_and_skips_closed_lots(self):
+        summed = _buy_fee_for_close(
+            [
+                {"pair": "BTC/USD", "side": "BUY", "amount": 1.0, "fee_paid": 0.1},
+                {"pair": "BTC/USD", "side": "BUY", "amount": 1.0, "fee_paid": 0.25},
+            ],
+            "BTC/USD", 2.0, raw_profit=0.0, sell_notional=200.0, maker_fee_bps=16.0,
+        )
+        self.assertAlmostEqual(summed, 0.35)
+        after_close = _buy_fee_for_close(
+            [
+                {"pair": "BTC/USD", "side": "BUY", "amount": 1.0, "fee_paid": 0.1},
+                {"pair": "BTC/USD", "side": "SELL", "amount": 1.0, "fee_paid": 0.1, "profit": 0.0},
+                {"pair": "BTC/USD", "side": "BUY", "amount": 1.0, "fee_paid": 0.4},
+            ],
+            "BTC/USD", 1.0, raw_profit=0.0, sell_notional=100.0, maker_fee_bps=16.0,
+        )
+        self.assertAlmostEqual(after_close, 0.4)
+
+    def test_close_nets_both_fees_before_win_loss_without_second_debit(self):
+        # Price P&L is +0.20. The sell fee alone leaves a win; buy + sell
+        # fees flip it to a loss. Balance already paid both fees once.
+        candles = [
+            _wide_bar(2_000_000 + i * 3600, px)
+            for i, px in enumerate((100.0, 100.0, 100.0, 100.2, 100.2, 100.2))
+        ]
+        cfg = replace(
+            make_quick_config(name="both-fees", n_candles=6, seed=1),
+            coordinator_enabled=False,
+            fill_model="optimistic",
+            maker_fee_bps=16.0,
+            initial_balance_per_pair=10_000.0,
+        )
+        runner = BacktestRunner(
+            cfg, sources_override={"BTC/USD": _ListSource(candles)},
+        )
+        restore = _scripted_books({2: "BUY", 4: "SELL"})
+        try:
+            result = runner.run()
+        finally:
+            restore()
+
+        buys = [t for t in result.trade_log if t["side"] == "BUY"]
+        sells = [t for t in result.trade_log if t["side"] == "SELL"]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(len(sells), 1)
+        self.assertEqual(result.fills, 2)
+        self.assertEqual(result.rejects, 0)
+        raw = (sells[0]["price"] - buys[0]["price"]) * sells[0]["amount"]
+        sell_only = raw - sells[0]["fee_paid"]
+        net = sell_only - buys[0]["fee_paid"]
+        self.assertGreater(sell_only, 0.0)
+        self.assertLess(net, 0.0)
+        self.assertAlmostEqual(sells[0]["profit"], net, places=9)
+        engine = runner.engines["BTC/USD"]
+        self.assertAlmostEqual(engine.trades[-1].profit, net, places=9)
+        self.assertEqual(result.metrics.win_count, 0)
+        self.assertEqual(result.metrics.loss_count, 1)
+        self.assertEqual(result.per_pair_metrics["BTC/USD"].win_count, 0)
+        self.assertAlmostEqual(result.metrics.win_rate_pct, 0.0)
+        self.assertAlmostEqual(result.metrics.profit_factor, 0.0)
+        self.assertAlmostEqual(engine.gross_profit, 0.0, places=6)
+        self.assertAlmostEqual(engine.gross_loss, abs(net), places=6)
+        self.assertAlmostEqual(result.metrics.avg_loss, abs(net), places=6)
+        self.assertAlmostEqual(engine.position.size, 0.0)
+        # Cash moved by the net round trip exactly once — not by another buy fee.
+        self.assertAlmostEqual(engine.balance, 10_000.0 + net, places=6)
+        self.assertAlmostEqual(result.equity_curve["BTC/USD"][-1], engine.balance, places=6)
+
+
+class TestOosWindowMetrics(unittest.TestCase):
+    def test_metrics_between_drops_pad_and_end_bound(self):
+        cfg = replace(
+            make_quick_config(name="window", n_candles=4, seed=1),
+            initial_balance_per_pair=100.0,
+            candle_interval=60,
+        )
+        result = BacktestResult(config=cfg)
+        start = 1_000_000
+        # Pad crashes 100 → 40. OOS rises 50 → 80. The bar at end_ts is flat.
+        ts = [start - 7200, start - 3600, start, start + 3600, start + 7200]
+        eq = [100.0, 40.0, 50.0, 80.0, 80.0]
+        result.equity_curve["BTC/USD"] = eq
+        result.signal_log["BTC/USD"] = [
+            {"tick": i, "action": "HOLD", "confidence": 0.0, "timestamp": t}
+            for i, t in enumerate(ts)
+        ]
+        end = start + 7200
+        result.trade_log = [
+            {"side": "SELL", "timestamp": start - 3600, "profit": -60.0, "pair": "BTC/USD"},
+            {"side": "BUY", "timestamp": start, "profit": None, "pair": "BTC/USD"},
+            {"side": "SELL", "timestamp": start + 3600, "profit": 30.0, "pair": "BTC/USD"},
+            {"side": "SELL", "timestamp": end, "profit": 1.0, "pair": "BTC/USD"},
+        ]
+        scored = metrics_between(result, start, end)
+        self.assertAlmostEqual(scored["total_return_pct"], (80.0 - 40.0) / 40.0 * 100.0)
+        self.assertAlmostEqual(
+            scored["sharpe"], _sharpe_from_equity([40.0, 50.0, 80.0], 60),
+        )
+        self.assertAlmostEqual(scored["max_drawdown_pct"], 0.0)
+        self.assertEqual(scored["n_trades"], 1)
+        # The pad's 60% hole must not leak into the fold drawdown.
+        self.assertAlmostEqual(_max_dd_pct(eq), 60.0)
+
+    def test_signal_log_carries_frontier_timestamp(self):
+        cfg = make_quick_config(name="ts", n_candles=5, seed=1)
+        result = BacktestRunner(cfg).run()
+        log = result.signal_log["BTC/USD"]
+        self.assertEqual(len(log), len(result.equity_curve["BTC/USD"]))
+        stamps = [e["timestamp"] for e in log]
+        self.assertEqual(stamps, sorted(stamps))
+        self.assertEqual(len(set(stamps)), len(stamps))
+
+    def test_lab_fold_scores_oos_only_and_still_replays_the_pad(self):
+        from hydra_backtest_server import run_lab_oos_fold
+        from hydra_walk_forward import Fold
+
+        fold = Fold(
+            idx=3, is_start=0, is_end=1_000_000,
+            oos_start=1_000_000, oos_end=1_200_000,
+        )
+        captured = {}
+
+        def fake_run(self, on_tick=None, cancel_token=None):
+            captured["params"] = dict(self.config.data_source_params)
+            result = BacktestResult(config=self.config)
+            pair = self.config.pairs[0]
+            start = fold.oos_start
+            ts = [start - 7200, start - 3600, start, start + 3600]
+            eq = [100.0, 40.0, 50.0, 80.0]
+            result.equity_curve[pair] = eq
+            result.signal_log[pair] = [
+                {"tick": i, "action": "HOLD", "confidence": 0.0, "timestamp": t}
+                for i, t in enumerate(ts)
+            ]
+            result.trade_log = [
+                {"side": "SELL", "timestamp": start - 3600, "profit": -60.0, "pair": pair},
+                {"side": "SELL", "timestamp": start + 3600, "profit": 40.0, "pair": pair},
+                {"side": "SELL", "timestamp": fold.oos_end, "profit": 1.0, "pair": pair},
+            ]
+            result.status = "complete"
+            return result
+
+        tmp = Path(tempfile.mkdtemp(prefix="hydra-oos-"))
+        try:
+            with patch.object(BacktestRunner, "run", fake_run):
+                metrics = run_lab_oos_fold(
+                    db_path=str(tmp / "h.sqlite"),
+                    job_id="job",
+                    side="baseline",
+                    pair="BTC/USD",
+                    overrides={},
+                    fold=fold,
+                )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+        self.assertEqual(captured["params"]["start_ts"], fold.oos_start - 60 * 3600)
+        self.assertEqual(captured["params"]["end_ts"], fold.oos_end)
+        self.assertEqual(captured["params"]["grain_sec"], 3600)
+        self.assertAlmostEqual(metrics.total_return_pct, 100.0)
+        self.assertAlmostEqual(metrics.fee_adj_return_pct, metrics.total_return_pct)
+        self.assertAlmostEqual(metrics.max_dd_pct, 0.0)
+        self.assertEqual(metrics.n_trades, 1)
+        self.assertAlmostEqual(
+            metrics.sharpe, _sharpe_from_equity([40.0, 50.0, 80.0], 60),
+        )
 
 
 class TestParamHash(unittest.TestCase):

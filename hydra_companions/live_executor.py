@@ -19,6 +19,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from hydra_companions.config import PROPOSALS_LOG, live_execution_enabled
+from hydra_companions.executor import engine_order_block
 
 if TYPE_CHECKING:
     from hydra_companions.executor import TradeProposal, LadderProposal
@@ -53,6 +54,19 @@ class LiveExecutor:
             return {"ok": False, "error": "agent paper mode — refuse live place"}
         return None
 
+    def _engine_block(self, p, *, size: float) -> Optional[dict]:
+        """Inventory / exit-only gate. Runs before order_buy / order_sell.
+
+        Does not place a stop, a market order, or mutate the engine book.
+        """
+        reason = engine_order_block(
+            self.agent, pair=p.pair, side=p.side, size=size,
+        )
+        if not reason:
+            return None
+        self._broadcast_failed(p.proposal_id, p.companion_id, reason)
+        return {"ok": False, "error": reason}
+
     # ----- public -----
 
     def execute_trade(self, p: "TradeProposal") -> dict:
@@ -72,6 +86,10 @@ class LiveExecutor:
                 self._broadcast_failed(p.proposal_id, p.companion_id,
                                        f"daily cap hit ({count_today}/{cap})")
                 return {"ok": False, "error": "daily cap hit"}
+
+        blocked = self._engine_block(p, size=float(p.size))
+        if blocked is not None:
+            return blocked
 
         cli = self._kraken_cli()
         userref = _proposal_userref(p.proposal_id)
@@ -95,9 +113,9 @@ class LiveExecutor:
 
         # Register with the agent's ExecutionStream so fills are not dropped
         # (unknown order_id). Engine/journal still do not book this path —
-        # companion live remains opt-in and inventory-blind until a full
-        # agent _place_order adapter lands. Registration at least prevents
-        # silent WS event loss.
+        # the size check above only refuses an oversell; it does not apply
+        # the fill onto the engine. Registration at least prevents silent
+        # WS event loss.
         order_id = result.get("txid") or result.get("ordertx")
         if isinstance(order_id, list):
             order_id = order_id[0] if order_id else None
@@ -146,6 +164,10 @@ class LiveExecutor:
                 self._broadcast_failed(p.proposal_id, p.companion_id,
                                        f"daily cap hit ({count_today}/{cap})")
                 return {"ok": False, "error": "daily cap hit"}
+
+        blocked = self._engine_block(p, size=float(p.total_size))
+        if blocked is not None:
+            return blocked
 
         cli = self._kraken_cli()
         fn = cli.order_buy if p.side == "buy" else cli.order_sell

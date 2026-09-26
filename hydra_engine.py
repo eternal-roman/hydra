@@ -1463,6 +1463,13 @@ class HydraEngine:
             )
         except (TypeError, ValueError):
             return  # Malformed candle data — skip silently
+        # A missing close arrives as 0 (`or 0`), and NaN is finite-false.
+        # Either one is a real price to the SELL path, which would liquidate
+        # the position for no cash and print a 100% drawdown.
+        if not all(math.isfinite(v) and v > 0 for v in (
+            candle.open, candle.high, candle.low, candle.close,
+        )):
+            return
         signed = _chaikin_signed_volume(candle)
         # Deduplicate: if Kraken timestamp matches last candle, update in place (incomplete candle refresh)
         if has_timestamp and self.candles and self.candles[-1].timestamp == candle.timestamp:
@@ -1717,8 +1724,32 @@ class HydraEngine:
         )
         signal = self._apply_hold_through(regime, signal)
 
-        # Execute if actionable (skip when generate_only for external review)
-        trade = None if generate_only else self._maybe_execute(signal)
+        # Arm before the fill. An open book defers the entry and is flattened
+        # after the commit below; a flat book is not sold, but halted is set
+        # first so a BUY cannot fill. The peek is current drawdown (equity vs
+        # peak), never max_drawdown, and it does not clear halted. A spot fill
+        # does not change marked equity, so this matches the post-trade mark.
+        mark_price = self.prices[-1] if self.prices else 0.0
+        mark_equity = self.balance + (self.position.size * mark_price)
+        mark_peak = max(self.peak_equity, mark_equity)
+        mark_dd = (
+            ((mark_peak - mark_equity) / mark_peak * 100) if mark_peak > 0 else 0.0
+        )
+        defer_flatten = False
+        if self.tradable and mark_dd >= self.CIRCUIT_BREAKER_PCT:
+            self.halted = True
+            self.halt_reason = (
+                f"CIRCUIT BREAKER: drawdown {mark_dd:.1f}% "
+                f">= {self.CIRCUIT_BREAKER_PCT}% limit"
+            )
+            if self.position.size > 0 and self.prices:
+                defer_flatten = True
+
+        # Execute if actionable (skip when generate_only for external review).
+        # The open book on an arming tick is not this trade.
+        trade = None
+        if not defer_flatten and not generate_only:
+            trade = self._maybe_execute(signal)
 
         # Update portfolio metrics
         current_price = self.prices[-1] if self.prices else 0
@@ -1756,6 +1787,20 @@ class HydraEngine:
                 f"CIRCUIT BREAKER: drawdown {drawdown:.1f}% "
                 f">= {self.CIRCUIT_BREAKER_PCT}% limit"
             )
+
+        if defer_flatten and self.halted and self.position.size > 0 and self.prices:
+            # Same-tick flatten. Not routed through hold-through: a TREND_UP
+            # ride would turn the SELL into HOLD. execute_signal skips rails
+            # while halted, so the generate_only caller can place this.
+            signal = Signal(
+                action=SignalAction.SELL,
+                confidence=1.0,
+                reason=f"HALT FLATTEN: {self.halt_reason}",
+                strategy=Strategy.DEFENSIVE,
+            )
+            if not generate_only:
+                trade = self._maybe_execute(signal)
+                self.position.update_pnl(current_price)
 
         return self._build_state(regime, strategy, signal, trade)
 
@@ -1915,6 +1960,8 @@ class HydraEngine:
             return None
 
         current_price = self.prices[-1]
+        if not math.isfinite(current_price) or current_price <= 0:
+            return None
         effective_mult = self._apply_size_multiplier(size_multiplier)
 
         # Friction expectancy gate (v2.27, entries only): a BUY whose
@@ -1959,18 +2006,15 @@ class HydraEngine:
             # made entries so small the engine could not compound even when
             # right. Kelly remains the floor; the gross-inventory cap below
             # still binds. Kill: HYDRA_TREND_CONVICTION_SIZING=0.
-            if (size > 0
+            if (effective_mult > 0
                     and self.daily_trend_long() is True
                     and os.environ.get("HYDRA_TREND_CONVICTION_SIZING") != "0"):
-                # `effective_mult` MUST scale the floor too. Without it the
-                # max() below silently discarded every de-risking decision in
-                # the stack — the brain's quant x RM product and the whole
-                # R3/R5/R7 penalty chain — because `conviction_value` was
-                # derived from `balance` alone. An RM "ADJUST, size 0.3" and a
-                # clean 1.0 produced byte-identical notional; only an exact
-                # 0.0 survived, via the `size > 0` guard. That inverted PR-B
-                # ("max_position_pct applies AFTER brain size_multiplier"):
-                # the multiplier bound on the Kelly path and was a no-op here.
+                # `effective_mult` MUST scale the floor too. A hard veto
+                # (multiplier 0) stays out via the guard above. A Kelly size
+                # of 0 does not: calculate() returns 0 when the crumb is
+                # under ordermin, and that used to skip the floor entirely,
+                # so a small book never reached the conviction size that
+                # actually clears the exchange minimum.
                 conviction_value = (
                     self.balance * self.sizer.max_position_pct
                     * self._trend_vol_multiplier() * effective_mult

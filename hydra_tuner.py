@@ -46,7 +46,9 @@ PARAM_BOUNDS = {
     "momentum_rsi_upper": (55.0, 90.0),
     "mean_reversion_rsi_buy": (10.0, 45.0),
     "mean_reversion_rsi_sell": (55.0, 90.0),
-    "min_confidence_threshold": (0.55, 0.80),
+    # 0.65 matches the sizer presets and hold-through entry floor. A tuned
+    # file must not reinstall the old 0.55 research floor.
+    "min_confidence_threshold": (0.65, 0.80),
 }
 
 # How much to shift toward the winning mean per update cycle
@@ -132,7 +134,12 @@ class ParameterTracker:
         losses = [o for o in self.observations if o["outcome"] == "loss"]
 
         if not wins:
-            # No winning trades — nothing to learn toward
+            # Nothing to shift toward, but the window still has to close.
+            # Leaving the streak in place makes the next win train on every
+            # prior loss. update_count stays put: no parameter update ran,
+            # and bumping it while retaining the streak would mark the
+            # window consumed without starting a clean one.
+            self.observations.clear()
             return dict(self.current_params)
 
         changes: Dict[str, tuple] = {}  # param -> (old, new)

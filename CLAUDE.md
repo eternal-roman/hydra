@@ -17,7 +17,7 @@ Each was earned through a documented past failure. Violating one is a
 regression bug, not a style issue.
 
 1. **Parallel Task agents for any audit > 20 files.** Use N parallel
-   agents on `audit.partition` (default 7-way). Each returns HIGH/MED/LOW;
+   agents on the `/audit` partitions (default 7-way). Each returns HIGH/MED/LOW;
    then synthesize. Scale to 10+ if file count justifies.
 2. **Stop processes before editing their state.** A live writer overwrites
    your edit on its next tick. Check ownership in `state_files`; stop
@@ -79,7 +79,7 @@ regression bug, not a style issue.
   (BTC/USD snap → BTC/USDC engine) even when `triangle` is None;
   mixed leftover quotes (ZEC/USD) stay exact — never a global
   quote flip that would invent ZEC/USDC.
-- **Version pin:** v2.33.2
+- **Version pin:** v2.33.3
 
 ## Defaults (inherited)
 
@@ -96,7 +96,7 @@ regression bug, not a style issue.
   stdout (swallowed at the JSON sink; `--monitor` health is stderr).
   ExecutionStream / BalanceStream therefore treat process+reader+snapshot
   as healthy; a 30s stdout-heartbeat timeout is public-stream only.
-- Kraken REST min interval: **2s** between calls
+- Kraken REST min interval: **2s** between calls (Kraken throttles/bans below this)
 - min_confidence: 0.65 (both modes); warmup_candles: 50
 - Circuit breaker: **15% drawdown sticky-halts new BUYs for session; SELL flatten still allowed (PR-A)**
 - WS dashboard port: 8765; Vite dev: 3000 (`strictPort: true`)
@@ -126,8 +126,9 @@ regression bug, not a style issue.
 - **Synthetic pairs declare themselves to R10** — `DerivativesSnapshot.synthetic=True` propagates to `quant_indicators["synthetic_pair"]`; R10 then tracks only funding/cvd/regime (the fields the synthetic path actually populates). Adding a new pair without a direct Kraken Futures perp requires this flag, otherwise R10 will structurally force-hold every tick.
 - **Perp-only pairs declare themselves to R10 (v2.29)** — pairs whose Kraken Futures listing has a perp but NO quarterly contracts (ZEC: `PF_ZECUSD`) get `DerivativesSnapshot.basis_available=False`, derived from `SPOT_TO_DERIVATIVES.quarterly_prefix is None` at construction — map-driven, never from data presence. It propagates to `quant_indicators["basis_available"]`; R10 then tracks 4 fields (drops `basis_apr_pct`). Without it a perp-only pair sits permanently at 1 stale field and any transient miss trips a structural force-hold.
 - **Uncovered pairs declare themselves to R10** — pairs with no `SPOT_TO_DERIVATIVES` entry at all (portfolio satellites, e.g. NIGHT/USD) get `quant_indicators["derivatives_covered"]=False` from `_build_quant_indicators`; R10 then tracks only CVD. Coverage is structural (pair in the futures map), never "snapshot present" — a covered pair with a warming/stale stream must still hit the R10 blackout.
-- **Per-quote balance pools (v2.28)** — live stable-quoted engines are funded from the REAL holding of their own quote currency split across pairs sharing that quote (`_set_engine_balances`); a USDC engine never sizes against USD it cannot spend. Zero pool ⇒ balance 0 (sizer refuses entries) but `tradable` stays True so inventory can exit. Paper keeps the uniform split.
-- **Gross vs free balance are different numbers (v2.32)** — `BalanceStream.latest_balances()` / `_cached_balance` are GROSS (include funds locked behind our own resting post-only orders) and are what equity, peak equity and the portfolio drawdown breaker must read; held funds are still ours. `BalanceStream.latest_free_balances()` / `KrakenCLI.free_balance()` (`kraken extended-balance`) are NET of holds and are what every *spendability* decision must read — `_get_real_quote_balance` is that chokepoint. Sizing against gross re-commits money an unfilled order already owns, which is the `PLACEMENT_FAILED: insufficient_<quote>_balance` loop. Both paths fail OPEN to gross when the hold field is absent.
+- **Per-quote balance pools (v2.28)** — live stable-quoted engines are funded from the REAL holding of their own quote currency split across pairs sharing that quote (`_set_engine_balances`); a USDC engine never sizes against USD it cannot spend. Zero pool ⇒ balance 0 (sizer refuses entries) but `tradable` stays True so inventory can exit. Paper keeps the uniform split. A resumed book with `position.size > 0` or a `PLACED` journal row keeps its restored cash; flat engines with no working order are still seeded from the free pool minus cash already on those books.
+- **Gross vs free balance are different numbers (v2.32)** — `BalanceStream.latest_balances()` / `_cached_balance` are GROSS (include funds locked behind our own resting post-only orders) and are what equity, peak equity and the portfolio drawdown breaker must read; held funds are still ours. `BalanceStream.latest_free_balances()` / `KrakenCLI.free_balance()` (`kraken extended-balance`) are NET of holds and are what every *spendability* decision must read — `_get_real_quote_balance` is that chokepoint. Sizing against gross re-commits money an unfilled order already owns, which is the `PLACEMENT_FAILED: insufficient_<quote>_balance` loop. Fail OPEN to gross when the hold field is absent or the free read failed (error envelope, exception, missing payload). A successful read with free 0 — the asset present at 0, or an empty free map because every unit is on hold — is not spendable. Equity still reads gross.
+- **One resting order per pair** — a journal row in `PLACED` blocks another `execute_signal` on that pair. Same-side and HOLD wait. An opposite signal cancels the resting order (paper/demo: restore `pre_trade_snapshot` and mark `CANCELLED_UNFILLED`; live: `cancel_order`, then the execution stream rolls the book back) and does not place the new order on that tick. Stacking a second order makes the first order's true-up restore an older snapshot and wipe or double the position. A fill or cancel rewrites the row in place, so the tick must snapshot when the book changes even if the journal did not grow — otherwise `--resume` reloads the pre-fill position.
 - **Deterministic size multipliers must survive every later sizing step** — a de-risking `size_multiplier` (brain quant × RM, or the R3/R5/R7 penalty stack) is only real if it reaches the placed order. Any floor/override added after `size = size * effective_mult` in `_maybe_execute` must scale by `effective_mult` too, or it silently discards the whole risk stack (the v2.32 conviction-sizing fix). PR-B's "`max_position_pct` applies **after** brain `size_multiplier`" is the invariant.
 - **Trend overlay is evidence-gated and fails open** — every consumer of `daily_trend_long()` must treat `None` (warmup / disabled) as "behave exactly as pre-overlay". The daily-entry path (enter on ensemble alone) was tested and REJECTED (whipsawed against 1h flattens, −5.4% vs +0.1% 2y — `.hydra-flywheel/trend_entry_gate.json`); do not re-add without a passing gate. Daily closes are seeded at boot (agent: Kraken 1440m OHLC; backtest: pre-window sqlite) and persist in the snapshot.
 - **`exit_only` drain mode** — engine-level flag: BUY entries refused (SKIP semantics), every SELL path untouched. Set per-session by the agent (never persisted); the bridge default uses it. Composes with hold-through and the CB.
@@ -179,6 +180,14 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | heartbeat | `heartbeat/` + `hydra_heartbeat_surface.py` | Order-flow P(up) confirmer (BTC/ETH PASS). **No order path.** Separate `heartbeat run` (`start_heartbeat.bat`); status `heartbeat_status_<PAIR>.json`; USDC/USDT engines fall back to the USD tape (same-base order flow). Agent → `quant_indicators["heartbeat"]` + dashboard; kill `HYDRA_HEARTBEAT_SURFACE=0`. Ledger: `heartbeat/HONEST_FINDINGS.md` |
 | s3 | `hydra_s3.py` + `s3bounce/` | Daily bounce X1 signal (BTC/ETH; ZEC breadth-only). Read-only QI + **shadow** (`HYDRA_S3_STRATEGY=1`, default off, `.hydra-s3/`). **No order path.** Evidence: `heartbeat/evidence/bakeoffs/s3_*`, `research/S3_*` |
 | flywheel | `hydra_flywheel.py` | paper capital allocator (CLI-only, NO live order path, not wired into agent capital): signal-driven daily trend ensemble + carry monitor + cash; **only** the legacy engine sleeve is evidence-gated (0% until `validation_results.json` clears). Research tools: `tools/flywheel_validation.py`, `tools/carry_backtest.py`, `tools/trend_backtest.py` (trend/carry JSONs are research-only) |
+| streams | `hydra_streams.py` | `BaseStream` + Candle/Ticker/Book/Balance/Execution WS streams (kraken CLI subprocesses) |
+| kraken_cli | `hydra_kraken_cli.py` | `KrakenCLI` wrapper via WSL (pin + flag notes in docstring; `forward_credentials`) |
+| ws_server | `hydra_ws_server.py` | dashboard WS: `DashboardBroadcaster`, auth handshake, `hydra_ws_token.json`; JWT when `HYDRA_PRODUCTION=1` |
+| auth | `hydra_auth.py` | users DB + JWT/session; secrets persist in `hydra_auth_state.json` (env overrides) |
+| history_store | `hydra_history_store.py` | canonical OHLC sqlite (`hydra_history.sqlite`) for backtest/research — not for trading decisions |
+| tape_capture | `hydra_tape_capture.py` | CandleStream → history sqlite writer; bounded queue, drops on full (never stalls the tick) |
+| kraken_trades | `hydra_kraken_trades.py` | sqlite of every Kraken fill (`hydra_kraken_trades.sqlite`) — accounting/P&L truth, ≠ order journal |
+| walk_forward | `hydra_walk_forward.py` | anchored quarterly folds + paired Wilcoxon (Research Lab) |
 
 ## Deep specs
 
@@ -208,6 +217,9 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | experiments_store | `.hydra-experiments/` | owner `experiments`; `presets.json` bootstraps from code on first init (delete to regenerate) |
 | s3_shadow | `.hydra-s3/` | owner `s3` (`s3bounce.ShadowLedger` via `hydra_s3`); `events.jsonl` append-only audit + `state.json` open shadow positions/proposal dedupe (atomic `.tmp → os.replace`; garbage state treated as empty, events remain the audit trail); survives `--resume` independently of the snapshot; gitignored |
 | flywheel_store | `.hydra-flywheel/` | owner `flywheel`; `state.json` paper ledger (atomic `.tmp → os.replace`), validation/carry/trend evidence JSONs, downloaded funding history; gitignored |
+| history_db | `hydra_history.sqlite` | owner `history_store`; `tape_capture` upserts `source='tape'`; path via `HYDRA_HISTORY_DB`; gitignored |
+| kraken_trades_db | `hydra_kraken_trades.sqlite` | owner `kraken_trades`; fill ledger-of-truth; gitignored |
+| auth_secrets | `hydra_users.db`, `hydra_auth_state.json`, `hydra_ws_token.json` | owner `auth` (users/state) + `ws_server` (token); **secrets**; gitignored |
 
 ## Env flags (kill switches + opt-ins)
 
@@ -240,10 +252,17 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | `HYDRA_S3_HEARTBEAT_STATUS_DIR` | s3 + heartbeat surface | Directory of heartbeat status files (`heartbeat_status_<PAIR>.json`). Default `heartbeat/data`. Missing/stale(>300s)/tainted ⇒ `no_opinion` (never fabricate 0.5). Used by S3 shadow confirmer and dashboard surface. |
 | `HYDRA_HEARTBEAT_SURFACE` | agent/dashboard | **Default ON.** `=0` removes `quant_indicators["heartbeat"]` (P(up) display). Read-only — no order path. Requires separate `heartbeat run` process for live values. |
 | `HYDRA_FEE_DEDUCTION_DISABLED` | agent | `=1` reverts fee-true accounting (v2.27): confirmed fills debit `lifecycle.fee_quote` from the engine's quote balance exactly once (idempotent via `lifecycle.fee_applied`). Default off (fees deducted) — pre-v2.27 live P&L was overstated ~16 bps/fill vs the backtest, which always deducted fees. |
-| `HYDRA_WS_HOST` | dashboard | Bind address for the dashboard WebSocket. Default **`127.0.0.1`** (v2.32.1). The auth handshake, not the bind address, is what keeps account state private — see the WS auth invariant above. Set `=0.0.0.0` only behind a proxy that terminates auth. |
-| `HYDRA_WS_AUTH_GRACE_S` | dashboard | Seconds an accepted-but-unauthenticated dashboard socket may stay open before the reaper closes it (`1008 auth required`). Default **`10`**. Lower it to shrink the window for connection-slot exhaustion; raise it only if a slow client legitimately needs longer to fetch `hydra_ws_token.json`. Does not affect what an unauthenticated socket can read — that is already nothing. |
-| `HYDRA_RESET_CIRCUIT_BREAKER` | engine/agent | `=1` clears a persisted 15% circuit-breaker halt once, at resume — both the per-engine `halted` flag and the portfolio-wide BUY halt. Default unset (a breach persists across `--resume`, which is the safe direction). Clears the FLAG only: `peak_equity` / `max_drawdown` / `_portfolio_max_drawdown_pct` are preserved as the record. Both halts then re-arm only if the CURRENT drawdown is still ≥15%. Use after reviewing the drawdown, not as a routine flag. |
-| `HYDRA_CLI_LEGACY_SECRET_EXPORT` | cli | `=1` restores the pre-v2.32 behavior of interpolating `KRAKEN_API_KEY`/`KRAKEN_API_SECRET` into the `bash -c` string. Default off: secrets are passed through the child process ENVIRONMENT and forwarded via `WSLENV`, keeping them out of the `wsl` process argv (readable via `ps`/procfs by any local user). Single chokepoint `KrakenCLI.forward_credentials`, shared by the REST wrapper **and** the long-lived `hydra_streams.BaseStream` subprocesses (which hold their argv for the whole session — the longer disclosure window of the two). Only affects the multi-tenant path where the keys are already in Hydra's own environment. |
+| `HYDRA_WS_HOST` | dashboard | Dashboard WS bind address. Default **`127.0.0.1`** (v2.32.1). Auth, not the bind, protects account state (WS auth invariant). `=0.0.0.0` only behind an auth-terminating proxy. |
+| `HYDRA_WS_AUTH_GRACE_S` | dashboard | Seconds an unauthenticated socket may stay open before the reaper closes it (`1008 auth required`). Default **`10`**. Unauthenticated sockets already receive nothing. |
+| `HYDRA_RESET_CIRCUIT_BREAKER` | engine/agent | `=1` clears a persisted 15% CB halt once, at resume (per-engine `halted` + portfolio BUY halt). Default unset — a breach persists across `--resume`. Clears the FLAG only (peak/max-DD records kept); re-arms if the CURRENT drawdown is still ≥15% (CB invariant). Use after reviewing the drawdown, not routinely. |
+| `HYDRA_CLI_LEGACY_SECRET_EXPORT` | cli | `=1` restores pre-v2.32 interpolation of `KRAKEN_API_KEY`/`KRAKEN_API_SECRET` into the `bash -c` string — visible in `wsl` argv via `ps`/procfs. Default off: secrets go through the child ENVIRONMENT + `WSLENV` (`KrakenCLI.forward_credentials`, shared by the REST wrapper and the long-lived `hydra_streams.BaseStream` subprocesses). Multi-tenant path only. |
+| `HYDRA_PRODUCTION` | dashboard | `=1` → WS clients must authenticate with a JWT (production mode). Default `0`: per-process token (`hydra_ws_token.json`). |
+| `HYDRA_WS_PORT` | dashboard | Dashboard WS port. Default `8765`. |
+| `HYDRA_DEBUG_TOOLS` | brain | `=1` prints the full traceback when a brain tool-use call throws (default: one-line message, engine fallback). |
+| `HYDRA_DEMO_EXPORT` | agent | `=1` keeps demo-mode export dumps (default: cleaned up). |
+| `HYDRA_NO_DOTENV` | companion | `=1` skips the companion subsystem's `.env` loading. |
+| `HYDRA_AUTH_DB_PATH` / `HYDRA_AUTH_STATE_PATH` | auth | Override `hydra_users.db` / `hydra_auth_state.json`. |
+| `HYDRA_JWT_SECRET` / `HYDRA_ENCRYPTION_KEY` / `HYDRA_ADMIN_PASSWORD` / `HYDRA_NEW_USER_PASSWORD` | auth | Secrets: JWT/encryption keys (env overrides the persisted state file); admin seed + new-user passwords. See `hydra_auth.py` docstring. Never commit. |
 
 ## Build / run
 
@@ -307,25 +326,15 @@ modes: smoke/mock/validate/live).
 
 ## Audit
 
-**7-way partition** for Rule 1:
+`/audit` drives the full cycle — its SKILL.md owns the 7-way partition (Rule 1) and triage.
 
-| id | scope |
-|---|---|
-| p1_engine_tuner | engine, tuner |
-| p2_agent_streams | agent, streams |
-| p3_ai_layer | brain |
-| p4_backtest | backtest, backtest_metrics, backtest_server, backtest_tool, experiments |
-| p5_companion | companions |
-| p6_dashboard | dashboard |
-| p7_tests | `tests/`, `tests/live_harness/` |
-
-**HIGH severity:** violations of backtest I1–I12, limit-post-only, 2s
-rate-limit floor, 15% circuit breaker, Wilder-EMA RSI/ATR spec, or
-`HYDRA_COMPANION_LIVE_EXECUTION` default-off.
+**HIGH severity:** violations of backtest I1–I12 (`docs/BACKTEST_SPEC.md`),
+limit-post-only, 2s rate-limit floor, 15% circuit breaker, Wilder-EMA RSI/ATR
+spec, or `HYDRA_COMPANION_LIVE_EXECUTION` default-off.
 
 **Two-phase protocol (Rule 4):** after fixing HIGH/MED, re-run partition
 sweep against your diff, then full tests + `harness.py --mode mock`;
-declare done only when phase 2 is clean. Drive full cycle via `/audit`.
+declare done only when phase 2 is clean.
 
 ## Windows / WSL gotchas
 
@@ -340,11 +349,11 @@ declare done only when phase 2 is clean. Drive full cycle via `/audit`.
 
 - Don't add `import numpy` or `import pandas` to the engine — intentionally pure Python
 - Don't change orders to market type — limit post-only is deliberate
-- Don't reduce rate limiting below 2s — Kraken throttles/bans
+- Don't reduce rate limiting below 2s — Kraken throttles or bans
 - Don't merge engine instances across pairs — they must remain independent
 - `.env` contains Kraken API keys — never commit
 - On shutdown agent cancels all resting limit orders and flushes snapshot — do not bypass
 - `start_hydra.bat` uses `--mode competition --resume` for production — do not remove
 - **FEATURE GAP:** `CrossPairCoordinator` Rule 2 (BTC recovery BUY boost) + Rule 3 (coordinated swap SELL) can conflict when BTC TREND_UP + SOL TREND_DOWN + SOL/BTC TREND_UP — Rule 3 overwrites Rule 2 (favors safer SELL); future: explicit priority or merge logic
 - Companion live execution opt-in: `HYDRA_COMPANION_LIVE_EXECUTION=1`; confirm unset before live debugging
-- `kraken-cli` is an external WSL Ubuntu dep (`source ~/.cargo/env && kraken`); pin is **v0.4.1** (dashboard footer + `KrakenCLI` docstring) — confirm `kraken --version` matches before debugging `--validate` schema errors
+- Confirm `kraken --version` matches the **v0.4.1** pin (Defaults) before debugging `--validate` schema errors

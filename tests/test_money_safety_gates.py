@@ -375,6 +375,45 @@ def test_keep_brain_does_not_wipe_cached_override(monkeypatch):
     assert state["ai_decision"].get("brain_available") is not False
 
 
+def test_same_candle_rules_do_not_compound_size(monkeypatch):
+    """Intra-candle re-score multiplies the raw brain factor, not the
+    already-stacked size. R5 (basis > 40) is 0.7. A second pass must
+    stay at 0.7, not 0.7 * 0.7.
+    """
+    monkeypatch.delenv("HYDRA_QUANT_INDICATORS_DISABLED", raising=False)
+    state = _guardrail_state()
+    state["quant_indicators"] = {
+        "funding_bps_8h": 0.0,
+        "oi_price_regime": "neutral",
+        "oi_delta_1h_pct": 0.0,
+        "cvd_divergence_sigma": 0.0,
+        "basis_apr_pct": 50.0,
+        "staleness_s": 10.0,
+    }
+    state["ai_decision"] = {
+        "action": "CONFIRM",
+        "final_signal": "BUY",
+        "size_multiplier": 1.0,
+        "size_multiplier_brain": 1.0,
+    }
+    agent = _guardrail_agent()
+    agent._apply_quant_guardrails("BTC/USD", state, keep_brain=True)
+    first = state["ai_decision"]["size_multiplier"]
+    agent._apply_quant_guardrails("BTC/USD", state, keep_brain=True)
+    second = state["ai_decision"]["size_multiplier"]
+    assert first == pytest.approx(0.7)
+    assert second == pytest.approx(first)
+    assert state["ai_decision"]["size_multiplier_brain"] == pytest.approx(1.0)
+
+
+def test_coerce_size_mult_rejects_non_finite():
+    from hydra_brain import _coerce_size_mult
+    assert _coerce_size_mult(float("nan")) == 1.0
+    assert _coerce_size_mult(float("inf")) == 1.0
+    assert _coerce_size_mult(-1) == 0.0
+    assert _coerce_size_mult(0.4) == 0.4
+
+
 def test_coerce_bool_does_not_treat_false_string_as_true():
     from hydra_brain import _coerce_bool
     assert _coerce_bool("false") is False

@@ -513,6 +513,13 @@ class BalanceStream(BaseStream):
         super().__init__(paper=paper)
         self._balances: Dict[str, float] = {}
         self._free: Dict[str, float] = {}
+        # False until a balances payload is applied. An empty free map
+        # before that is "no data" (fail open); after it, empty or 0
+        # means nothing is spendable.
+        self._free_seen: bool = False
+        # False until a snapshot. An update before that is partial:
+        # assets it does not mention are not known to be zero.
+        self._free_complete: bool = False
 
     def _build_cmd(self) -> str:
         return "exec kraken ws balances -o json --snapshot true"
@@ -536,7 +543,22 @@ class BalanceStream(BaseStream):
                 return
             return
         self._on_heartbeat()
-        for entry in msg.get("data", []):
+        data = msg.get("data", [])
+        if not isinstance(data, list):
+            return
+        # Explicit empty snapshot: no currency rows. Successful read,
+        # not a missing payload — callers must not fall open to gross.
+        if len(data) == 0 and "data" in msg:
+            # Only a snapshot is a full read. An empty update must not
+            # wipe spendability or look like "everything is on hold".
+            if msg.get("type") == "snapshot":
+                with self._lock:
+                    self._balances.clear()
+                    self._free.clear()
+                    self._free_seen = True
+                    self._free_complete = True
+            return
+        for entry in data:
             if not isinstance(entry, dict):
                 continue
             # Only include currency assets (skip equities/ETFs)
@@ -558,6 +580,9 @@ class BalanceStream(BaseStream):
             # callers can pick the right one — equity/drawdown need GROSS
             # (held funds are still ours), sizing needs FREE (held funds are
             # already committed). Absent/unparseable hold ⇒ free == gross.
+            # Free 0 is kept while gross is still > 0. Dropping it made the
+            # free map empty, which callers treated as "no data" and then
+            # sized against this gross figure.
             free = bal
             for _hk in KrakenCLI._HELD_KEYS:
                 if _hk in entry:
@@ -567,14 +592,17 @@ class BalanceStream(BaseStream):
                         free = bal
                     break
             with self._lock:
+                self._free_seen = True
                 if bal > 0:
                     self._balances[normalized] = bal
-                else:
-                    self._balances.pop(normalized, None)
-                if free > 0:
                     self._free[normalized] = free
                 else:
+                    self._balances.pop(normalized, None)
                     self._free.pop(normalized, None)
+        if msg.get("type") == "snapshot":
+            with self._lock:
+                self._free_seen = True
+                self._free_complete = True
 
     def latest_balances(self) -> Dict[str, float]:
         """Return {asset: amount} for non-zero GROSS currency balances.
@@ -586,14 +614,27 @@ class BalanceStream(BaseStream):
         with self._lock:
             return dict(self._balances)
 
-    def latest_free_balances(self) -> Dict[str, float]:
+    def latest_free_balances(self) -> Optional[Dict[str, float]]:
         """Return {asset: spendable} — gross minus funds held in open orders.
 
-        Empty when the feed has pushed nothing yet; callers fall back to the
-        gross view, which is the pre-v2.32 behavior.
+        None before any balances payload (callers fail open to gross).
+        After a payload, {} or an explicit 0.0 is a successful read:
+        nothing is spendable. 0.0 stays in the map while gross is non-zero
+        so a fully locked asset is not mistaken for a missing feed.
         """
         with self._lock:
+            if not self._free_seen:
+                return None
             return dict(self._free)
+
+    def free_view_is_complete(self) -> bool:
+        """True after a balances snapshot (or an explicit empty one).
+
+        Until then the free map is a partial update: a quote it does not
+        mention is unknown, not zero.
+        """
+        with self._lock:
+            return self._free_complete
 
 
 # ═══════════════════════════════════════════════════════════════

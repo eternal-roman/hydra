@@ -19,6 +19,7 @@ Usage:
 """
 
 import json
+import math
 import time
 import sys
 import os
@@ -151,6 +152,33 @@ def _buy_limit_offset_bps(pair: str, regime: Optional[str]) -> int:
     return _BUY_LIMIT_OFFSET_BPS.get((base, quote_class, regime), 0)
 
 
+def resting_order_decision(
+    resting_side: Optional[str],
+    desired_action: str,
+    *,
+    buy_blocked: bool = False,
+) -> str:
+    """One working order per pair.
+
+    Returns ``place`` when nothing is resting, ``skip`` when the new
+    intent must wait (same side, HOLD, or a BUY the portfolio breaker
+    has already forbidden), and ``cancel`` when the new intent is the
+    opposite side and the resting order has to get out of the way
+    before a new one is sent. The new order is never placed on the
+    cancel tick — the book is only safe to trade again after the
+    resting order's terminal event restores its snapshot.
+    """
+    side = (resting_side or "").strip().upper()
+    want = (desired_action or "HOLD").strip().upper()
+    if side not in ("BUY", "SELL"):
+        return "place"
+    if want not in ("BUY", "SELL") or want == side:
+        return "skip"
+    if want == "BUY" and buy_blocked:
+        return "skip"
+    return "cancel"
+
+
 def _apply_buy_limit_offset(pair: str, bid: float, regime: Optional[str]) -> tuple:
     """Apply the regime-gated offset to a live bid.
 
@@ -232,6 +260,15 @@ class HydraAgent:
         self.running = True
         self.start_time = None
         self.order_journal: List[Dict[str, Any]] = []
+        # Order ids we have already asked the exchange to cancel. Prevents
+        # a second REST cancel on every tick while the terminal event is
+        # still in flight. A failed attempt is not recorded, so the next
+        # tick retries.
+        self._cancel_sent_ids: set = set()
+        # A fill or cancel rewrites a journal row in place. Length does not
+        # change, so the snapshot cadence would keep the pre-fill engine
+        # book until the next new order or the periodic save.
+        self._books_dirty: bool = False
         self._snapshot_dir = os.path.dirname(os.path.abspath(__file__))
         self._completed_trades_since_update = 0  # Counter for tuner update cadence
         self._last_brain_candle_ts: Dict[str, float] = {}  # Per-pair: last candle timestamp brain evaluated
@@ -411,7 +448,7 @@ class HydraAgent:
                   "and will not fire)")
 
         # ─── Companion subsystem (v2.10.3+) ────────────────────────────
-        # Strictly additive. Off unless HYDRA_COMPANION_ENABLED=1.
+        # Strictly additive. On by default (hydra_companions.config.is_enabled).
         # Kill switch: HYDRA_COMPANION_DISABLED=1 wins over all.
         # Any init failure leaves the live agent completely unaffected.
         self.companion_coordinator = None
@@ -851,6 +888,147 @@ class HydraAgent:
     ) -> bool:
         """PR-B / B4: portfolio circuit breaker blocks BUY only."""
         return bool(portfolio_buy_halted) and str(action).upper() == "BUY"
+
+    def _resting_entry(self, pair: str) -> Optional[Dict[str, Any]]:
+        """Most recent non-terminal order for `pair`, or None."""
+        want = (pair or "").upper()
+        for entry in reversed(self.order_journal):
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("pair") or "").upper() != want:
+                continue
+            if (entry.get("lifecycle") or {}).get("state") == "PLACED":
+                return entry
+        return None
+
+    def _hold_for_resting_order(self, pair: str, desired_action: str) -> bool:
+        """True when this tick must not call execute_signal for `pair`.
+
+        Same-side and HOLD wait. An opposite signal cancels the resting
+        order and still waits — the new order is placed only after the
+        cancel's terminal event has restored the pre-trade book.
+        """
+        resting = self._resting_entry(pair)
+        if resting is None:
+            return False
+        blocked = self._should_block_buy_for_portfolio_dd(
+            getattr(self, "_portfolio_buy_halted", False), desired_action,
+        )
+        decision = resting_order_decision(
+            resting.get("side"), desired_action, buy_blocked=blocked,
+        )
+        if decision == "place":
+            return False
+        if decision == "cancel":
+            self._cancel_resting_for_opposite(resting, desired_action)
+        else:
+            print(f"  [INFLIGHT] {pair}: {desired_action} held — "
+                  f"{resting.get('side')} order still PLACED")
+        return True
+
+    def _cancel_resting_for_opposite(self, entry: Dict[str, Any], desired: str) -> None:
+        """Clear a working order so the opposite intent can run next tick.
+
+        Paper and demo have no exchange order (the synthetic fill is
+        injected at placement). Restore the snapshot and mark the row
+        terminal here. Live sends one cancel and lets the execution
+        stream true-up; a failed send is retried next tick.
+        """
+        oid = (entry.get("order_ref") or {}).get("order_id")
+        key = oid or id(entry)
+        sent = getattr(self, "_cancel_sent_ids", None)
+        if sent is None:
+            sent = set()
+            self._cancel_sent_ids = sent
+        pair = entry.get("pair")
+        side = entry.get("side")
+        if self.paper:
+            snap = entry.get("pre_trade_snapshot")
+            eng = self.engines.get(pair) if pair else None
+            if eng is not None and isinstance(snap, dict):
+                try:
+                    eng.restore_position(snap)
+                except Exception as e:
+                    print(f"  [INFLIGHT] {pair}: paper cancel rollback failed: {e}")
+            lifecycle = entry.setdefault("lifecycle", {})
+            lifecycle["state"] = "CANCELLED_UNFILLED"
+            lifecycle["terminal_reason"] = f"cancelled_for_opposite_{desired}"
+            lifecycle["final_at"] = datetime.now(timezone.utc).isoformat()
+            self._books_dirty = True
+            print(f"  [INFLIGHT] {pair}: cancelled resting {side} "
+                  f"so {desired} can run next tick")
+            return
+        if key in sent:
+            return
+        if not oid or oid == "unknown":
+            print(f"  [INFLIGHT] {pair}: resting {side} has no order id — "
+                  f"cannot cancel")
+            sent.add(key)
+            return
+        time.sleep(KRAKEN_REST_FLOOR_S)
+        result = KrakenCLI.cancel_order(oid)
+        if isinstance(result, dict) and result.get("error"):
+            print(f"  [INFLIGHT] {pair}: cancel {oid} failed: {result.get('error')}")
+            return
+        sent.add(key)
+        print(f"  [INFLIGHT] {pair}: cancel sent for resting {side} {oid} "
+              f"(wanted {desired})")
+
+    def _journal_for_dashboard(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Recent journal rows, always including working orders.
+
+        The tail alone drops a resting PLACED order once twenty
+        PLACEMENT_FAILED rows land in front of it. The UI then shows an
+        empty book while a live order is still on the exchange.
+        """
+        if limit < 1:
+            limit = 1
+        placed = [
+            e for e in self.order_journal
+            if isinstance(e, dict)
+            and (e.get("lifecycle") or {}).get("state") == "PLACED"
+        ]
+        tail = [e for e in self.order_journal if isinstance(e, dict)][-limit:]
+        out: List[Dict[str, Any]] = []
+        seen = set()
+        for entry in placed + tail:
+            marker = id(entry)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            out.append(entry)
+        return out
+
+    def _persist_rolling_journal(self) -> None:
+        """Atomic write of the rolling journal. Demo never touches the operator file."""
+        if getattr(self, "demo", False):
+            return
+        filtered_journal = self._journal_for_persistence(limit=None)
+        if not filtered_journal:
+            return
+        rolling_file = os.path.join(self._snapshot_dir, "hydra_order_journal.json")
+        rolling_tmp = rolling_file + ".tmp"
+        try:
+            with open(rolling_tmp, "w") as f:
+                json.dump(filtered_journal, f, indent=2)
+            os.replace(rolling_tmp, rolling_file)
+        except Exception as e:
+            print(f"  [WARN] rolling journal write failed: {type(e).__name__}: {e}")
+
+    def _checkpoint_tick(self, journal_size_start: int, tick: int) -> None:
+        """Save the rolling journal and, when the book changed, the snapshot.
+
+        Called after the tick's ``finally`` drain so a fill applied there
+        is on disk before the next crash. A lifecycle rewrite does not
+        grow the journal, so ``_books_dirty`` is the signal that the
+        engine book and the snapshot would otherwise diverge.
+        """
+        self._persist_rolling_journal()
+        journal_grew = len(self.order_journal) > journal_size_start
+        if (journal_grew or self._books_dirty
+                or tick % self.SNAPSHOT_EVERY_N_TICKS == 0):
+            self._save_snapshot()
+            self._books_dirty = False
 
     def _snapshot_path(self) -> str:
         return os.path.join(self._snapshot_dir, "hydra_session_snapshot.json")
@@ -1817,13 +1995,22 @@ class HydraAgent:
                     sig = state.get("signal", {})
                     ai = state.get("ai_decision", {})
                     engine = self.engines[pair]
-                    pre_trade_snap = engine.snapshot_position()
                     # Clamp the brain's size_multiplier to [0.0, 1.5] so no single
                     # modifier can exceed Kelly's hard cap.
                     _sm = ai.get("size_multiplier")
                     _brain_mult = float(1.0 if _sm is None else _sm)
                     _final_mult = max(0.0, min(1.5, _brain_mult))
                     _action = sig.get("action", "HOLD")
+                    # One working order per pair. execute_signal books the
+                    # fill before the exchange has it; a second call while
+                    # the first is still PLACED is wiped or doubled when
+                    # that order's true-up restores the older snapshot, and
+                    # a flatten then tries to sell coins the entry has not
+                    # bought. Hold this tick. Cancel only when the new
+                    # intent is the opposite side.
+                    if self._hold_for_resting_order(pair, _action):
+                        continue
+                    pre_trade_snap = engine.snapshot_position()
                     if self._should_block_buy_for_portfolio_dd(
                         getattr(self, "_portfolio_buy_halted", False), _action
                     ):
@@ -1898,74 +2085,12 @@ class HydraAgent:
                         self._execute_coordinated_swap(swap, all_states)
                 self._log_regime_transitions(all_states)
 
-                # Phase 4: Record trade outcomes for self-tuning
-                # Only record when a position is fully closed so the tuner learns
-                # from the total accumulated P&L, not individual partial-sell legs.
-                for pair in self.pairs:
-                    state = all_states.get(pair)
-                    if not state or not state.get("last_trade"):
-                        continue
-                    trade = state["last_trade"]
-                    engine = self.engines[pair]
-                    if trade["action"] == "SELL" and trade.get("profit") is not None and engine.position.size == 0:
-                        params_at_entry = trade.get("params_at_entry") or engine.snapshot_params()
-                        outcome = "win" if trade["profit"] > 0 else "loss"
-                        self.trackers[pair].record_trade(
-                            params_at_entry, "SELL", outcome, trade["profit"],
-                        )
-                        self._completed_trades_since_update += 1
+                # Tuner win/loss is recorded on the confirmed sell fill
+                # (_record_confirmed_tuner_outcome), not when the SELL is placed.
+                # A cancel restores the engine and must not leave an observation.
 
-                # Run tuner updates every 50 completed trades
-                if self._completed_trades_since_update >= 50:
-                    self._run_tuner_update()
-
-                # Strip internal rollback data before broadcasting to dashboard
-                for pair in self.pairs:
-                    state = all_states.get(pair)
-                    if state:
-                        state.pop("_pre_trade_snapshot", None)
-
-                # Refresh performance/portfolio/position in state dicts from
-                # engine's actual state. When brain is active, tick() ran with
-                # generate_only=True so the state dict was built BEFORE
-                # execute_signal() updated counters.  Even without brain,
-                # a failed order + rollback can desync the dict.  Refreshing
-                # here ensures the dashboard always sees authoritative values.
-                for pair in self.pairs:
-                    state = all_states.get(pair)
-                    if not state:
-                        continue
-                    engine = self.engines[pair]
-                    current_price = engine.prices[-1] if engine.prices else 0
-                    equity = engine.balance + (engine.position.size * current_price)
-                    is_usd_pair = (pair.split("/")[1].upper() if "/" in pair else "") in STABLE_QUOTES
-                    vd = 2 if is_usd_pair else 8
-                    pnl_pct = ((equity - engine.initial_balance) / engine.initial_balance * 100) if engine.initial_balance > 0 else 0
-                    wl = engine.win_count + engine.loss_count
-                    win_rate = (engine.win_count / wl * 100) if wl > 0 else 0
-                    state["performance"] = {
-                        "total_trades": engine.total_trades,
-                        "win_count": engine.win_count,
-                        "loss_count": engine.loss_count,
-                        "win_rate_pct": round(win_rate, 2),
-                        "sharpe_estimate": round(engine._calc_sharpe(), 4),
-                    }
-                    state["portfolio"] = {
-                        "balance": round(engine.balance, vd),
-                        "equity": round(equity, vd),
-                        "pnl_pct": round(pnl_pct, 4),
-                        "max_drawdown_pct": round(engine.max_drawdown, 4),
-                        "peak_equity": round(engine.peak_equity, vd),
-                    }
-                    state["position"] = {
-                        "size": round(engine.position.size, 8),
-                        "avg_entry": round(engine.position.avg_entry, 8),
-                        "unrealized_pnl": round(engine.position.unrealized_pnl, vd),
-                    }
-
-                # Broadcast state to dashboard (uses cached balance, no extra API call)
-                dashboard_state = self._build_dashboard_state(tick, all_states, elapsed)
-                self.broadcaster.broadcast(dashboard_state)
+                # Strip `_pre_trade_snapshot`, refresh books, broadcast.
+                self._publish_tick_state(tick, all_states, elapsed)
 
                 # Drain queued WS execution events and apply them to the
                 # journal + engine state. Pushes, not polls — the stream
@@ -1993,32 +2118,6 @@ class HydraAgent:
                         self._exec_stream_warned_reason = None
                 for term in self.execution_stream.drain_events():
                     self._apply_execution_event(term)
-
-                # Rolling save — persist the order journal every tick so
-                # no data is lost on crash. Atomic write (.tmp + os.replace)
-                # so a crash mid-write cannot corrupt the file into
-                # half-valid JSON. Mirrors _save_snapshot's pattern.
-                # Offline --demo never touches the operator rolling journal.
-                if not getattr(self, "demo", False):
-                    # limit=None: the rolling file is the authoritative
-                    # long-horizon record (see _merge_order_journal), so it
-                    # must NOT inherit the snapshot's 200-entry cap. Bounded
-                    # in memory by ORDER_JOURNAL_CAP.
-                    filtered_journal = self._journal_for_persistence(limit=None)
-                    if filtered_journal:
-                        rolling_file = os.path.join(self._snapshot_dir, "hydra_order_journal.json")
-                        rolling_tmp = rolling_file + ".tmp"
-                        try:
-                            with open(rolling_tmp, "w") as f:
-                                json.dump(filtered_journal, f, indent=2)
-                            os.replace(rolling_tmp, rolling_file)
-                        except Exception as e:
-                            # HF-003 fix: previously "except Exception: pass" silently
-                            # swallowed write failures (permission, disk, lock, etc.),
-                            # making logging outages invisible. Log the failure so it's
-                            # visible in stdout and in hydra_errors.log via the outer
-                            # tick-body exception handler.
-                            print(f"  [WARN] rolling journal write failed: {type(e).__name__}: {e}")
 
                 # Cap order journal to prevent unbounded memory growth
                 if len(self.order_journal) > self.ORDER_JOURNAL_CAP:
@@ -2073,13 +2172,8 @@ class HydraAgent:
                             print(f"  [WARN] {_stream_name}.ensure_healthy() failed: "
                                   f"{type(_se).__name__}: {_se}")
 
-            # HF-004 fix: snapshot immediately if the journal grew this tick,
-            # so a subsequent crash does not lose the newly-appended entries.
-            # Also save on the periodic cadence for engine state that
-            # changes without placements.
-            journal_grew = len(self.order_journal) > journal_size_start
-            if journal_grew or tick % self.SNAPSHOT_EVERY_N_TICKS == 0:
-                self._save_snapshot()
+            # After the finally drain, so a fill applied there is on disk.
+            self._checkpoint_tick(journal_size_start, tick)
 
             # Sleep until next tick
             next_tick_time = self.start_time + tick * self.interval
@@ -2260,10 +2354,22 @@ class HydraAgent:
             cached = None
         brain_size = 1.0
         if cached is not None:
+            # The cached `size_multiplier` is already brain × rules from the
+            # last pass. Reading it again and multiplying the rule stack
+            # compounds every intra-candle tick (R5 0.7 becomes 0.49, then
+            # 0.34, …). The raw brain factor is `size_multiplier_brain`.
+            # Fall back to `size_multiplier` only for a cache written
+            # before that field existed.
+            raw = cached.get("size_multiplier_brain")
+            if raw is None:
+                raw = cached.get("size_multiplier")
             try:
-                brain_size = float(cached.get("size_multiplier") if cached.get("size_multiplier") is not None else 1.0)
+                brain_size = float(1.0 if raw is None else raw)
             except (TypeError, ValueError):
                 brain_size = 1.0
+            if brain_size != brain_size or brain_size == float("inf") or brain_size == float("-inf"):
+                brain_size = 1.0
+            brain_size = max(0.0, min(1.5, brain_size))
 
         engine_action = state["signal"]["action"]
         rules_triggered: list = []
@@ -3018,6 +3124,15 @@ class HydraAgent:
         fills) are handled asynchronously by the execution stream — NOT
         here — on subsequent ticks.
         """
+        if self._resting_entry(pair) is not None:
+            # Defense behind _hold_for_resting_order. A swap leg (or any
+            # future caller) must not stack a second live order. Do not
+            # journal PLACEMENT_FAILED — that row would bury the working
+            # order in the dashboard's short tail.
+            print(f"  [INFLIGHT] {pair}: refusing {trade.get('action')} — "
+                  f"an order is already PLACED")
+            return False
+
         if self.paper:
             return self._place_paper_order(pair, trade, state)
 
@@ -3321,11 +3436,11 @@ class HydraAgent:
         while we were offline.
 
         For terminal orders (closed/canceled/expired): updates journal lifecycle
-        directly. Engine rollback is NOT possible for entries from previous
-        sessions (no pre_trade_snapshot persisted), so we log a warning.
+        and true-ups the engine from the persisted pre_trade_snapshot.
 
-        For still-open orders: registers them with the live ExecutionStream so
-        WS events can finalize them normally.
+        For still-open orders: registers them with the live ExecutionStream,
+        including that snapshot, so a later fill does not depend on the
+        journal row surviving a trim.
         """
         # Collect PLACED entries with queryable order IDs
         stale = []
@@ -3509,7 +3624,7 @@ class HydraAgent:
                             side=side,
                             placed_amount=float(placed_amount),
                             engine_ref=engine,
-                            pre_trade_snapshot=None,  # unavailable after restart
+                            pre_trade_snapshot=entry.get("pre_trade_snapshot"),
                         )
                         registered += 1
                         print(f"  [HYDRA] {pair} {side} {txid}: still open — "
@@ -3552,6 +3667,15 @@ class HydraAgent:
                   f"idx={idx} — event dropped")
             return
         state_name = event["state"]
+        # Length does not change. The tick loop snapshots when this is set
+        # so a restart does not reload the pre-fill engine book.
+        self._books_dirty = True
+        # Lifecycle is replaced wholesale. tuner_recorded has to be copied
+        # forward or a replayed fill appends a second observation. fee_applied
+        # is intentionally not copied: true-up restores the pre-fee book, so
+        # the fee must be debited again on the rewritten books.
+        prev_lc = entry.get("lifecycle") if isinstance(entry.get("lifecycle"), dict) else {}
+        tuner_already = bool(entry.get("tuner_recorded") or prev_lc.get("tuner_recorded"))
         entry["lifecycle"] = {
             "state": state_name,
             "vol_exec": event["vol_exec"],
@@ -3561,6 +3685,9 @@ class HydraAgent:
             "terminal_reason": event.get("terminal_reason"),
             "exec_ids": event.get("exec_ids") or [],
         }
+        if tuner_already:
+            entry["tuner_recorded"] = True
+            entry["lifecycle"]["tuner_recorded"] = True
 
         engine = event.get("engine_ref")
         pre_snap = event.get("pre_trade_snapshot")
@@ -3593,6 +3720,7 @@ class HydraAgent:
                     print(f"  [EXEC] {pair} {side} FILLED: true-up failed ({e}); "
                           f"fee still applied")
             self._deduct_fill_fee(engine, entry)
+            self._record_confirmed_tuner_outcome(engine, entry, side=side)
             return
         if state_name in ("CANCELLED_UNFILLED", "REJECTED"):
             snap = pre_snap
@@ -3634,8 +3762,10 @@ class HydraAgent:
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                           f"reconcile failed ({e}); engine may be over-committed")
                 # Fee is independent of reconcile success — terminal fill
-                # still paid the exchange fee.
+                # still paid the exchange fee. Tuner outcome is too: only a
+                # fill that actually flattens the book is recorded.
                 self._deduct_fill_fee(engine, entry)
+                self._record_confirmed_tuner_outcome(engine, entry, side=side)
             else:
                 print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                       f"filled {vol_exec:.8f}/{placed_amount:.8f} ({ratio:.1%}) — "
@@ -3675,6 +3805,98 @@ class HydraAgent:
             # impossible state (and would poison downstream sizing math).
             engine.balance = max(0.0, engine.balance - fee)
         lifecycle["fee_applied"] = True
+
+    def _record_confirmed_tuner_outcome(self, engine, entry, side: Optional[str] = None) -> None:
+        """Record one tuner outcome after a confirmed sell fill, net of fees.
+
+        Called only from the FILLED / PARTIALLY_FILLED paths, after
+        ``_deduct_fill_fee``. Not called for PLACED, cancel, or reject.
+        Win/loss uses the close P&L on the engine's post-true-up trade
+        minus this fill's ``lifecycle.fee_quote``. A zero, missing, or
+        non-numeric fee stays gross. Partial sells that leave inventory
+        open are skipped; the closing fill carries accumulated realized
+        P&L. ``tuner_recorded`` on the entry stops a replay from appending
+        a second observation (the lifecycle dict itself is replaced on
+        every apply).
+        """
+        if not isinstance(entry, dict):
+            return
+        lifecycle = entry.get("lifecycle") if isinstance(entry.get("lifecycle"), dict) else {}
+        if entry.get("tuner_recorded") or lifecycle.get("tuner_recorded"):
+            return
+        applied = str(side or entry.get("side") or "").upper()
+        if applied != "SELL":
+            return
+        if engine is None or not hasattr(engine, "position"):
+            return
+        # Full close only. A partial leg's P&L stays on realized_pnl until
+        # the position is flat, same as the old place-time gate.
+        if engine.position.size > 0:
+            return
+        trades = getattr(engine, "trades", None) or []
+        if not trades:
+            return
+        last = trades[-1]
+        if getattr(last, "action", None) != "SELL" or last.profit is None:
+            return
+        try:
+            gross = float(last.profit)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(gross):
+            return
+        try:
+            filled = float(lifecycle.get("vol_exec") or 0.0)
+        except (TypeError, ValueError):
+            return
+        if filled <= 0:
+            intent = entry.get("intent") if isinstance(entry.get("intent"), dict) else {}
+            try:
+                filled = float((intent or {}).get("amount") or 0.0)
+            except (TypeError, ValueError):
+                return
+        if filled <= 0:
+            return
+        try:
+            amount = float(last.amount)
+        except (TypeError, ValueError):
+            return
+        # The last SELL must be this fill, not an older round trip that
+        # happened to leave the book flat.
+        if abs(amount - filled) > max(1e-8, abs(filled) * 1e-4):
+            return
+        # Fee lives on the lifecycle written from the terminal event. A
+        # zero, missing, or non-numeric fee does not change the gross.
+        try:
+            fee = float(lifecycle.get("fee_quote") or 0.0)
+        except (TypeError, ValueError):
+            fee = 0.0
+        if not math.isfinite(fee) or fee <= 0:
+            fee = 0.0
+        net = gross - fee
+        params = getattr(last, "params_at_entry", None)
+        if not isinstance(params, dict) or not params:
+            decision = entry.get("decision") if isinstance(entry.get("decision"), dict) else {}
+            params = decision.get("params_at_entry") if isinstance(decision, dict) else None
+        if not isinstance(params, dict) or not params:
+            snap_params = getattr(engine, "snapshot_params", None)
+            params = snap_params() if callable(snap_params) else None
+        if not isinstance(params, dict) or not params:
+            return
+        pair = entry.get("pair") or getattr(engine, "asset", None)
+        tracker = self.trackers.get(pair) if pair else None
+        if tracker is None:
+            return
+        outcome = "win" if net > 0 else "loss"
+        tracker.record_trade(params, "SELL", outcome, net)
+        lifecycle["tuner_recorded"] = True
+        entry["tuner_recorded"] = True
+        self._completed_trades_since_update += 1
+        # Same cadence as the old place-time path, but it now fires when
+        # the confirming fill is applied (during the tick drain), so the
+        # next tick's entry sees the updated params.
+        if self._completed_trades_since_update >= 50:
+            self._run_tuner_update()
 
     def _run_tuner_update(self):
         """Run Bayesian parameter update across all pair trackers."""
@@ -3889,6 +4111,25 @@ class HydraAgent:
 
             self.prev_regimes[pair] = current_regime
 
+    def _restored_quote_book(self, pair: str, engine) -> bool:
+        """True when resume cash must not be replaced by a free-quote split."""
+        try:
+            if float(engine.position.size) > 0:
+                return True
+        except (TypeError, ValueError, AttributeError):
+            pass
+        want = str(pair or "").upper()
+        journal = getattr(self, "order_journal", None) or []
+        for entry in journal:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("pair") or "").upper() != want:
+                continue
+            lifecycle = entry.get("lifecycle") or {}
+            if isinstance(lifecycle, dict) and lifecycle.get("state") == "PLACED":
+                return True
+        return False
+
     def _set_engine_balances(self, per_pair_usd: float):
         """Set engine balances and the per-engine `tradable` flag.
 
@@ -3912,6 +4153,15 @@ class HydraAgent:
         initial_balance = cash + position_value so that P&L starts at 0% from
         the point of the balance reset, rather than showing a bogus gain from
         the position being valued against a tiny converted initial balance.
+
+        A restored book with ``position.size > 0`` or a journal row still
+        ``PLACED`` keeps its cash. Free quote already excludes a resting
+        buy's hold, so writing ``free/N`` onto that book keeps the
+        optimistic coins and cash that cannot fund them. A later
+        ``restore_position(pre_trade_snapshot)`` would also put one
+        engine's pre-split cash back. Engines that are flat and have no
+        working order are still seeded, from the free pool minus cash
+        already sitting on a locked book.
         """
         prices = self._get_asset_prices()
 
@@ -3929,21 +4179,58 @@ class HydraAgent:
             if q in STABLE_QUOTES:
                 stable_quote_counts[q] = stable_quote_counts.get(q, 0) + 1
 
+        # Cash already on a restored book is inside the free pool (the
+        # resting buy's hold is not). Splitting the whole pool again would
+        # hand a flat sibling those same dollars.
+        locked_cash: Dict[str, float] = {}
+        seed_counts: Dict[str, int] = {}
+        for p in self.pairs:
+            q = p.split("/")[1]
+            if q not in STABLE_QUOTES:
+                continue
+            eng = self.engines[p]
+            if self._restored_quote_book(p, eng):
+                try:
+                    kept = float(eng.balance or 0.0)
+                except (TypeError, ValueError):
+                    kept = 0.0
+                if kept > 0.0:
+                    locked_cash[q] = locked_cash.get(q, 0.0) + kept
+            else:
+                seed_counts[q] = seed_counts.get(q, 0) + 1
+
         def _stable_slice(q: str) -> float:
+            n_seed = seed_counts.get(q, 0)
+            if n_seed <= 0:
+                return 0.0
+            n_all = stable_quote_counts.get(q, 1) or 1
             if self.paper:
-                return per_pair_usd
-            pool = self._get_real_quote_balance(q)
-            if pool is None:
-                return per_pair_usd  # no balance data yet — legacy behavior
-            n = stable_quote_counts.get(q, 1)
-            return pool / n if n else 0.0
+                pool: Optional[float] = per_pair_usd * n_all
+            else:
+                pool = self._get_real_quote_balance(q)
+                if pool is None:
+                    pool = per_pair_usd * n_all  # no balance data yet
+            remain = float(pool) - locked_cash.get(q, 0.0)
+            if remain < 0.0:
+                remain = 0.0
+            return remain / n_seed
 
         for pair in self.pairs:
             engine = self.engines[pair]
             quote = pair.split("/")[1]
             current_price = engine.prices[-1] if engine.prices else 0
             if quote in STABLE_QUOTES:
-                slice_quote = _stable_slice(quote)
+                if self._restored_quote_book(pair, engine):
+                    try:
+                        slice_quote = float(engine.balance or 0.0)
+                    except (TypeError, ValueError):
+                        slice_quote = 0.0
+                    print(
+                        f"  [HYDRA] {pair}: keeping restored {quote} cash "
+                        f"{slice_quote:.8f} (open position or working order)"
+                    )
+                else:
+                    slice_quote = _stable_slice(quote)
                 equity = slice_quote + engine.position.size * current_price
                 old_peak = float(engine.peak_equity or 0.0)
                 dummy_split = float(
@@ -4165,56 +4452,100 @@ class HydraAgent:
     def _get_real_quote_balance(self, quote: str) -> Optional[float]:
         """Return the SPENDABLE exchange balance for a quote currency.
 
-        Source order: real-time BalanceStream (already hold-netted) → the
-        hold-netted REST snapshot from startup → the gross REST snapshot.
-        Returns None only if no balance data is available at all (should not
-        happen after warmup).
+        Source order: real-time BalanceStream free view → the hold-netted
+        REST snapshot from startup → the gross REST snapshot. Returns None
+        only when no balance data is available at all (should not happen
+        after warmup).
 
         "Spendable" means net of funds locked behind our own resting
         post-only orders. Gross balance double-counts them, which is what
         drove the `PLACEMENT_FAILED: insufficient_<quote>_balance` loop: the
         sizer re-committed money an unfilled order already owned. Equity and
-        drawdown deliberately do NOT use this — they read `_cached_balance`,
-        because held funds are still ours.
+        drawdown deliberately do NOT use this — they read `_cached_balance`
+        / `latest_balances()`, because held funds are still ours.
 
-        Falling through to the gross snapshot is intentional: an unavailable
-        hold feed reproduces pre-v2.32 behavior rather than blocking trading.
+        A successful free read is authoritative at 0, including an explicit
+        0.0 and an empty map (every unit is on hold, or nothing is held).
+        Fall open to gross only when that read failed: error envelope,
+        exception, or no payload yet. An absent hold field is stored as
+        free == gross by the producers.
         """
-        def _asset_map(candidate) -> Optional[dict]:
-            if not candidate or not isinstance(candidate, dict):
-                return None
-            # CLI error envelopes are truthy dicts but not an asset map.
-            # Treating them as $0 cash starved every USD engine on tick 1.
-            keys = [k for k in candidate if k != "error"]
-            if "error" in candidate and not keys:
-                return None
+        _MISSING = object()
+        _META = {
+            "error", "message", "error_category", "error_message",
+            "retryable", "suggestion", "docs_url", "raw", "partial",
+            "result", "balances", "volume", "count",
+        }
+
+        def _as_free_map(candidate):
+            # None / non-dict / error envelope → unknown (fail open).
+            # {} is a successful read with nothing spendable.
+            if candidate is None or not isinstance(candidate, dict):
+                return _MISSING
+            if "error" in candidate:
+                for key, value in candidate.items():
+                    if key in _META or isinstance(value, bool):
+                        continue
+                    try:
+                        float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    return candidate
+                return _MISSING
             return candidate
 
-        bal = None
-        if not self.paper and self.balance_stream.healthy:
-            # FREE view: gross minus funds held in resting orders.
-            bal = _asset_map(self.balance_stream.latest_free_balances())
-            if not bal:
-                bal = _asset_map(self.balance_stream.latest_balances())
-        if not bal:
-            bal = _asset_map(getattr(self, "_cached_free_balance", None))
-        if not bal:
-            bal = _asset_map(getattr(self, "_cached_balance", None))
-        if not bal:
-            return None
-        # Sum all non-staked holdings that normalize to the quote currency.
-        total = 0.0
-        for asset, amount in bal.items():
-            if asset in ("error", "result", "balances", "volume", "count"):
-                continue
-            if KrakenCLI._is_staked(asset):
-                continue
-            if KrakenCLI._normalize_asset(asset) == quote:
-                try:
-                    total += float(amount)
-                except (TypeError, ValueError):
+        def _sum(bal: dict) -> float:
+            total, _matched = _sum_matched(bal)
+            return total
+
+        def _sum_matched(bal: dict):
+            total = 0.0
+            matched = False
+            for asset, amount in bal.items():
+                if asset in _META or not isinstance(asset, str):
                     continue
-        return total
+                if KrakenCLI._is_staked(asset):
+                    continue
+                if KrakenCLI._normalize_asset(asset) == quote:
+                    matched = True
+                    try:
+                        total += float(amount)
+                    except (TypeError, ValueError):
+                        continue
+            return total, matched
+
+        stream = getattr(self, "balance_stream", None)
+        if not self.paper and stream is not None and getattr(stream, "healthy", False):
+            free = _as_free_map(stream.latest_free_balances())
+            if free is not _MISSING:
+                total, matched = _sum_matched(free)
+                # A snapshot (or an empty map) is the whole account.
+                # An update before that must not zero assets it did not
+                # mention — those still fall open to gross.
+                complete = True
+                checker = getattr(stream, "free_view_is_complete", None)
+                if callable(checker):
+                    complete = bool(checker())
+                if matched or not free or complete:
+                    return total
+            gross = stream.latest_balances()
+            if isinstance(gross, dict) and gross:
+                mapped = _as_free_map(gross)
+                if mapped is not _MISSING:
+                    return _sum(mapped)
+
+        cached_free = getattr(self, "_cached_free_balance", None)
+        if cached_free is not None:
+            free = _as_free_map(cached_free)
+            if free is not _MISSING:
+                return _sum(free)
+
+        cached = getattr(self, "_cached_balance", None)
+        if isinstance(cached, dict) and cached:
+            mapped = _as_free_map(cached)
+            if mapped is not _MISSING:
+                return _sum(mapped)
+        return None
 
     def _extract_fee_tier(self, vol_response: dict) -> dict:
         """Normalize a `kraken volume` response into a compact fee-tier dict.
@@ -4325,6 +4656,56 @@ class HydraAgent:
             "assets": assets,
         }
 
+    def _publish_tick_state(self, tick: int, all_states: dict, elapsed: float) -> None:
+        """Refresh pair books and broadcast. Drops `_pre_trade_snapshot` first."""
+        # Strip internal rollback data before broadcasting to dashboard
+        for pair in self.pairs:
+            state = all_states.get(pair)
+            if state:
+                state.pop("_pre_trade_snapshot", None)
+
+        # Refresh performance/portfolio/position in state dicts from
+        # engine's actual state. When brain is active, tick() ran with
+        # generate_only=True so the state dict was built BEFORE
+        # execute_signal() updated counters.  Even without brain,
+        # a failed order + rollback can desync the dict.  Refreshing
+        # here ensures the dashboard always sees authoritative values.
+        for pair in self.pairs:
+            state = all_states.get(pair)
+            if not state:
+                continue
+            engine = self.engines[pair]
+            current_price = engine.prices[-1] if engine.prices else 0
+            equity = engine.balance + (engine.position.size * current_price)
+            is_usd_pair = (pair.split("/")[1].upper() if "/" in pair else "") in STABLE_QUOTES
+            vd = 2 if is_usd_pair else 8
+            pnl_pct = ((equity - engine.initial_balance) / engine.initial_balance * 100) if engine.initial_balance > 0 else 0
+            wl = engine.win_count + engine.loss_count
+            win_rate = (engine.win_count / wl * 100) if wl > 0 else 0
+            state["performance"] = {
+                "total_trades": engine.total_trades,
+                "win_count": engine.win_count,
+                "loss_count": engine.loss_count,
+                "win_rate_pct": round(win_rate, 2),
+                "sharpe_estimate": round(engine._calc_sharpe(), 4),
+            }
+            state["portfolio"] = {
+                "balance": round(engine.balance, vd),
+                "equity": round(equity, vd),
+                "pnl_pct": round(pnl_pct, 4),
+                "max_drawdown_pct": round(engine.max_drawdown, 4),
+                "peak_equity": round(engine.peak_equity, vd),
+            }
+            state["position"] = {
+                "size": round(engine.position.size, 8),
+                "avg_entry": round(engine.position.avg_entry, 8),
+                "unrealized_pnl": round(engine.position.unrealized_pnl, vd),
+            }
+
+        # Broadcast state to dashboard (uses cached balance, no extra API call)
+        dashboard_state = self._build_dashboard_state(tick, all_states, elapsed)
+        self.broadcaster.broadcast(dashboard_state)
+
     def _build_dashboard_state(self, tick: int, all_states: dict,
                                 elapsed: float) -> dict:
         """Build the full state dict for the dashboard WebSocket."""
@@ -4404,12 +4785,13 @@ class HydraAgent:
         pairs_data = {}
         for pair, state in all_states.items():
             pairs_data[pair] = state
-            # Per-pair tradable flag — dashboard renders an INFO-ONLY
-            # badge when False. Defaults to True if the engine is
-            # missing (defensive: should not happen).
+            # Per-pair tradable flag — dashboard badge when False says
+            # entries are blocked and exits are still allowed. Defaults
+            # to True if the engine is missing (defensive: should not happen).
             engine = self.engines.get(pair)
             if state is not None:
                 state["tradable"] = bool(getattr(engine, "tradable", True)) if engine else True
+                state["exit_only"] = bool(getattr(engine, "exit_only", False)) if engine else False
 
         # Journal-derived stats — wrapped in try/except so a malformed journal
         # entry can never crash the broadcast and blank the dashboard.
@@ -4552,10 +4934,13 @@ class HydraAgent:
                 "peak_usd": round(self._portfolio_peak_usd, 2),
                 "current_pct": round(self._portfolio_current_drawdown_pct, 4),
                 "max_pct": round(self._portfolio_max_drawdown_pct, 4),
+                # Sticky. current_pct can recover under 15% while new BUYs
+                # stay blocked until HYDRA_RESET_CIRCUIT_BREAKER=1.
+                "buy_halted": bool(getattr(self, "_portfolio_buy_halted", False)),
             },
             "fee_tier": self._fee_tier_cache,
             "pairs": pairs_data,
-            "order_journal": self.order_journal[-20:],
+            "order_journal": self._journal_for_dashboard(20),
             "journal_stats": journal_stats,
             "running": self.running,
             "interval": self.interval,
@@ -4853,7 +5238,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.33.2",
+            "version": "2.33.3",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
