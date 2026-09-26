@@ -1,6 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 import ResearchTab from "./components/ResearchTab";
+import {
+  currentDrawdownPct,
+  deadManCell,
+  finitePct,
+  reduceAuthAck,
+  shouldApplyLiveState,
+  TRADABLE_FALSE_TITLE,
+} from "./liveDisplay.js";
 
 // ═══════════════════════════════════════════════════════════════
 // HYDRA Live Dashboard — Connects to hydra_agent.py WebSocket
@@ -1354,6 +1362,8 @@ export function HydraDashboard({ jwtToken, onLogout }) {
   // Track in-flight message timeouts so we can cancel them when a reply arrives.
   const pendingTimeoutsRef = useRef({});  // { [msgId]: timeoutHandle }
   const wsRef = useRef(null);
+  // Per socket. State frames are ignored until this socket's auth_ack succeeds.
+  const liveAuthedRef = useRef(false);
   const reconnectRef = useRef(null);
   // Exponential backoff counter for WS reconnect: doubles each failed
   // attempt up to a cap. Reset to 0 on successful onopen so a transient
@@ -1388,6 +1398,12 @@ export function HydraDashboard({ jwtToken, onLogout }) {
     if (data.order_journal) setOrderJournal(data.order_journal);
   }, []);
 
+  const clearAppliedLiveState = useCallback(() => {
+    setState(null);
+    setHistory([]);
+    setOrderJournal([]);
+  }, []);
+
   // Declared before `connect` so `connect`'s deps array can reference it
   // without hitting the const TDZ (ReferenceError blanked the dashboard
   // in v2.15.0 until this was hoisted).
@@ -1411,6 +1427,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
     // Don't open a second socket while the first handshake is in flight
     // (StrictMode remount / connect identity change).
     if (cur && (cur.readyState === WebSocket.OPEN || cur.readyState === WebSocket.CONNECTING)) return;
+    liveAuthedRef.current = false;
     const ws = new WebSocket(sanitizeWsUrl(wsUrl));
     wsRef.current = ws;
     ws.onopen = async () => {
@@ -1436,17 +1453,26 @@ export function HydraDashboard({ jwtToken, onLogout }) {
         const msg = JSON.parse(event.data);
 
         // Phase 6+ wrapped state: {type:"state", data:{...}}
+        // Ignore until this socket's auth_ack succeeds. The server already
+        // sends nothing before the handshake; this is the client half so a
+        // frame cannot paint balances while the header still says disconnected.
         if (msg && msg.type === "state" && msg.data) {
-          applyLiveState(msg.data);
+          if (wsRef.current === ws && shouldApplyLiveState(liveAuthedRef.current)) {
+            applyLiveState(msg.data);
+          }
           return;
         }
         // New typed messages (Phase 6+)
         if (msg && typeof msg.type === "string") {
           switch (msg.type) {
-            case "auth_ack":
+            case "auth_ack": {
               // The server sends no account state until this succeeds, so
               // `connected` tracks authentication, not socket liveness.
-              if (msg.success) {
+              // A late ack from a replaced socket must not auth this one.
+              if (wsRef.current !== ws) return;
+              const decision = reduceAuthAck(msg);
+              liveAuthedRef.current = decision.authed;
+              if (decision.authed) {
                 reconnectAttemptsRef.current = 0;
                 setConnected(true);
               } else {
@@ -1454,8 +1480,10 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                   + "dashboard is served from the same agent process "
                   + "(hydra_ws_token.json).");
                 setConnected(false);
+                if (decision.clearLive) clearAppliedLiveState();
               }
               return;
+            }
             case "backtest_progress":
               setBtProgress((prev) => lruCapDict(prev, msg.experiment_id, msg, MAX_BACKTEST_DICT_ENTRIES));
               // Accumulate per-pair equity for the observer chart. Cap total
@@ -1742,7 +1770,9 @@ export function HydraDashboard({ jwtToken, onLogout }) {
         // the LIVE view during the one-release compat window.
         if (msg && typeof msg === "object" && msg.type === undefined
             && LIVE_STATE_KEYS.some((k) => k in msg)) {
-          applyLiveState(msg);
+          if (wsRef.current === ws && shouldApplyLiveState(liveAuthedRef.current)) {
+            applyLiveState(msg);
+          }
         }
       } catch (e) { console.error("[HYDRA] Parse error:", e); }
     };
@@ -1768,7 +1798,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       ws.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyLiveState, refreshWsToken, wsUrl]);
+  }, [applyLiveState, clearAppliedLiveState, refreshWsToken, wsUrl]);
 
   // Keep `connectRef` pointing at the freshest connect closure
   useEffect(() => { connectRef.current = connect; }, [connect]);
@@ -1974,6 +2004,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
   const pairs = state?.pairs || {};
   const pairNames = Object.keys(pairs);
   const isLoaded = state && pairNames.length > 0;
+  const deadMan = deadManCell(state);
 
   useEffect(() => {
     if (isLoaded) {
@@ -2232,11 +2263,19 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                         <span style={{ fontSize: 16, fontWeight: 700, fontFamily: heading, color: COLORS.text }}>{pair}</span>
                         <span style={{ fontSize: 22, fontWeight: 700, fontFamily: mono, color: COLORS.text }}>{fmtPrice(ps.price || 0, pairPrefix(pair))}</span>
                         {ps.tradable === false && (
-                          <span title="Signal-only: the quote currency for this pair isn't held, so orders won't be placed. Signals still feed cross-pair confluence."
+                          <span title={TRADABLE_FALSE_TITLE}
                                 style={{ fontSize: 9, fontFamily: mono, color: COLORS.warn,
                                          background: `${COLORS.warn}18`, padding: "2px 6px",
                                          borderRadius: 3, letterSpacing: "0.08em", fontWeight: 700 }}>
-                            INFO-ONLY
+                            ENTRIES BLOCKED
+                          </span>
+                        )}
+                        {ps.exit_only === true && (
+                          <span title="Exit only: new entries are blocked. Sells are still allowed."
+                                style={{ fontSize: 9, fontFamily: mono, color: COLORS.warn,
+                                         background: `${COLORS.warn}18`, padding: "2px 6px",
+                                         borderRadius: 3, letterSpacing: "0.08em", fontWeight: 700 }}>
+                            EXIT-ONLY
                           </span>
                         )}
                       </div>
@@ -2854,6 +2893,8 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                 const pairFills = pf.buys + pf.sells;
                 const pairPnl = (jStats.pnl_by_pair || {})[pair] || {};
                 const pairNetUsd = pairPnl.net_usd || 0;
+                const curDd = currentDrawdownPct(ps.portfolio);
+                const maxDd = finitePct(ps.portfolio?.max_drawdown_pct);
                 return (
                   <div key={pair} style={{ background: `${regimeColor(ps.regime)}08`, border: `1px solid ${regimeColor(ps.regime)}25`, borderRadius: 8, padding: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
@@ -2872,8 +2913,12 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                       <span style={{ color: COLORS.textDim }}>Sharpe</span>
                       <span style={{ color: COLORS.text, textAlign: "right" }}>{(perf.sharpe_estimate || 0).toFixed(2)}</span>
                       <span style={{ color: COLORS.textDim }}>Drawdown</span>
-                      <span style={{ color: (ps.portfolio?.max_drawdown_pct || 0) > 5 ? COLORS.danger : COLORS.text, textAlign: "right" }}>
-                        {(ps.portfolio?.max_drawdown_pct || 0).toFixed(2)}%
+                      <span style={{ color: curDd != null && curDd > 5 ? COLORS.danger : COLORS.text, textAlign: "right" }}>
+                        {curDd == null ? "—" : `${curDd.toFixed(2)}%`}
+                      </span>
+                      <span style={{ color: COLORS.textDim }}>Max DD</span>
+                      <span style={{ color: maxDd != null && maxDd > 5 ? COLORS.danger : COLORS.text, textAlign: "right" }}>
+                        {maxDd == null ? "—" : `${maxDd.toFixed(2)}%`}
                       </span>
                     </div>
                   </div>
@@ -2943,7 +2988,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                   <span style={{ color: COLORS.textDim }}>Circuit Brk</span>
                   <span style={{ color: COLORS.text, textAlign: "right" }}>15% DD</span>
                   <span style={{ color: COLORS.textDim }}>Dead Man</span>
-                  <span style={{ color: COLORS.accent, textAlign: "right" }}>Active</span>
+                  <span style={{ color: deadMan.neutral ? COLORS.textMuted : COLORS.text, textAlign: "right" }}>{deadMan.text}</span>
                   <span style={{ color: COLORS.textDim }}>Sizing</span>
                   <span style={{ color: COLORS.text, textAlign: "right" }}>{state?.mode === "competition" ? "Half-Kelly" : "Quarter-Kelly"}</span>
                   <span style={{ color: COLORS.textDim }}>FX Session</span>

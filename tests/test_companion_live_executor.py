@@ -12,8 +12,13 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from hydra_companions.executor import TradeProposal, LadderProposal, LadderRung
+from hydra_companions.config import live_execution_enabled
+from hydra_companions.executor import (
+    TradeProposal, LadderProposal, LadderRung, ProposalValidator,
+)
 from hydra_companions.live_executor import LiveExecutor, _proposal_userref
+from hydra_companions.router import Router
+from hydra_engine import HydraEngine
 
 
 @pytest.fixture(autouse=True)
@@ -221,6 +226,116 @@ def test_ladder_mid_failure_cancels_placed_rungs():
     assert r["placed_rungs"][0]["status"] == "cancelled"
     types = [t for t, _ in agent.broadcaster.msgs]
     assert "companion.trade.failed" in types
+
+
+def _sell(size=0.1):
+    return TradeProposal(
+        proposal_id="prop-sell", companion_id="apex", user_id="local",
+        pair="SOL/USDC", side="sell", size=size, limit_price=141.0,
+        stop_loss=148.0, rationale="",
+    )
+
+
+def _engine(**kwargs):
+    eng = HydraEngine(initial_balance=1000.0, asset="SOL/USDC")
+    eng.exit_only = kwargs.get("exit_only", False)
+    eng.tradable = kwargs.get("tradable", True)
+    eng.position.size = kwargs.get("size", 0.0)
+    return eng
+
+
+def test_live_flag_defaults_off_and_places_nothing():
+    """HYDRA_COMPANION_LIVE_EXECUTION stays off unless it is exactly \"1\"."""
+    prev = os.environ.get("HYDRA_COMPANION_LIVE_EXECUTION")
+    prev_dis = os.environ.get("HYDRA_COMPANION_DISABLED")
+    prev_prop = os.environ.get("HYDRA_COMPANION_PROPOSALS_ENABLED")
+    try:
+        os.environ.pop("HYDRA_COMPANION_LIVE_EXECUTION", None)
+        os.environ.pop("HYDRA_COMPANION_DISABLED", None)
+        os.environ.pop("HYDRA_COMPANION_PROPOSALS_ENABLED", None)
+        assert live_execution_enabled() is False
+        agent = StubAgent()
+        ex = LiveExecutor(agent=agent, coordinator=StubCoord())
+        r = ex.execute_trade(_p())
+        assert r["ok"] is False
+        assert r["error"] == "live execution disabled"
+        assert agent.kraken_cli.buys == []
+        assert agent.kraken_cli.sells == []
+    finally:
+        def _restore(key, val):
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = val
+        _restore("HYDRA_COMPANION_LIVE_EXECUTION", prev)
+        _restore("HYDRA_COMPANION_DISABLED", prev_dis)
+        _restore("HYDRA_COMPANION_PROPOSALS_ENABLED", prev_prop)
+
+
+def test_buy_rejected_before_order_when_exit_only_or_not_tradable():
+    agent = StubAgent()
+    agent.engines = {"SOL/USDC": _engine(exit_only=True)}
+    ex = LiveExecutor(agent=agent, coordinator=StubCoord())
+    r = ex.execute_trade(_p())
+    assert r["ok"] is False
+    assert "exit_only" in r["error"]
+    assert agent.kraken_cli.buys == []
+    assert agent.kraken_cli.sells == []
+
+    agent.engines = {"SOL/USDC": _engine(tradable=False)}
+    r = ex.execute_trade(_p())
+    assert r["ok"] is False
+    assert "tradable" in r["error"]
+    assert agent.kraken_cli.buys == []
+
+
+def test_sell_over_position_rejected_before_order_sell():
+    agent = StubAgent()
+    agent.engines = {"SOL/USDC": _engine(size=0.05)}
+    ex = LiveExecutor(agent=agent, coordinator=StubCoord())
+    r = ex.execute_trade(_sell(0.2))
+    assert r["ok"] is False
+    assert "exceeds" in r["error"]
+    assert agent.kraken_cli.sells == []
+    assert agent.kraken_cli.buys == []
+
+    # A sell inside inventory still reaches the exchange as a limit, not a market.
+    agent.engines = {"SOL/USDC": _engine(size=0.2, tradable=False)}
+    r = ex.execute_trade(_sell(0.1))
+    assert r["ok"] is True, r
+    assert len(agent.kraken_cli.sells) == 1
+    assert agent.kraken_cli.sells[0]["order_type"] == "limit"
+    assert agent.kraken_cli.sells[0]["post_only"] is True
+    assert agent.kraken_cli.buys == []
+
+
+def test_ladder_buy_rejected_before_any_rung_when_exit_only():
+    agent = StubAgent()
+    agent.engines = {"SOL/USDC": _engine(exit_only=True)}
+    ex = LiveExecutor(agent=agent, coordinator=StubCoord())
+    r = ex.execute_ladder(_ladder())
+    assert r["ok"] is False
+    assert "exit_only" in r["error"]
+    assert agent.kraken_cli.buys == []
+
+
+def test_validate_trade_rejects_exit_only_untradable_and_oversell():
+    agent = StubAgent()
+    agent.engines = {"SOL/USDC": _engine(exit_only=True)}
+    v = ProposalValidator(agent=agent, router=Router())
+    buy = v.validate_trade(_p())
+    assert not buy.ok
+    assert "exit_only" in buy.reason
+
+    agent.engines = {"SOL/USDC": _engine(tradable=False)}
+    blocked = v.validate_trade(_p())
+    assert not blocked.ok
+    assert "tradable" in blocked.reason
+
+    agent.engines = {"SOL/USDC": _engine(size=0.05)}
+    sell = v.validate_trade(_sell(0.2))
+    assert not sell.ok
+    assert "exceeds" in sell.reason
 
 
 def test_ladder_allowed_when_under_daily_cap():

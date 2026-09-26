@@ -136,12 +136,35 @@ class TestReconcileStalePlaced:
             stub.restore()
 
     def test_placed_filled_updates_journal(self):
-        """PLACED entry + exchange says closed → lifecycle updated to FILLED."""
+        """PLACED + exchange fill trues avg_entry to the exchange price.
+
+        The optimistic book is the candle close. The journal carries
+        snapshot_position() from before that book, and the exchange price
+        is different. true_up_fill must win.
+        """
+        candle_close = 100.0
+        exchange_px = 130.50
+        eng = HydraEngine(initial_balance=5000.0, asset="SOL/USDC")
+        eng.ingest_candle({
+            "open": candle_close, "high": candle_close + 0.5,
+            "low": candle_close - 0.5, "close": candle_close,
+            "volume": 10.0, "timestamp": 1_700_000_000.0,
+        })
+        assert eng.prices[-1] == candle_close
+        snap = eng.snapshot_position()
+        # Optimistic fill at the candle close, not the exchange price.
+        eng.position.size = 1.0
+        eng.position.avg_entry = candle_close
+        eng.balance -= candle_close
+
         entry = _make_placed_entry(order_id="TX_FILL", amount=1.0)
+        entry["intent"]["limit_price"] = candle_close
+        entry["pre_trade_snapshot"] = snap
         agent = _make_agent(journal=[entry])
+        agent.engines["SOL/USDC"] = eng
 
         resp = {"TX_FILL": {
-            "status": "closed", "vol_exec": "1.0", "price": "130.50",
+            "status": "closed", "vol_exec": "1.0", "price": str(exchange_px),
             "fee": "0.065", "closetm": "2026-04-12T20:10:00Z",
         }}
         stub = _StubRun(resp)
@@ -159,9 +182,11 @@ class TestReconcileStalePlaced:
         lc = entry["lifecycle"]
         assert lc["state"] == "FILLED"
         assert lc["vol_exec"] == 1.0
-        assert lc["avg_fill_price"] == 130.50
+        assert lc["avg_fill_price"] == exchange_px
         assert lc["fee_quote"] == 0.065
         assert "reconciled on resume" in lc["terminal_reason"]
+        assert eng.position.avg_entry == exchange_px
+        assert eng.position.avg_entry != candle_close
 
     def test_placed_partially_filled_closed(self):
         """PLACED + exchange closed with partial fill → PARTIALLY_FILLED."""

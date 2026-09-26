@@ -2105,53 +2105,8 @@ class HydraAgent:
                 if self._completed_trades_since_update >= 50:
                     self._run_tuner_update()
 
-                # Strip internal rollback data before broadcasting to dashboard
-                for pair in self.pairs:
-                    state = all_states.get(pair)
-                    if state:
-                        state.pop("_pre_trade_snapshot", None)
-
-                # Refresh performance/portfolio/position in state dicts from
-                # engine's actual state. When brain is active, tick() ran with
-                # generate_only=True so the state dict was built BEFORE
-                # execute_signal() updated counters.  Even without brain,
-                # a failed order + rollback can desync the dict.  Refreshing
-                # here ensures the dashboard always sees authoritative values.
-                for pair in self.pairs:
-                    state = all_states.get(pair)
-                    if not state:
-                        continue
-                    engine = self.engines[pair]
-                    current_price = engine.prices[-1] if engine.prices else 0
-                    equity = engine.balance + (engine.position.size * current_price)
-                    is_usd_pair = (pair.split("/")[1].upper() if "/" in pair else "") in STABLE_QUOTES
-                    vd = 2 if is_usd_pair else 8
-                    pnl_pct = ((equity - engine.initial_balance) / engine.initial_balance * 100) if engine.initial_balance > 0 else 0
-                    wl = engine.win_count + engine.loss_count
-                    win_rate = (engine.win_count / wl * 100) if wl > 0 else 0
-                    state["performance"] = {
-                        "total_trades": engine.total_trades,
-                        "win_count": engine.win_count,
-                        "loss_count": engine.loss_count,
-                        "win_rate_pct": round(win_rate, 2),
-                        "sharpe_estimate": round(engine._calc_sharpe(), 4),
-                    }
-                    state["portfolio"] = {
-                        "balance": round(engine.balance, vd),
-                        "equity": round(equity, vd),
-                        "pnl_pct": round(pnl_pct, 4),
-                        "max_drawdown_pct": round(engine.max_drawdown, 4),
-                        "peak_equity": round(engine.peak_equity, vd),
-                    }
-                    state["position"] = {
-                        "size": round(engine.position.size, 8),
-                        "avg_entry": round(engine.position.avg_entry, 8),
-                        "unrealized_pnl": round(engine.position.unrealized_pnl, vd),
-                    }
-
-                # Broadcast state to dashboard (uses cached balance, no extra API call)
-                dashboard_state = self._build_dashboard_state(tick, all_states, elapsed)
-                self.broadcaster.broadcast(dashboard_state)
+                # Strip `_pre_trade_snapshot`, refresh books, broadcast.
+                self._publish_tick_state(tick, all_states, elapsed)
 
                 # Drain queued WS execution events and apply them to the
                 # journal + engine state. Pushes, not polls — the stream
@@ -4504,6 +4459,56 @@ class HydraAgent:
             "assets": assets,
         }
 
+    def _publish_tick_state(self, tick: int, all_states: dict, elapsed: float) -> None:
+        """Refresh pair books and broadcast. Drops `_pre_trade_snapshot` first."""
+        # Strip internal rollback data before broadcasting to dashboard
+        for pair in self.pairs:
+            state = all_states.get(pair)
+            if state:
+                state.pop("_pre_trade_snapshot", None)
+
+        # Refresh performance/portfolio/position in state dicts from
+        # engine's actual state. When brain is active, tick() ran with
+        # generate_only=True so the state dict was built BEFORE
+        # execute_signal() updated counters.  Even without brain,
+        # a failed order + rollback can desync the dict.  Refreshing
+        # here ensures the dashboard always sees authoritative values.
+        for pair in self.pairs:
+            state = all_states.get(pair)
+            if not state:
+                continue
+            engine = self.engines[pair]
+            current_price = engine.prices[-1] if engine.prices else 0
+            equity = engine.balance + (engine.position.size * current_price)
+            is_usd_pair = (pair.split("/")[1].upper() if "/" in pair else "") in STABLE_QUOTES
+            vd = 2 if is_usd_pair else 8
+            pnl_pct = ((equity - engine.initial_balance) / engine.initial_balance * 100) if engine.initial_balance > 0 else 0
+            wl = engine.win_count + engine.loss_count
+            win_rate = (engine.win_count / wl * 100) if wl > 0 else 0
+            state["performance"] = {
+                "total_trades": engine.total_trades,
+                "win_count": engine.win_count,
+                "loss_count": engine.loss_count,
+                "win_rate_pct": round(win_rate, 2),
+                "sharpe_estimate": round(engine._calc_sharpe(), 4),
+            }
+            state["portfolio"] = {
+                "balance": round(engine.balance, vd),
+                "equity": round(equity, vd),
+                "pnl_pct": round(pnl_pct, 4),
+                "max_drawdown_pct": round(engine.max_drawdown, 4),
+                "peak_equity": round(engine.peak_equity, vd),
+            }
+            state["position"] = {
+                "size": round(engine.position.size, 8),
+                "avg_entry": round(engine.position.avg_entry, 8),
+                "unrealized_pnl": round(engine.position.unrealized_pnl, vd),
+            }
+
+        # Broadcast state to dashboard (uses cached balance, no extra API call)
+        dashboard_state = self._build_dashboard_state(tick, all_states, elapsed)
+        self.broadcaster.broadcast(dashboard_state)
+
     def _build_dashboard_state(self, tick: int, all_states: dict,
                                 elapsed: float) -> dict:
         """Build the full state dict for the dashboard WebSocket."""
@@ -4583,12 +4588,13 @@ class HydraAgent:
         pairs_data = {}
         for pair, state in all_states.items():
             pairs_data[pair] = state
-            # Per-pair tradable flag — dashboard renders an INFO-ONLY
-            # badge when False. Defaults to True if the engine is
-            # missing (defensive: should not happen).
+            # Per-pair tradable flag — dashboard badge when False says
+            # entries are blocked and exits are still allowed. Defaults
+            # to True if the engine is missing (defensive: should not happen).
             engine = self.engines.get(pair)
             if state is not None:
                 state["tradable"] = bool(getattr(engine, "tradable", True)) if engine else True
+                state["exit_only"] = bool(getattr(engine, "exit_only", False)) if engine else False
 
         # Journal-derived stats — wrapped in try/except so a malformed journal
         # entry can never crash the broadcast and blank the dashboard.
