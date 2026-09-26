@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [2.33.3] — 2026-09-26
 
 ### Added
 
@@ -32,6 +32,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **One working order per pair.** A second signal while a post-only order was still `PLACED` booked another optimistic fill. The first order's true-up then restored the older snapshot and left the second order live against a book that no longer matched it, so a flatten tried to sell coins the entry had not bought. Same-side signals now wait. An opposite signal cancels the resting order and places on a later tick.
 - **Fill true-up survived restart.** A confirmed fill rewrote the journal row in place, so the snapshot cadence (new rows, or every 120 ticks) could reload the pre-fill engine book under `--resume`. The rolling journal is written after the execution-stream drain, and any book change saves the snapshot on that tick.
 - **Dashboard BUY halt.** The portfolio breaker stays on after drawdown recovers under 15%. The banner now follows the sticky `buy_halted` flag, and a resting order is kept in the journal strip when later failures would have pushed it out of the last 20 rows.
+- **Same-tick circuit-breaker flatten.** The tick that arms the 15% breaker returns a `HALT FLATTEN` sell when inventory is open, instead of waiting for the next tick. A flat book arms and does not sell.
+- **Tuner learns the confirmed fill.** An all-loss update clears its observation window. `min_confidence_threshold` cannot be tuned below 0.65. Win/loss is recorded when the sell fill is confirmed, net of the fee, and a cancel does not leave a placement-time observation.
+- **Backtest end-of-tape books.** An order placed on the final bar is restored and counted as a reject, and that pair's last equity point matches the restored book. Closed-trade profit nets both the buy fee and the sell fee without debiting cash twice. Lab walk-forward still warms up on the pad, and the reported fold metrics cover only the out-of-sample window.
+- **Dashboard state matches the book.** The pair card shows current drawdown and a separate max. Paper and demo do not claim the dead-man switch is on. An untradable pair says entries are blocked and exits are allowed. `exit_only` is broadcast and shown. Live frames are applied after `auth_ack`.
+- **Companion live rejects.** With the live flag on, a BUY is refused when the engine is `exit_only` or not tradable, and a SELL larger than `position.size` is refused. The flag stays off by default. The card stop is still not an order.
 - **kraken-cli v0.4.1 `ohlc` object-array** was parsed as empty, so warmup
   left engines with one forming bar and the dashboard hid every chart.
 - **`--pairs auto` cores stayed on unfunded USD** while the book held
