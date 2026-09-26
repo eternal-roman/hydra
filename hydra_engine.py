@@ -1463,6 +1463,13 @@ class HydraEngine:
             )
         except (TypeError, ValueError):
             return  # Malformed candle data — skip silently
+        # A missing close arrives as 0 (`or 0`), and NaN is finite-false.
+        # Either one is a real price to the SELL path, which would liquidate
+        # the position for no cash and print a 100% drawdown.
+        if not all(math.isfinite(v) and v > 0 for v in (
+            candle.open, candle.high, candle.low, candle.close,
+        )):
+            return
         signed = _chaikin_signed_volume(candle)
         # Deduplicate: if Kraken timestamp matches last candle, update in place (incomplete candle refresh)
         if has_timestamp and self.candles and self.candles[-1].timestamp == candle.timestamp:
@@ -1915,6 +1922,8 @@ class HydraEngine:
             return None
 
         current_price = self.prices[-1]
+        if not math.isfinite(current_price) or current_price <= 0:
+            return None
         effective_mult = self._apply_size_multiplier(size_multiplier)
 
         # Friction expectancy gate (v2.27, entries only): a BUY whose
@@ -1959,18 +1968,15 @@ class HydraEngine:
             # made entries so small the engine could not compound even when
             # right. Kelly remains the floor; the gross-inventory cap below
             # still binds. Kill: HYDRA_TREND_CONVICTION_SIZING=0.
-            if (size > 0
+            if (effective_mult > 0
                     and self.daily_trend_long() is True
                     and os.environ.get("HYDRA_TREND_CONVICTION_SIZING") != "0"):
-                # `effective_mult` MUST scale the floor too. Without it the
-                # max() below silently discarded every de-risking decision in
-                # the stack — the brain's quant x RM product and the whole
-                # R3/R5/R7 penalty chain — because `conviction_value` was
-                # derived from `balance` alone. An RM "ADJUST, size 0.3" and a
-                # clean 1.0 produced byte-identical notional; only an exact
-                # 0.0 survived, via the `size > 0` guard. That inverted PR-B
-                # ("max_position_pct applies AFTER brain size_multiplier"):
-                # the multiplier bound on the Kelly path and was a no-op here.
+                # `effective_mult` MUST scale the floor too. A hard veto
+                # (multiplier 0) stays out via the guard above. A Kelly size
+                # of 0 does not: calculate() returns 0 when the crumb is
+                # under ordermin, and that used to skip the floor entirely,
+                # so a small book never reached the conviction size that
+                # actually clears the exchange minimum.
                 conviction_value = (
                     self.balance * self.sizer.max_position_pct
                     * self._trend_vol_multiplier() * effective_mult

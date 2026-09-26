@@ -2908,8 +2908,10 @@ export function HydraDashboard({ jwtToken, onLogout }) {
 
               {(() => {
                 const haltedPairs = pairNames.filter((p) => pairs[p]?.halted);
-                const pdd = state?.portfolio_drawdown?.current_pct;
-                const portHalt = typeof pdd === "number" && pdd >= 15;
+                const pddObj = state?.portfolio_drawdown;
+                const pdd = pddObj?.current_pct;
+                const portHalt = pddObj?.buy_halted === true
+                  || (typeof pdd === "number" && pdd >= 15);
                 if (!haltedPairs.length && !portHalt) return null;
                 return (
                   <div style={{
@@ -2922,7 +2924,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                       ? `HALTED ${haltedPairs.join(", ")}`
                       : null}
                     {portHalt
-                      ? `${haltedPairs.length ? " · " : ""}Portfolio DD ${pdd.toFixed(1)}% — new BUYs blocked`
+                      ? `${haltedPairs.length ? " · " : ""}Portfolio BUY halt${typeof pdd === "number" ? ` — drawdown now ${pdd.toFixed(1)}%` : ""} — new BUYs blocked`
                       : null}
                   </div>
                 );

@@ -84,6 +84,24 @@ class TestHaltedAllowsSellBlocksBuy:
         assert eng.position.size == 0.0
         assert eng.balance > 100.0  # received proceeds
 
+    def test_nonpositive_price_does_not_liquidate(self):
+        eng = _seeded()
+        eng.hold_through = False
+        eng.position.size = 0.1
+        eng.position.avg_entry = 100_000.0
+        eng.balance = 0.0
+        eng.prices.append(0.0)
+        t = eng.execute_signal("SELL", 0.9, "bad print", "DEFENSIVE")
+        assert t is None
+        assert eng.position.size == 0.1
+        assert eng.balance == 0.0
+        before = len(eng.prices)
+        eng.ingest_candle({
+            "open": 0, "high": 0, "low": 0, "close": 0, "volume": 1,
+            "timestamp": 1_800_000_000,
+        })
+        assert len(eng.prices) == before
+
     def test_halted_sell_without_position_is_noop(self):
         eng = _seeded()
         eng.halted = True

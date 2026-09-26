@@ -25,6 +25,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the pytest suite. Companion comments claimed default-off behind
   `HYDRA_COMPANION_ENABLED`, which nothing reads; the subsystem is
   default-on with the `HYDRA_COMPANION_DISABLED` kill switch.
+- **Same-candle size stack.** After the brain ran, later ticks of that candle multiplied the rule penalties again, so a 0.7 basis cut became 0.49, then 0.34, and could fall through the exchange minimum. The re-score now multiplies the stored brain factor. A non-finite multiplier is neutral, not an upsize.
+- **Conviction sizing on a small book.** The 40% overlay size never ran when the Kelly crumb was below the exchange minimum, so `calculate()` returned 0 and the entry was dropped. A zero risk multiplier is still a veto. A non-positive or non-finite candle is ignored, and a SELL at a non-positive price no longer writes the position off for no cash.
+- **One working order per pair.** A second signal while a post-only order was still `PLACED` booked another optimistic fill. The first order's true-up then restored the older snapshot and left the second order live against a book that no longer matched it, so a flatten tried to sell coins the entry had not bought. Same-side signals now wait. An opposite signal cancels the resting order and places on a later tick.
+- **Fill true-up survived restart.** A confirmed fill rewrote the journal row in place, so the snapshot cadence (new rows, or every 120 ticks) could reload the pre-fill engine book under `--resume`. The rolling journal is written after the execution-stream drain, and any book change saves the snapshot on that tick.
+- **Dashboard BUY halt.** The portfolio breaker stays on after drawdown recovers under 15%. The banner now follows the sticky `buy_halted` flag, and a resting order is kept in the journal strip when later failures would have pushed it out of the last 20 rows.
 - **kraken-cli v0.4.1 `ohlc` object-array** was parsed as empty, so warmup
   left engines with one forming bar and the dashboard hid every chart.
 - **`--pairs auto` cores stayed on unfunded USD** while the book held

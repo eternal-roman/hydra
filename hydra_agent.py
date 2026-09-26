@@ -151,6 +151,33 @@ def _buy_limit_offset_bps(pair: str, regime: Optional[str]) -> int:
     return _BUY_LIMIT_OFFSET_BPS.get((base, quote_class, regime), 0)
 
 
+def resting_order_decision(
+    resting_side: Optional[str],
+    desired_action: str,
+    *,
+    buy_blocked: bool = False,
+) -> str:
+    """One working order per pair.
+
+    Returns ``place`` when nothing is resting, ``skip`` when the new
+    intent must wait (same side, HOLD, or a BUY the portfolio breaker
+    has already forbidden), and ``cancel`` when the new intent is the
+    opposite side and the resting order has to get out of the way
+    before a new one is sent. The new order is never placed on the
+    cancel tick — the book is only safe to trade again after the
+    resting order's terminal event restores its snapshot.
+    """
+    side = (resting_side or "").strip().upper()
+    want = (desired_action or "HOLD").strip().upper()
+    if side not in ("BUY", "SELL"):
+        return "place"
+    if want not in ("BUY", "SELL") or want == side:
+        return "skip"
+    if want == "BUY" and buy_blocked:
+        return "skip"
+    return "cancel"
+
+
 def _apply_buy_limit_offset(pair: str, bid: float, regime: Optional[str]) -> tuple:
     """Apply the regime-gated offset to a live bid.
 
@@ -232,6 +259,15 @@ class HydraAgent:
         self.running = True
         self.start_time = None
         self.order_journal: List[Dict[str, Any]] = []
+        # Order ids we have already asked the exchange to cancel. Prevents
+        # a second REST cancel on every tick while the terminal event is
+        # still in flight. A failed attempt is not recorded, so the next
+        # tick retries.
+        self._cancel_sent_ids: set = set()
+        # A fill or cancel rewrites a journal row in place. Length does not
+        # change, so the snapshot cadence would keep the pre-fill engine
+        # book until the next new order or the periodic save.
+        self._books_dirty: bool = False
         self._snapshot_dir = os.path.dirname(os.path.abspath(__file__))
         self._completed_trades_since_update = 0  # Counter for tuner update cadence
         self._last_brain_candle_ts: Dict[str, float] = {}  # Per-pair: last candle timestamp brain evaluated
@@ -851,6 +887,147 @@ class HydraAgent:
     ) -> bool:
         """PR-B / B4: portfolio circuit breaker blocks BUY only."""
         return bool(portfolio_buy_halted) and str(action).upper() == "BUY"
+
+    def _resting_entry(self, pair: str) -> Optional[Dict[str, Any]]:
+        """Most recent non-terminal order for `pair`, or None."""
+        want = (pair or "").upper()
+        for entry in reversed(self.order_journal):
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("pair") or "").upper() != want:
+                continue
+            if (entry.get("lifecycle") or {}).get("state") == "PLACED":
+                return entry
+        return None
+
+    def _hold_for_resting_order(self, pair: str, desired_action: str) -> bool:
+        """True when this tick must not call execute_signal for `pair`.
+
+        Same-side and HOLD wait. An opposite signal cancels the resting
+        order and still waits — the new order is placed only after the
+        cancel's terminal event has restored the pre-trade book.
+        """
+        resting = self._resting_entry(pair)
+        if resting is None:
+            return False
+        blocked = self._should_block_buy_for_portfolio_dd(
+            getattr(self, "_portfolio_buy_halted", False), desired_action,
+        )
+        decision = resting_order_decision(
+            resting.get("side"), desired_action, buy_blocked=blocked,
+        )
+        if decision == "place":
+            return False
+        if decision == "cancel":
+            self._cancel_resting_for_opposite(resting, desired_action)
+        else:
+            print(f"  [INFLIGHT] {pair}: {desired_action} held — "
+                  f"{resting.get('side')} order still PLACED")
+        return True
+
+    def _cancel_resting_for_opposite(self, entry: Dict[str, Any], desired: str) -> None:
+        """Clear a working order so the opposite intent can run next tick.
+
+        Paper and demo have no exchange order (the synthetic fill is
+        injected at placement). Restore the snapshot and mark the row
+        terminal here. Live sends one cancel and lets the execution
+        stream true-up; a failed send is retried next tick.
+        """
+        oid = (entry.get("order_ref") or {}).get("order_id")
+        key = oid or id(entry)
+        sent = getattr(self, "_cancel_sent_ids", None)
+        if sent is None:
+            sent = set()
+            self._cancel_sent_ids = sent
+        pair = entry.get("pair")
+        side = entry.get("side")
+        if self.paper:
+            snap = entry.get("pre_trade_snapshot")
+            eng = self.engines.get(pair) if pair else None
+            if eng is not None and isinstance(snap, dict):
+                try:
+                    eng.restore_position(snap)
+                except Exception as e:
+                    print(f"  [INFLIGHT] {pair}: paper cancel rollback failed: {e}")
+            lifecycle = entry.setdefault("lifecycle", {})
+            lifecycle["state"] = "CANCELLED_UNFILLED"
+            lifecycle["terminal_reason"] = f"cancelled_for_opposite_{desired}"
+            lifecycle["final_at"] = datetime.now(timezone.utc).isoformat()
+            self._books_dirty = True
+            print(f"  [INFLIGHT] {pair}: cancelled resting {side} "
+                  f"so {desired} can run next tick")
+            return
+        if key in sent:
+            return
+        if not oid or oid == "unknown":
+            print(f"  [INFLIGHT] {pair}: resting {side} has no order id — "
+                  f"cannot cancel")
+            sent.add(key)
+            return
+        time.sleep(KRAKEN_REST_FLOOR_S)
+        result = KrakenCLI.cancel_order(oid)
+        if isinstance(result, dict) and result.get("error"):
+            print(f"  [INFLIGHT] {pair}: cancel {oid} failed: {result.get('error')}")
+            return
+        sent.add(key)
+        print(f"  [INFLIGHT] {pair}: cancel sent for resting {side} {oid} "
+              f"(wanted {desired})")
+
+    def _journal_for_dashboard(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Recent journal rows, always including working orders.
+
+        The tail alone drops a resting PLACED order once twenty
+        PLACEMENT_FAILED rows land in front of it. The UI then shows an
+        empty book while a live order is still on the exchange.
+        """
+        if limit < 1:
+            limit = 1
+        placed = [
+            e for e in self.order_journal
+            if isinstance(e, dict)
+            and (e.get("lifecycle") or {}).get("state") == "PLACED"
+        ]
+        tail = [e for e in self.order_journal if isinstance(e, dict)][-limit:]
+        out: List[Dict[str, Any]] = []
+        seen = set()
+        for entry in placed + tail:
+            marker = id(entry)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            out.append(entry)
+        return out
+
+    def _persist_rolling_journal(self) -> None:
+        """Atomic write of the rolling journal. Demo never touches the operator file."""
+        if getattr(self, "demo", False):
+            return
+        filtered_journal = self._journal_for_persistence(limit=None)
+        if not filtered_journal:
+            return
+        rolling_file = os.path.join(self._snapshot_dir, "hydra_order_journal.json")
+        rolling_tmp = rolling_file + ".tmp"
+        try:
+            with open(rolling_tmp, "w") as f:
+                json.dump(filtered_journal, f, indent=2)
+            os.replace(rolling_tmp, rolling_file)
+        except Exception as e:
+            print(f"  [WARN] rolling journal write failed: {type(e).__name__}: {e}")
+
+    def _checkpoint_tick(self, journal_size_start: int, tick: int) -> None:
+        """Save the rolling journal and, when the book changed, the snapshot.
+
+        Called after the tick's ``finally`` drain so a fill applied there
+        is on disk before the next crash. A lifecycle rewrite does not
+        grow the journal, so ``_books_dirty`` is the signal that the
+        engine book and the snapshot would otherwise diverge.
+        """
+        self._persist_rolling_journal()
+        journal_grew = len(self.order_journal) > journal_size_start
+        if (journal_grew or self._books_dirty
+                or tick % self.SNAPSHOT_EVERY_N_TICKS == 0):
+            self._save_snapshot()
+            self._books_dirty = False
 
     def _snapshot_path(self) -> str:
         return os.path.join(self._snapshot_dir, "hydra_session_snapshot.json")
@@ -1817,13 +1994,22 @@ class HydraAgent:
                     sig = state.get("signal", {})
                     ai = state.get("ai_decision", {})
                     engine = self.engines[pair]
-                    pre_trade_snap = engine.snapshot_position()
                     # Clamp the brain's size_multiplier to [0.0, 1.5] so no single
                     # modifier can exceed Kelly's hard cap.
                     _sm = ai.get("size_multiplier")
                     _brain_mult = float(1.0 if _sm is None else _sm)
                     _final_mult = max(0.0, min(1.5, _brain_mult))
                     _action = sig.get("action", "HOLD")
+                    # One working order per pair. execute_signal books the
+                    # fill before the exchange has it; a second call while
+                    # the first is still PLACED is wiped or doubled when
+                    # that order's true-up restores the older snapshot, and
+                    # a flatten then tries to sell coins the entry has not
+                    # bought. Hold this tick. Cancel only when the new
+                    # intent is the opposite side.
+                    if self._hold_for_resting_order(pair, _action):
+                        continue
+                    pre_trade_snap = engine.snapshot_position()
                     if self._should_block_buy_for_portfolio_dd(
                         getattr(self, "_portfolio_buy_halted", False), _action
                     ):
@@ -1994,32 +2180,6 @@ class HydraAgent:
                 for term in self.execution_stream.drain_events():
                     self._apply_execution_event(term)
 
-                # Rolling save — persist the order journal every tick so
-                # no data is lost on crash. Atomic write (.tmp + os.replace)
-                # so a crash mid-write cannot corrupt the file into
-                # half-valid JSON. Mirrors _save_snapshot's pattern.
-                # Offline --demo never touches the operator rolling journal.
-                if not getattr(self, "demo", False):
-                    # limit=None: the rolling file is the authoritative
-                    # long-horizon record (see _merge_order_journal), so it
-                    # must NOT inherit the snapshot's 200-entry cap. Bounded
-                    # in memory by ORDER_JOURNAL_CAP.
-                    filtered_journal = self._journal_for_persistence(limit=None)
-                    if filtered_journal:
-                        rolling_file = os.path.join(self._snapshot_dir, "hydra_order_journal.json")
-                        rolling_tmp = rolling_file + ".tmp"
-                        try:
-                            with open(rolling_tmp, "w") as f:
-                                json.dump(filtered_journal, f, indent=2)
-                            os.replace(rolling_tmp, rolling_file)
-                        except Exception as e:
-                            # HF-003 fix: previously "except Exception: pass" silently
-                            # swallowed write failures (permission, disk, lock, etc.),
-                            # making logging outages invisible. Log the failure so it's
-                            # visible in stdout and in hydra_errors.log via the outer
-                            # tick-body exception handler.
-                            print(f"  [WARN] rolling journal write failed: {type(e).__name__}: {e}")
-
                 # Cap order journal to prevent unbounded memory growth
                 if len(self.order_journal) > self.ORDER_JOURNAL_CAP:
                     self.order_journal = self.order_journal[-self.ORDER_JOURNAL_CAP:]
@@ -2073,13 +2233,8 @@ class HydraAgent:
                             print(f"  [WARN] {_stream_name}.ensure_healthy() failed: "
                                   f"{type(_se).__name__}: {_se}")
 
-            # HF-004 fix: snapshot immediately if the journal grew this tick,
-            # so a subsequent crash does not lose the newly-appended entries.
-            # Also save on the periodic cadence for engine state that
-            # changes without placements.
-            journal_grew = len(self.order_journal) > journal_size_start
-            if journal_grew or tick % self.SNAPSHOT_EVERY_N_TICKS == 0:
-                self._save_snapshot()
+            # After the finally drain, so a fill applied there is on disk.
+            self._checkpoint_tick(journal_size_start, tick)
 
             # Sleep until next tick
             next_tick_time = self.start_time + tick * self.interval
@@ -2260,10 +2415,22 @@ class HydraAgent:
             cached = None
         brain_size = 1.0
         if cached is not None:
+            # The cached `size_multiplier` is already brain × rules from the
+            # last pass. Reading it again and multiplying the rule stack
+            # compounds every intra-candle tick (R5 0.7 becomes 0.49, then
+            # 0.34, …). The raw brain factor is `size_multiplier_brain`.
+            # Fall back to `size_multiplier` only for a cache written
+            # before that field existed.
+            raw = cached.get("size_multiplier_brain")
+            if raw is None:
+                raw = cached.get("size_multiplier")
             try:
-                brain_size = float(cached.get("size_multiplier") if cached.get("size_multiplier") is not None else 1.0)
+                brain_size = float(1.0 if raw is None else raw)
             except (TypeError, ValueError):
                 brain_size = 1.0
+            if brain_size != brain_size or brain_size == float("inf") or brain_size == float("-inf"):
+                brain_size = 1.0
+            brain_size = max(0.0, min(1.5, brain_size))
 
         engine_action = state["signal"]["action"]
         rules_triggered: list = []
@@ -3018,6 +3185,15 @@ class HydraAgent:
         fills) are handled asynchronously by the execution stream — NOT
         here — on subsequent ticks.
         """
+        if self._resting_entry(pair) is not None:
+            # Defense behind _hold_for_resting_order. A swap leg (or any
+            # future caller) must not stack a second live order. Do not
+            # journal PLACEMENT_FAILED — that row would bury the working
+            # order in the dashboard's short tail.
+            print(f"  [INFLIGHT] {pair}: refusing {trade.get('action')} — "
+                  f"an order is already PLACED")
+            return False
+
         if self.paper:
             return self._place_paper_order(pair, trade, state)
 
@@ -3321,11 +3497,11 @@ class HydraAgent:
         while we were offline.
 
         For terminal orders (closed/canceled/expired): updates journal lifecycle
-        directly. Engine rollback is NOT possible for entries from previous
-        sessions (no pre_trade_snapshot persisted), so we log a warning.
+        and true-ups the engine from the persisted pre_trade_snapshot.
 
-        For still-open orders: registers them with the live ExecutionStream so
-        WS events can finalize them normally.
+        For still-open orders: registers them with the live ExecutionStream,
+        including that snapshot, so a later fill does not depend on the
+        journal row surviving a trim.
         """
         # Collect PLACED entries with queryable order IDs
         stale = []
@@ -3509,7 +3685,7 @@ class HydraAgent:
                             side=side,
                             placed_amount=float(placed_amount),
                             engine_ref=engine,
-                            pre_trade_snapshot=None,  # unavailable after restart
+                            pre_trade_snapshot=entry.get("pre_trade_snapshot"),
                         )
                         registered += 1
                         print(f"  [HYDRA] {pair} {side} {txid}: still open — "
@@ -3552,6 +3728,9 @@ class HydraAgent:
                   f"idx={idx} — event dropped")
             return
         state_name = event["state"]
+        # Length does not change. The tick loop snapshots when this is set
+        # so a restart does not reload the pre-fill engine book.
+        self._books_dirty = True
         entry["lifecycle"] = {
             "state": state_name,
             "vol_exec": event["vol_exec"],
@@ -4552,10 +4731,13 @@ class HydraAgent:
                 "peak_usd": round(self._portfolio_peak_usd, 2),
                 "current_pct": round(self._portfolio_current_drawdown_pct, 4),
                 "max_pct": round(self._portfolio_max_drawdown_pct, 4),
+                # Sticky. current_pct can recover under 15% while new BUYs
+                # stay blocked until HYDRA_RESET_CIRCUIT_BREAKER=1.
+                "buy_halted": bool(getattr(self, "_portfolio_buy_halted", False)),
             },
             "fee_tier": self._fee_tier_cache,
             "pairs": pairs_data,
-            "order_journal": self.order_journal[-20:],
+            "order_journal": self._journal_for_dashboard(20),
             "journal_stats": journal_stats,
             "running": self.running,
             "interval": self.interval,
