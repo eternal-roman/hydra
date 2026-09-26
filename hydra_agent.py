@@ -19,6 +19,7 @@ Usage:
 """
 
 import json
+import math
 import time
 import sys
 import os
@@ -2084,26 +2085,9 @@ class HydraAgent:
                         self._execute_coordinated_swap(swap, all_states)
                 self._log_regime_transitions(all_states)
 
-                # Phase 4: Record trade outcomes for self-tuning
-                # Only record when a position is fully closed so the tuner learns
-                # from the total accumulated P&L, not individual partial-sell legs.
-                for pair in self.pairs:
-                    state = all_states.get(pair)
-                    if not state or not state.get("last_trade"):
-                        continue
-                    trade = state["last_trade"]
-                    engine = self.engines[pair]
-                    if trade["action"] == "SELL" and trade.get("profit") is not None and engine.position.size == 0:
-                        params_at_entry = trade.get("params_at_entry") or engine.snapshot_params()
-                        outcome = "win" if trade["profit"] > 0 else "loss"
-                        self.trackers[pair].record_trade(
-                            params_at_entry, "SELL", outcome, trade["profit"],
-                        )
-                        self._completed_trades_since_update += 1
-
-                # Run tuner updates every 50 completed trades
-                if self._completed_trades_since_update >= 50:
-                    self._run_tuner_update()
+                # Tuner win/loss is recorded on the confirmed sell fill
+                # (_record_confirmed_tuner_outcome), not when the SELL is placed.
+                # A cancel restores the engine and must not leave an observation.
 
                 # Strip `_pre_trade_snapshot`, refresh books, broadcast.
                 self._publish_tick_state(tick, all_states, elapsed)
@@ -3686,6 +3670,12 @@ class HydraAgent:
         # Length does not change. The tick loop snapshots when this is set
         # so a restart does not reload the pre-fill engine book.
         self._books_dirty = True
+        # Lifecycle is replaced wholesale. tuner_recorded has to be copied
+        # forward or a replayed fill appends a second observation. fee_applied
+        # is intentionally not copied: true-up restores the pre-fee book, so
+        # the fee must be debited again on the rewritten books.
+        prev_lc = entry.get("lifecycle") if isinstance(entry.get("lifecycle"), dict) else {}
+        tuner_already = bool(entry.get("tuner_recorded") or prev_lc.get("tuner_recorded"))
         entry["lifecycle"] = {
             "state": state_name,
             "vol_exec": event["vol_exec"],
@@ -3695,6 +3685,9 @@ class HydraAgent:
             "terminal_reason": event.get("terminal_reason"),
             "exec_ids": event.get("exec_ids") or [],
         }
+        if tuner_already:
+            entry["tuner_recorded"] = True
+            entry["lifecycle"]["tuner_recorded"] = True
 
         engine = event.get("engine_ref")
         pre_snap = event.get("pre_trade_snapshot")
@@ -3727,6 +3720,7 @@ class HydraAgent:
                     print(f"  [EXEC] {pair} {side} FILLED: true-up failed ({e}); "
                           f"fee still applied")
             self._deduct_fill_fee(engine, entry)
+            self._record_confirmed_tuner_outcome(engine, entry, side=side)
             return
         if state_name in ("CANCELLED_UNFILLED", "REJECTED"):
             snap = pre_snap
@@ -3768,8 +3762,10 @@ class HydraAgent:
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                           f"reconcile failed ({e}); engine may be over-committed")
                 # Fee is independent of reconcile success — terminal fill
-                # still paid the exchange fee.
+                # still paid the exchange fee. Tuner outcome is too: only a
+                # fill that actually flattens the book is recorded.
                 self._deduct_fill_fee(engine, entry)
+                self._record_confirmed_tuner_outcome(engine, entry, side=side)
             else:
                 print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                       f"filled {vol_exec:.8f}/{placed_amount:.8f} ({ratio:.1%}) — "
@@ -3809,6 +3805,98 @@ class HydraAgent:
             # impossible state (and would poison downstream sizing math).
             engine.balance = max(0.0, engine.balance - fee)
         lifecycle["fee_applied"] = True
+
+    def _record_confirmed_tuner_outcome(self, engine, entry, side: Optional[str] = None) -> None:
+        """Record one tuner outcome after a confirmed sell fill, net of fees.
+
+        Called only from the FILLED / PARTIALLY_FILLED paths, after
+        ``_deduct_fill_fee``. Not called for PLACED, cancel, or reject.
+        Win/loss uses the close P&L on the engine's post-true-up trade
+        minus this fill's ``lifecycle.fee_quote``. A zero, missing, or
+        non-numeric fee stays gross. Partial sells that leave inventory
+        open are skipped; the closing fill carries accumulated realized
+        P&L. ``tuner_recorded`` on the entry stops a replay from appending
+        a second observation (the lifecycle dict itself is replaced on
+        every apply).
+        """
+        if not isinstance(entry, dict):
+            return
+        lifecycle = entry.get("lifecycle") if isinstance(entry.get("lifecycle"), dict) else {}
+        if entry.get("tuner_recorded") or lifecycle.get("tuner_recorded"):
+            return
+        applied = str(side or entry.get("side") or "").upper()
+        if applied != "SELL":
+            return
+        if engine is None or not hasattr(engine, "position"):
+            return
+        # Full close only. A partial leg's P&L stays on realized_pnl until
+        # the position is flat, same as the old place-time gate.
+        if engine.position.size > 0:
+            return
+        trades = getattr(engine, "trades", None) or []
+        if not trades:
+            return
+        last = trades[-1]
+        if getattr(last, "action", None) != "SELL" or last.profit is None:
+            return
+        try:
+            gross = float(last.profit)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(gross):
+            return
+        try:
+            filled = float(lifecycle.get("vol_exec") or 0.0)
+        except (TypeError, ValueError):
+            return
+        if filled <= 0:
+            intent = entry.get("intent") if isinstance(entry.get("intent"), dict) else {}
+            try:
+                filled = float((intent or {}).get("amount") or 0.0)
+            except (TypeError, ValueError):
+                return
+        if filled <= 0:
+            return
+        try:
+            amount = float(last.amount)
+        except (TypeError, ValueError):
+            return
+        # The last SELL must be this fill, not an older round trip that
+        # happened to leave the book flat.
+        if abs(amount - filled) > max(1e-8, abs(filled) * 1e-4):
+            return
+        # Fee lives on the lifecycle written from the terminal event. A
+        # zero, missing, or non-numeric fee does not change the gross.
+        try:
+            fee = float(lifecycle.get("fee_quote") or 0.0)
+        except (TypeError, ValueError):
+            fee = 0.0
+        if not math.isfinite(fee) or fee <= 0:
+            fee = 0.0
+        net = gross - fee
+        params = getattr(last, "params_at_entry", None)
+        if not isinstance(params, dict) or not params:
+            decision = entry.get("decision") if isinstance(entry.get("decision"), dict) else {}
+            params = decision.get("params_at_entry") if isinstance(decision, dict) else None
+        if not isinstance(params, dict) or not params:
+            snap_params = getattr(engine, "snapshot_params", None)
+            params = snap_params() if callable(snap_params) else None
+        if not isinstance(params, dict) or not params:
+            return
+        pair = entry.get("pair") or getattr(engine, "asset", None)
+        tracker = self.trackers.get(pair) if pair else None
+        if tracker is None:
+            return
+        outcome = "win" if net > 0 else "loss"
+        tracker.record_trade(params, "SELL", outcome, net)
+        lifecycle["tuner_recorded"] = True
+        entry["tuner_recorded"] = True
+        self._completed_trades_since_update += 1
+        # Same cadence as the old place-time path, but it now fires when
+        # the confirming fill is applied (during the tick drain), so the
+        # next tick's entry sees the updated params.
+        if self._completed_trades_since_update >= 50:
+            self._run_tuner_update()
 
     def _run_tuner_update(self):
         """Run Bayesian parameter update across all pair trackers."""
