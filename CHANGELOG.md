@@ -18,6 +18,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Stale agent docs.** CLAUDE.md now indexes 8 unlisted modules, 7
+  undocumented env vars, and 3 state files, and drops rules it stated
+  twice. The `/audit` skill cited CLAUDE.md sections that do not exist
+  (§Backtesting/§Naming/§Testing) — now points at `docs/BACKTEST_SPEC.md`
+  and the pytest suite. Companion comments claimed default-off behind
+  `HYDRA_COMPANION_ENABLED`, which nothing reads; the subsystem is
+  default-on with the `HYDRA_COMPANION_DISABLED` kill switch.
 - **kraken-cli v0.4.1 `ohlc` object-array** was parsed as empty, so warmup
   left engines with one forming bar and the dashboard hid every chart.
 - **`--pairs auto` cores stayed on unfunded USD** while the book held
