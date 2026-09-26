@@ -25,7 +25,7 @@ category, description, suggested fix.
 ## Severity rubric
 
 **HIGH** — fix immediately:
-- Violation of safety invariants I1-I12 (see CLAUDE.md §Backtesting)
+- Violation of backtest safety invariants I1-I12 (`docs/BACKTEST_SPEC.md` §3; enforcement in §9)
 - Limit-post-only rule violated (any market-order path)
 - 2 s rate-limit floor violated
 - 15 % circuit-breaker bypassed
@@ -34,7 +34,7 @@ category, description, suggested fix.
 - Secret/credential leak (.env, API keys logged)
 
 **MEDIUM** — fix before next release:
-- Naming inconsistencies vs CLAUDE.md §Naming
+- Naming inconsistent with the surrounding module (no written convention — match existing code)
 - Stale doc references
 - Test coverage gaps in changed code paths
 - Sub-optimal but non-buggy patterns
@@ -55,7 +55,7 @@ two self-audit rounds that single-pass review missed.
 - Misleading error messages
 - False-positive checks
 - Re-run the 7-partition sweep against your diff
-- Run the full §Testing block from CLAUDE.md
+- Run the full test suite: `python -m pytest tests/` (CLAUDE.md §Release PR workflow)
 - Run `python tests/live_harness/harness.py --mode mock`
 
 Fix everything found, then run **Phase 2** — repeat the same sweep
