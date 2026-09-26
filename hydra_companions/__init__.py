@@ -1,7 +1,7 @@
 """Companion chat personas for Hydra.
 
 Phase 1 wires up chat. Phase 0 spec lives in docs/COMPANION_SPEC.md.
-Off unless HYDRA_COMPANION_ENABLED=1.
+On by default; HYDRA_COMPANION_DISABLED=1 turns it off (see config.py).
 """
 
 __all__ = ["CompanionCoordinator", "mount_companion_routes", "load_all_souls"]
