@@ -274,31 +274,6 @@ class TestGetAssetPrices:
 # ═══════════════════════════════════════════════════════════════
 
 class TestEngineBalanceInit:
-    def test_engine_balance_overwritten_by_tradable_balance(self):
-        """Simulates the startup flow: engines start with CLI default,
-        then get overwritten with real exchange balance."""
-        # Create engines with default $100 balance (as CLI arg would)
-        engines = {}
-        pairs = ["SOL/USDC", "BTC/USDC", "SOL/BTC"]
-        for pair in pairs:
-            engine = HydraEngine(initial_balance=33.33, asset=pair)
-            engines[pair] = engine
-
-        # Simulate what run() does: overwrite with real balance
-        tradable_usd = 1500.0
-        per_pair = tradable_usd / len(pairs)
-        for pair in pairs:
-            engine = engines[pair]
-            engine.initial_balance = per_pair
-            engine.balance = per_pair
-            engine.peak_equity = per_pair
-
-        # Verify all engines updated
-        for pair in pairs:
-            assert engines[pair].balance == 500.0
-            assert engines[pair].initial_balance == 500.0
-            assert engines[pair].peak_equity == 500.0
-
     def test_engine_position_sizing_uses_real_balance(self):
         """With real balance ($500), position sizer should produce tradeable sizes."""
         engine = HydraEngine(initial_balance=500.0, asset="SOL/USDC")

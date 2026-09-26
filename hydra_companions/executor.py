@@ -31,7 +31,7 @@ class TradeProposal:
     side: Side
     size: float           # base-asset units
     limit_price: float
-    stop_loss: float
+    stop_loss: float  # Not an order — this field does not place anything.
     rationale: str
     risk_usd: float = 0.0
     risk_pct_equity: float = 0.0
@@ -58,7 +58,7 @@ class LadderProposal:
     side: Side
     total_size: float
     rungs: tuple   # tuple[LadderRung, ...]
-    stop_loss: float
+    stop_loss: float  # Not an order — this field does not place anything.
     invalidation_price: float
     rationale: str
     risk_usd: float = 0.0
@@ -88,6 +88,41 @@ class ValidationResult:
     @classmethod
     def bad(cls, reason: str):
         return cls(ok=False, reason=reason)
+
+
+def engine_order_block(agent, *, pair: str, side: str, size: float) -> Optional[str]:
+    """Reason to refuse a companion order, or None to allow it.
+
+    BUY is refused when that pair's engine is exit_only or not tradable.
+    SELL is refused when it is larger than engine.position.size.
+    No engine on the agent: no opinion (unknown pairs are rejected earlier).
+    """
+    engines = getattr(agent, "engines", None) or {}
+    if not isinstance(engines, dict):
+        return None
+    engine = engines.get(pair)
+    if engine is None:
+        return None
+    side_l = str(side).lower()
+    if side_l == "buy":
+        if getattr(engine, "exit_only", False):
+            return f"{pair} exit_only — entries blocked, exits allowed"
+        if getattr(engine, "tradable", True) is False:
+            return f"{pair} tradable is false — entries blocked, exits allowed"
+        return None
+    if side_l == "sell":
+        pos = getattr(engine, "position", None)
+        try:
+            held = float(getattr(pos, "size", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            held = 0.0
+        try:
+            qty = float(size)
+        except (TypeError, ValueError):
+            return f"sell size on {pair} is not a number"
+        if qty > held + 1e-12:
+            return f"sell {qty} exceeds position {held} on {pair}"
+    return None
 
 
 class ProposalValidator:
@@ -176,6 +211,12 @@ class ProposalValidator:
         if p.side == "sell" and p.stop_loss <= p.limit_price:
             return ValidationResult.bad("sell stop must be above limit")
 
+        blocked = engine_order_block(
+            self.agent, pair=p.pair, side=p.side, size=p.size,
+        )
+        if blocked:
+            return ValidationResult.bad(blocked)
+
         # Price band vs current mid.
         mid = self._current_price(p.pair)
         if mid is not None and mid > 0:
@@ -247,6 +288,14 @@ class ProposalValidator:
         pct_sum = sum(r.pct_of_total for r in p.rungs)
         if not 0.98 <= pct_sum <= 1.02:
             return ValidationResult.bad(f"rung % must sum to 1.0 (got {pct_sum:.3f})")
+        # Whole-ladder size, not each rung: 0.6 + 0.6 against a 1.0
+        # position would pass a per-rung check and oversell.
+        if p.side == "sell":
+            blocked = engine_order_block(
+                self.agent, pair=p.pair, side="sell", size=p.total_size,
+            )
+            if blocked:
+                return ValidationResult.bad(blocked)
         # Validate each rung as a mini-trade.
         for i, r in enumerate(p.rungs):
             rung_size = p.total_size * r.pct_of_total

@@ -101,6 +101,8 @@ class TestMinObservations:
         result = t.update()
         assert result == DEFAULT_PARAMS
         assert t.update_count == 0
+        # Below the minimum the window is still accumulating.
+        assert len(t.observations) == MIN_OBSERVATIONS - 1
 
     def test_update_at_minimum(self):
         t = make_tracker()
@@ -112,13 +114,32 @@ class TestMinObservations:
         assert len(t.observations) == 0
 
     def test_no_wins_no_update(self):
-        """If all trades are losses, no shift should occur."""
+        """All-loss windows do not move params, and they must close.
+
+        Returning before observations.clear() left the streak in place, so
+        the next win trained on every prior loss. update_count stays put:
+        nothing was learned, and a bumped count with the streak retained
+        would look consumed while still polluting the next window.
+        """
         t = make_tracker()
         for _ in range(25):
             t.record_trade(DEFAULT_PARAMS, "SELL", "loss", -5.0)
         old_params = t.get_tunable_params()
         result = t.update()
         assert result == old_params
+        assert t.update_count == 0
+        assert t.observations == []
+        assert not os.path.exists(t.save_path)
+
+        # Next window is only the new wins: 1.8 + 0.1 * (2.6 - 1.8) = 1.88,
+        # with no loss-repulsion term. Keeping the streak would yield 1.884.
+        win_params = dict(DEFAULT_PARAMS)
+        win_params["volatile_atr_mult"] = 2.6
+        for _ in range(MIN_OBSERVATIONS):
+            t.record_trade(win_params, "SELL", "win", 10.0)
+        t.update()
+        assert abs(t.current_params["volatile_atr_mult"] - 1.88) < 1e-6
+        assert t.update_count == 1
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -183,6 +204,10 @@ class TestShiftDirection:
 # ═══════════════════════════════════════════════════════════════
 
 class TestClamping:
+    def test_min_confidence_floor_is_product_floor(self):
+        """Tuned files cannot install the old 0.55 research floor."""
+        assert PARAM_BOUNDS["min_confidence_threshold"] == (0.65, 0.80)
+
     def test_params_clamped_to_bounds(self):
         """Even with extreme winning values, params stay within bounds."""
         t = make_tracker()
@@ -271,6 +296,16 @@ class TestPersistence:
         assert lo <= t.current_params["volatile_atr_mult"] <= hi
         assert t.update_count == 5
 
+    def test_load_clamps_min_confidence_to_product_floor(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "hydra_params_SOL_USDC.json")
+        with open(path, "w") as f:
+            json.dump({"params": {"min_confidence_threshold": 0.55},
+                       "update_count": 2}, f)
+        t = ParameterTracker(pair="SOL/USDC", save_dir=d)
+        assert t.current_params["min_confidence_threshold"] == 0.65
+        assert t.update_count == 2
+
     def test_load_rejects_nan(self):
         d = tempfile.mkdtemp()
         path = os.path.join(d, "hydra_params_SOL_USDC.json")
@@ -343,7 +378,7 @@ class TestEngineIntegration:
             "momentum_rsi_upper": 75.0,
             "mean_reversion_rsi_buy": 30.0,
             "mean_reversion_rsi_sell": 70.0,
-            "min_confidence_threshold": 0.60,  # in-bounds (0.55, 0.80)
+            "min_confidence_threshold": 0.70,  # in-bounds (0.65, 0.80)
         }
         engine.apply_tuned_params(new_params)
         assert engine.volatile_atr_mult == 2.5
@@ -352,7 +387,7 @@ class TestEngineIntegration:
         assert engine.momentum_rsi_upper == 75.0
         assert engine.mean_reversion_rsi_buy == 30.0
         assert engine.mean_reversion_rsi_sell == 70.0
-        assert engine.sizer.min_confidence == 0.60
+        assert engine.sizer.min_confidence == 0.70
 
     def test_apply_tuned_params_clamps_out_of_bounds(self):
         """Defense-in-depth: out-of-range values (e.g. from a corrupted
@@ -362,11 +397,12 @@ class TestEngineIntegration:
         engine = HydraEngine(initial_balance=10000, asset="BTC/USD")
         engine.apply_tuned_params({
             "volatile_atr_mult": 99.0,            # >> hi 3.0
-            "min_confidence_threshold": 0.10,     # << lo 0.55
+            "min_confidence_threshold": 0.55,     # old floor, now below 0.65
             "trend_ema_ratio": 0.5,               # << lo 1.001
         })
         assert engine.volatile_atr_mult == PARAM_BOUNDS["volatile_atr_mult"][1]   # 3.0
-        assert engine.sizer.min_confidence == PARAM_BOUNDS["min_confidence_threshold"][0]  # 0.55
+        assert engine.sizer.min_confidence == 0.65
+        assert engine.sizer.min_confidence == PARAM_BOUNDS["min_confidence_threshold"][0]
         assert engine.trend_ema_ratio == PARAM_BOUNDS["trend_ema_ratio"][0]       # 1.001
 
     def test_apply_tuned_params_boundary_band_applies(self):

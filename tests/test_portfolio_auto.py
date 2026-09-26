@@ -326,3 +326,182 @@ def test_get_real_quote_balance_error_envelope_fails_open():
     agent._cached_free_balance = {"error": "EAPI:Invalid key"}
     agent._cached_balance = {"ZUSD": 90.0}
     assert agent._get_real_quote_balance("USD") == 90.0
+
+
+def test_free_balance_error_metadata_still_fails_open():
+    """A real CLI envelope carries message/retryable. That is still not $0."""
+    agent = object.__new__(HydraAgent)
+    agent.paper = False
+    agent.balance_stream = _NullBalanceStream()
+    agent.engines = {}
+    agent._cached_free_balance = {
+        "error": "auth",
+        "message": "bad key",
+        "error_category": "auth",
+        "retryable": False,
+    }
+    agent._cached_balance = {"ZUSD": 90.0}
+    assert agent._get_real_quote_balance("USD") == 90.0
+
+
+def _spend_agent(stream):
+    agent = object.__new__(HydraAgent)
+    agent.paper = False
+    agent.engines = {}
+    agent.balance_stream = stream
+    return agent
+
+
+def test_fully_locked_free_balance_spends_zero_equity_stays_gross():
+    """Hold covers the whole gross. Spend path is 0; equity still sees gross.
+
+    The sizer must refuse the buy. Drawdown/equity keep the locked funds.
+    """
+    from hydra_streams import BalanceStream
+
+    bs = BalanceStream()
+    bs._on_message({
+        "channel": "balances",
+        "type": "snapshot",
+        "data": [{
+            "asset": "USD",
+            "balance": 100.0,
+            "hold_trade": 100.0,
+            "asset_class": "currency",
+        }],
+    })
+    bs.health_status = lambda: (True, "")
+    agent = _spend_agent(bs)
+    agent._cached_balance = {"ZUSD": 100.0}
+    agent._cached_free_balance = {"ZUSD": 0.0}
+    assert bs.latest_balances()["USD"] == 100.0
+    assert bs.latest_free_balances() == {"USD": 0.0}
+    assert agent._get_real_quote_balance("USD") == 0.0
+    equity = agent._compute_balance_usd(agent._cached_balance)
+    assert equity["total_usd"] == 100.0
+    assert equity["tradable_usd"] == 100.0
+    eng = HydraEngine(initial_balance=100.0, asset="BTC/USD")
+    assert eng.sizer.calculate(
+        0.9, agent._get_real_quote_balance("USD"), 60000.0, "BTC/USD",
+    ) == 0.0
+
+
+def test_cached_explicit_zero_free_does_not_fall_open():
+    """Startup REST cache: asset present with free 0 is not missing data."""
+    agent = _spend_agent(_NullBalanceStream())
+    agent._cached_free_balance = {"ZUSD": 0.0}
+    agent._cached_balance = {"ZUSD": 80.0}
+    assert agent._get_real_quote_balance("USD") == 0.0
+    assert agent._compute_balance_usd(agent._cached_balance)["total_usd"] == 80.0
+
+
+def test_empty_free_map_after_successful_read_is_not_gross():
+    """Empty free map because everything is on hold must not size against gross."""
+    class _Stream:
+        healthy = True
+
+        def latest_free_balances(self):
+            return {}
+
+        def latest_balances(self):
+            return {"USD": 100.0}
+
+    stream = _Stream()
+    agent = _spend_agent(stream)
+    agent._cached_balance = {"ZUSD": 100.0}
+    agent._cached_free_balance = None
+    assert agent._get_real_quote_balance("USD") == 0.0
+    assert agent._compute_balance_usd(stream.latest_balances())["total_usd"] == 100.0
+
+
+def test_partial_free_update_does_not_zero_other_assets():
+    """USD fully locked must not hide BTC the free update never mentioned."""
+    class _Stream:
+        healthy = True
+
+        def latest_free_balances(self):
+            return {"USD": 0.0}
+
+        def latest_balances(self):
+            return {"USD": 100.0, "BTC": 0.01}
+
+        def free_view_is_complete(self):
+            return False
+
+    agent = _spend_agent(_Stream())
+    agent._cached_free_balance = None
+    agent._cached_balance = {}
+    assert agent._get_real_quote_balance("USD") == 0.0
+    assert agent._get_real_quote_balance("BTC") == pytest.approx(0.01)
+
+
+def test_unknown_free_balance_falls_open_to_gross():
+    """No free payload yet: spend the gross view (pre-v2.32 fail-open)."""
+    class _Stream:
+        healthy = True
+
+        def latest_free_balances(self):
+            return None
+
+        def latest_balances(self):
+            return {"USD": 40.0}
+
+    agent = _spend_agent(_Stream())
+    agent._cached_balance = {"ZUSD": 1.0}
+    agent._cached_free_balance = None
+    assert agent._get_real_quote_balance("USD") == 40.0
+
+
+def test_resume_keeps_cash_for_open_position_and_seeds_flat():
+    """Restored inventory keeps its cash. Flat books still get a seed.
+
+    Free quote already excludes the resting buy's hold, and that hold's
+    remaining cash is still inside the free pool. The flat engine is
+    seeded from what is left, not from free/N of the whole pool.
+    """
+    agent = _mixed_quote_agent({"ZUSD": 90.0, "USDC": 50.0})
+    sol = agent.engines["SOL/USD"]
+    sol.balance = 60.0
+    sol.position.size = 0.2
+    sol.position.avg_entry = 150.0
+    sol.peak_equity = 500.0
+    agent.engines["BTC/USD"].balance = 999.0
+    agent.engines["ETH/USDC"].balance = 7.0
+    agent.order_journal = []
+    agent._set_engine_balances(9999.0)
+    assert sol.balance == 60.0
+    assert sol.peak_equity == 500.0
+    assert agent.engines["BTC/USD"].balance == pytest.approx(30.0)
+    assert agent.engines["ETH/USDC"].balance == pytest.approx(50.0)
+    assert agent.engines["BTC/USD"].tradable is True
+
+
+def test_resume_keeps_cash_for_placed_order_without_position():
+    """A working order locks the book even if the position is already flat."""
+    agent = _mixed_quote_agent({"ZUSD": 90.0, "USDC": 30.0})
+    btc = agent.engines["BTC/USD"]
+    btc.balance = 10.0
+    btc.position.size = 0.0
+    agent.engines["SOL/USD"].balance = 999.0
+    agent.order_journal = [{
+        "pair": "btc/usd",
+        "side": "BUY",
+        "lifecycle": {"state": "PLACED"},
+    }]
+    agent._set_engine_balances(9999.0)
+    assert btc.balance == 10.0
+    assert agent.engines["SOL/USD"].balance == pytest.approx(80.0)
+    assert agent.engines["ETH/USDC"].balance == pytest.approx(30.0)
+
+
+def test_filled_journal_row_does_not_lock_resume_cash():
+    agent = _mixed_quote_agent({"ZUSD": 90.0})
+    agent.engines["SOL/USD"].balance = 999.0
+    agent.engines["BTC/USD"].balance = 999.0
+    agent.order_journal = [{
+        "pair": "SOL/USD",
+        "lifecycle": {"state": "FILLED"},
+    }]
+    agent._set_engine_balances(9999.0)
+    assert agent.engines["SOL/USD"].balance == pytest.approx(45.0)
+    assert agent.engines["BTC/USD"].balance == pytest.approx(45.0)

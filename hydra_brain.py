@@ -397,13 +397,20 @@ COST_XAI = (2.0, 6.0)            # Grok 4 reasoning
 
 def _coerce_size_mult(v, default: float = 1.0) -> float:
     """v2.14 helper: treat missing or malformed size_multiplier as 1.0
-    (neutral) so stacking math stays well-defined. Clamp to [0.0, 1.5]."""
+    (neutral) so stacking math stays well-defined. Clamp to [0.0, 1.5].
+
+    NaN and infinity do not raise. ``min(1.5, nan)`` is 1.5 in CPython,
+    which would upsize the order instead of ignoring the bad value.
+    """
     if v is None:
         return default
     try:
-        return max(0.0, min(1.5, float(v)))
+        n = float(v)
     except (TypeError, ValueError):
         return default
+    if n != n or n == float("inf") or n == float("-inf"):
+        return default
+    return max(0.0, min(1.5, n))
 
 
 def _coerce_bool(v, default: bool = False) -> bool:

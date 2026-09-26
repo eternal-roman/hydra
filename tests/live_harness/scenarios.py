@@ -26,6 +26,7 @@ placement:
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 from typing import Callable
 
@@ -625,30 +626,51 @@ def scenario_R_meta_comparator_catches_tampering(h: Harness):
 
 def scenario_Hp1_falsy_zero_competition_start_balance(h: Harness):
     """Commit 4effbea: snapshot competition_start_balance=0.0 must restore
-    as 0.0, not None."""
+    as 0.0, not None. Round-trips the real snapshot save/load path."""
     agent = h.new_agent(pairs=["SOL/USDC"], paper=True, initial_balance=200.0)
-    snap = {"competition_start_balance": 0.0}
-    value = snap.get("competition_start_balance")
-    assert value is not None, "The fix uses `is not None`; 0.0 must not be treated as missing"
-    assert value == 0.0
+    agent._competition_start_balance = 0.0
+    with tempfile.TemporaryDirectory() as td:
+        agent._snapshot_dir = td
+        agent._save_snapshot()
+        # A truthy leftover must not survive a falsy-zero restore.
+        agent._competition_start_balance = 123.0
+        agent._load_snapshot()
+    assert agent._competition_start_balance is not None
+    assert agent._competition_start_balance == 0.0
+
+
+def _payload_has_key(obj, key: str) -> bool:
+    if isinstance(obj, dict):
+        if key in obj:
+            return True
+        return any(_payload_has_key(v, key) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_payload_has_key(v, key) for v in obj)
+    return False
 
 
 def scenario_Hp2_pre_trade_snapshot_stripped_from_broadcast(h: Harness):
-    """Commit 4effbea: _pre_trade_snapshot must be stripped before broadcast."""
+    """Commit 4effbea: the tick broadcast must not carry `_pre_trade_snapshot`."""
     agent = h.new_agent(pairs=["SOL/USDC"], paper=True, initial_balance=200.0)
     h.seed_candles(agent, "SOL/USDC", base_price=100.0)
-
-    fake_state = {
+    pair = "SOL/USDC"
+    engine = agent.engines[pair]
+    engine.exit_only = True
+    state = {
         "signal": {"action": "HOLD", "confidence": 0.5, "reason": ""},
-        "_pre_trade_snapshot": {"position_size": 0.1, "balance": 100.0},
+        "_pre_trade_snapshot": engine.snapshot_position(),
     }
-    stripped = dict(fake_state)
-    stripped.pop("_pre_trade_snapshot", None)
-    assert "_pre_trade_snapshot" not in stripped
-    with open(os.path.join(_hydra_root(), "hydra_agent.py"), encoding="utf-8") as f:
-        src = f.read()
-    assert '_pre_trade_snapshot' in src and 'state.pop("_pre_trade_snapshot"' in src, \
-        "Strip logic missing from hydra_agent.py — commit 4effbea regression"
+    assert "_pre_trade_snapshot" in state
+
+    agent._publish_tick_state(1, {pair: state}, 0.0)
+
+    assert "_pre_trade_snapshot" not in state
+    payload = agent.broadcaster.latest_state
+    assert isinstance(payload, dict) and payload.get("type") == "state_update"
+    assert not _payload_has_key(payload, "_pre_trade_snapshot"), (
+        "broadcast payload still contains _pre_trade_snapshot"
+    )
+    assert payload["pairs"][pair]["exit_only"] is True
 
 
 def scenario_Hp3_total_trades_not_incremented_on_buy(h: Harness):
@@ -1169,14 +1191,6 @@ def scenario_L6_live_validate_below_costmin(h: Harness):
     time.sleep(2)
     result = KrakenCLI.order_buy("SOL/USDC", 0.00001, price=100.0, validate=True)
     assert "error" in result, f"L6 expected error, got success: {result}"
-
-
-# ═════════════════════════════════════════════════════════════════
-# Helper: project root
-# ═════════════════════════════════════════════════════════════════
-
-def _hydra_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # ═════════════════════════════════════════════════════════════════

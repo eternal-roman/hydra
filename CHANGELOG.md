@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [2.33.3] — 2026-09-26
 
 ### Added
 
@@ -25,6 +25,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the pytest suite. Companion comments claimed default-off behind
   `HYDRA_COMPANION_ENABLED`, which nothing reads; the subsystem is
   default-on with the `HYDRA_COMPANION_DISABLED` kill switch.
+- **Resume re-split cash across an open book.** `--resume` wrote `free/N` onto engines that already had a position or a `PLACED` order and kept the optimistic coins. Free quote excludes the resting buy's hold, so that cash could not fund the coins, and a later `restore_position` put one engine's pre-split cash back. Those books keep their restored cash. Flat engines with no working order are still seeded from the free pool that is not already on a locked book.
+- **A fully locked free balance sized against gross.** `free_balance()` and `BalanceStream` dropped a free amount of 0, so an empty free map looked like a missing feed and the next buy used gross. A successful read with free 0 (asset present at 0, or an empty map because every unit is on hold) is $0 spendable. Equity still uses gross. Fail open to gross only when the free read failed.
+- **Same-candle size stack.** After the brain ran, later ticks of that candle multiplied the rule penalties again, so a 0.7 basis cut became 0.49, then 0.34, and could fall through the exchange minimum. The re-score now multiplies the stored brain factor. A non-finite multiplier is neutral, not an upsize.
+- **Conviction sizing on a small book.** The 40% overlay size never ran when the Kelly crumb was below the exchange minimum, so `calculate()` returned 0 and the entry was dropped. A zero risk multiplier is still a veto. A non-positive or non-finite candle is ignored, and a SELL at a non-positive price no longer writes the position off for no cash.
+- **One working order per pair.** A second signal while a post-only order was still `PLACED` booked another optimistic fill. The first order's true-up then restored the older snapshot and left the second order live against a book that no longer matched it, so a flatten tried to sell coins the entry had not bought. Same-side signals now wait. An opposite signal cancels the resting order and places on a later tick.
+- **Fill true-up survived restart.** A confirmed fill rewrote the journal row in place, so the snapshot cadence (new rows, or every 120 ticks) could reload the pre-fill engine book under `--resume`. The rolling journal is written after the execution-stream drain, and any book change saves the snapshot on that tick.
+- **Dashboard BUY halt.** The portfolio breaker stays on after drawdown recovers under 15%. The banner now follows the sticky `buy_halted` flag, and a resting order is kept in the journal strip when later failures would have pushed it out of the last 20 rows.
+- **Same-tick circuit-breaker flatten.** The tick that arms the 15% breaker returns a `HALT FLATTEN` sell when inventory is open, instead of waiting for the next tick. A flat book arms and does not sell.
+- **Tuner learns the confirmed fill.** An all-loss update clears its observation window. `min_confidence_threshold` cannot be tuned below 0.65. Win/loss is recorded when the sell fill is confirmed, net of the fee, and a cancel does not leave a placement-time observation.
+- **Backtest end-of-tape books.** An order placed on the final bar is restored and counted as a reject, and that pair's last equity point matches the restored book. Closed-trade profit nets both the buy fee and the sell fee without debiting cash twice. Lab walk-forward still warms up on the pad, and the reported fold metrics cover only the out-of-sample window.
+- **Dashboard state matches the book.** The pair card shows current drawdown and a separate max. Paper and demo do not claim the dead-man switch is on. An untradable pair says entries are blocked and exits are allowed. `exit_only` is broadcast and shown. Live frames are applied after `auth_ack`.
+- **Companion live rejects.** With the live flag on, a BUY is refused when the engine is `exit_only` or not tradable, and a SELL larger than `position.size` is refused. The flag stays off by default. The card stop is still not an order.
 - **kraken-cli v0.4.1 `ohlc` object-array** was parsed as empty, so warmup
   left engines with one forming bar and the dashboard hid every chart.
 - **`--pairs auto` cores stayed on unfunded USD** while the book held

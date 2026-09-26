@@ -762,7 +762,7 @@ class KrakenCLI:
         return max(0.0, total - max(0.0, held))
 
     @classmethod
-    def free_balance(cls) -> dict:
+    def free_balance(cls) -> Optional[dict]:
         """Return {asset: spendable_amount}, net of funds held in open orders.
 
         Motivation: `kraken balance` reports the GROSS holding. With a
@@ -772,19 +772,55 @@ class KrakenCLI:
         insufficient_<quote>_balance` loop. Netting out holds removes the
         cause rather than absorbing the rejection.
 
-        Fails open: on any CLI error or unrecognized payload shape this
-        returns {} and callers keep using the gross balance.
+        A fully locked asset is included as 0.0. Dropping that zero made the
+        map empty, and callers treated empty as "no data" and sized against
+        gross. {} is a successful read with no asset rows (nothing to spend),
+        not a failure.
+
+        Returns None when the call failed — error envelope, exception, or a
+        payload that is not an extended-balance map — so callers fail open
+        to gross. An absent hold field still counts as free == gross
+        (`_extract_free`).
         """
-        data = cls.extended_balance()
+        try:
+            data = cls.extended_balance()
+        except Exception as exc:
+            print(f"  [WARN] free_balance failed: {type(exc).__name__}: {exc}")
+            return None
         if not isinstance(data, dict) or "error" in data:
-            return {}
+            return None
+
+        def _is_balance_entry(value) -> bool:
+            if isinstance(value, (int, float, str)):
+                return True
+            return isinstance(value, dict) and (
+                "balance" in value or any(k in value for k in cls._HELD_KEYS)
+            )
+
+        # Unwrap a single envelope only when the top level is not already
+        # the asset map. A real asset dict must not be replaced by `result`.
+        if not any(_is_balance_entry(v) for v in data.values()):
+            for envelope in ("result", "balances"):
+                inner = data.get(envelope)
+                if isinstance(inner, dict):
+                    data = inner
+                    break
+            if not isinstance(data, dict) or "error" in data:
+                return None
+
         out = {}
+        parsed = False
         for asset, info in data.items():
+            if asset in ("error", "result", "balances"):
+                continue
             free = cls._extract_free(info)
             if free is None:
                 continue
-            if free > 0:
-                out[asset] = free
+            parsed = True
+            out[asset] = free
+        # Keys were present but none were balances: unrecognized shape.
+        if data and not parsed:
+            return None
         return out
 
     @staticmethod

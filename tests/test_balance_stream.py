@@ -153,6 +153,77 @@ class TestBalanceStreamDispatch:
         assert bal["BTC"] == 0.003
         assert bal["USDC"] == 500.0
 
+    def test_free_unknown_before_snapshot(self):
+        bs = _make_stream()
+        assert bs.latest_free_balances() is None
+
+    def test_full_hold_free_is_zero_gross_remains(self):
+        """Hold covers gross. Free stays 0 in the map; gross is unchanged."""
+        bs = _make_stream()
+        bs._on_message({
+            "channel": "balances", "type": "snapshot",
+            "data": [{
+                "asset": "USD", "balance": 100.0, "hold_trade": 100.0,
+                "asset_class": "currency",
+            }],
+        })
+        assert bs.latest_balances()["USD"] == 100.0
+        assert bs.latest_free_balances() == {"USD": 0.0}
+
+    def test_absent_hold_free_equals_gross(self):
+        bs = _make_stream()
+        bs._on_message({
+            "channel": "balances", "type": "snapshot",
+            "data": [{"asset": "USD", "balance": 12.5, "asset_class": "currency"}],
+        })
+        assert bs.latest_free_balances()["USD"] == 12.5
+        assert bs.latest_balances()["USD"] == 12.5
+
+    def test_partial_hold_nets_free(self):
+        bs = _make_stream()
+        bs._on_message({
+            "channel": "balances", "type": "snapshot",
+            "data": [{
+                "asset": "USD", "balance": 100.0, "hold_trade": 40.0,
+                "asset_class": "currency",
+            }],
+        })
+        assert bs.latest_balances()["USD"] == 100.0
+        assert bs.latest_free_balances()["USD"] == 60.0
+
+    def test_update_before_snapshot_is_partial(self):
+        bs = _make_stream()
+        bs._on_message({
+            "channel": "balances", "type": "update",
+            "data": [{
+                "asset": "USD", "balance": 100.0, "hold_trade": 100.0,
+                "asset_class": "currency",
+            }],
+        })
+        assert bs.free_view_is_complete() is False
+        assert bs.latest_free_balances()["USD"] == 0.0
+        bs._on_message({
+            "channel": "balances", "type": "snapshot",
+            "data": [
+                {
+                    "asset": "USD", "balance": 100.0, "hold_trade": 100.0,
+                    "asset_class": "currency",
+                },
+                {"asset": "BTC", "balance": 0.01, "asset_class": "currency"},
+            ],
+        })
+        assert bs.free_view_is_complete() is True
+        free = bs.latest_free_balances()
+        assert free["USD"] == 0.0
+        assert free["BTC"] == 0.01
+        assert bs.latest_balances()["USD"] == 100.0
+
+    def test_empty_snapshot_is_known_empty_free(self):
+        bs = _make_stream()
+        bs._on_message({"channel": "balances", "type": "snapshot", "data": []})
+        assert bs.latest_free_balances() == {}
+        assert bs.latest_balances() == {}
+
 
 class TestBalanceStreamBuildCmd:
 
