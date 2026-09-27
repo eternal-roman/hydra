@@ -28,6 +28,7 @@ import csv
 import hashlib
 import json
 import math
+from datetime import datetime, timezone
 import os
 import random
 import subprocess
@@ -45,9 +46,10 @@ from hydra_engine import (
     HydraEngine,
     SIZING_COMPETITION,
     SIZING_CONSERVATIVE,  # noqa: F401 — re-exported for callers
+    session_confidence_delta,
 )
 
-HYDRA_VERSION = "2.34.1"
+HYDRA_VERSION = "2.34.3"
 
 # Reasonable defaults; enforced at config construction and runtime.
 DEFAULT_MAX_TICKS = 200_000
@@ -220,6 +222,8 @@ class BacktestResult:
     brain_overrides: int = 0
 
     errors: List[Dict[str, Any]] = field(default_factory=list)
+    # Derivatives rules, the order book, and the brain are not in the tape.
+    decision_surface: str = "engine+rails+portfolio+session+coordinator"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -236,6 +240,7 @@ class BacktestResult:
             "per_pair_metrics": {k: asdict(v) for k, v in self.per_pair_metrics.items()},
             "candles_processed": self.candles_processed,
             "fills": self.fills,
+            "decision_surface": self.decision_surface,
             "rejects": self.rejects,
             "brain_calls": self.brain_calls,
             "brain_overrides": self.brain_overrides,
@@ -737,6 +742,8 @@ class BacktestRunner:
         )
         self.filler = SimulatedFiller(cfg.fill_model, cfg.maker_fee_bps)
         self._pending: Dict[str, Optional[PendingOrder]] = {p: None for p in cfg.pairs}
+        self._bt_peak = 0.0
+        self._bt_buy_halted = False
 
     def _seed_trend_overlay(self) -> None:
         """Seed each engine's daily-close series from PRE-WINDOW history so
@@ -996,7 +1003,12 @@ class BacktestRunner:
                 for pair, state in engine_states.items():
                     self.coordinator.update(pair, state.get("regime", "RANGING"))
                 try:
-                    overrides = self.coordinator.get_overrides(engine_states)
+                    price_series = {
+                        p: list(self.engines[p].prices) for p in cfg.pairs
+                    }
+                    overrides = self.coordinator.get_overrides(
+                        engine_states, price_series=price_series,
+                    )
                 except Exception:
                     overrides = {}
                 for pair, override in overrides.items():
@@ -1004,21 +1016,64 @@ class BacktestRunner:
                     if not state or "signal" not in state:
                         continue
                     sig = state["signal"]
+                    if (str(sig.get("action") or "") == "SELL"
+                            and str(sig.get("reason") or "").startswith("HALT FLATTEN")):
+                        continue
                     sig["action"] = override.get("signal", sig["action"])
                     sig["confidence"] = override.get("confidence_adj", sig["confidence"])
                     sig["reason"] = f"[CROSS-PAIR] {override.get('reason', '')}"
                     state["cross_pair_override"] = override
 
-            # 4) (Phase 6) order-book, forex, brain modifiers — intentionally not
-            # applied in Phase 1. Agent-mount phase will pipe the live modifier
-            # chain through here. Drift test pins Phase-1 behavior to pure
-            # engine + coordinator, which is exactly what this path covers.
+            # Session weight from the bar clock, then the same execution floor
+            # the live tick applies. No order book and no brain: the tape has
+            # neither. Derivatives rules are not invented.
+            bar_ts = 0.0
+            for candle in current_candles.values():
+                bar_ts = float(getattr(candle, "timestamp", 0.0) or 0.0)
+                if bar_ts:
+                    break
+            if bar_ts > 0:
+                hour = datetime.fromtimestamp(bar_ts, tz=timezone.utc).hour
+                session_mod = session_confidence_delta(hour)
+            else:
+                session_mod = 0.0
+            for pair, state in engine_states.items():
+                sig = state.get("signal") or {}
+                if session_mod and sig.get("action") != "HOLD":
+                    sig["confidence"] = max(0.0, min(1.0, float(sig.get("confidence") or 0.0) + session_mod))
+                floor = float(self.engines[pair].sizer.min_confidence)
+                if sig.get("action") == "BUY" and float(sig.get("confidence") or 0.0) < floor:
+                    sig["action"] = "HOLD"
+                    sig["reason"] = "[CONFIDENCE] below execution floor after book/session|" + str(sig.get("reason") or "")
+
+            total_eq = 0.0
+            for pair in cfg.pairs:
+                eng = self.engines[pair]
+                px = eng.prices[-1] if eng.prices else 0.0
+                total_eq += eng.balance + eng.position.size * px
+            if total_eq > self._bt_peak:
+                self._bt_peak = total_eq
+            if self._bt_peak > 0 and (self._bt_peak - total_eq) / self._bt_peak * 100.0 >= 15.0:
+                self._bt_buy_halted = True
+
+            swap_pairs = set()
+            pending_swaps = []
+            for state in engine_states.values():
+                swap = ((state.get("cross_pair_override") or {}).get("swap"))
+                if isinstance(swap, dict):
+                    pending_swaps.append(swap)
+                    swap_pairs.add(swap.get("sell_pair"))
+                    swap_pairs.add(swap.get("buy_pair"))
 
             # 5) Execute signals and queue post-only orders for next-candle fill.
             for pair, state in engine_states.items():
+                if pair in swap_pairs:
+                    continue
                 sig = state.get("signal", {})
                 action = sig.get("action", "HOLD")
                 if action == "HOLD":
+                    continue
+                if action == "BUY" and self._bt_buy_halted:
                     continue
                 engine = self.engines[pair]
                 pre_snap = engine.snapshot_position()
@@ -1041,6 +1096,44 @@ class BacktestRunner:
                 )
                 # Intent is pending only — confirmed fills append to trade_log
                 # on next-bar fill (v2.27.6; avoids reject skew on holding stats).
+
+            for swap in pending_swaps:
+                sell_pair = swap.get("sell_pair")
+                buy_pair = swap.get("buy_pair")
+                sell_engine = self.engines.get(sell_pair) if sell_pair else None
+                buy_engine = self.engines.get(buy_pair) if buy_pair else None
+                if sell_engine is None or buy_engine is None or sell_engine.position.size <= 0:
+                    continue
+                if self._pending.get(sell_pair) or self._pending.get(buy_pair):
+                    continue
+                sell_snap = sell_engine.snapshot_position()
+                sell_trade = sell_engine.execute_signal(
+                    "SELL", 0.85, reason=f"[SWAP] {swap.get('reason', '')}",
+                    strategy="DEFENSIVE",
+                )
+                if sell_trade is None:
+                    continue
+                if self._bt_buy_halted:
+                    sell_engine.restore_position(sell_snap)
+                    continue
+                buy_snap = buy_engine.snapshot_position()
+                buy_trade = buy_engine.execute_signal(
+                    "BUY", 0.85, reason=f"[SWAP] {swap.get('reason', '')}",
+                    strategy="MOMENTUM",
+                )
+                if buy_trade is None:
+                    sell_engine.restore_position(sell_snap)
+                    continue
+                self._pending[sell_pair] = PendingOrder(
+                    pair=sell_pair, side="SELL", limit_price=sell_trade.price,
+                    size=sell_trade.amount, placed_tick=tick,
+                    pre_trade_snapshot=sell_snap,
+                )
+                self._pending[buy_pair] = PendingOrder(
+                    pair=buy_pair, side="BUY", limit_price=buy_trade.price,
+                    size=buy_trade.amount, placed_tick=tick,
+                    pre_trade_snapshot=buy_snap,
+                )
 
             # 6) Record per-tick series for result + UI streaming.
             # EVERY configured pair gets a point at this frontier, even if it

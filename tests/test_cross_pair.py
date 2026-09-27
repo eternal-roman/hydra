@@ -175,8 +175,8 @@ class TestRule2BtcRecovery:
         overrides = coord.get_overrides(states)
         assert "SOL/USDC" in overrides
         assert overrides["SOL/USDC"]["action"] == "ADJUST"
-        assert overrides["SOL/USDC"]["signal"] == "BUY"
-        assert overrides["SOL/USDC"]["confidence_adj"] == 0.55  # 0.4 + 0.15
+        assert overrides["SOL/USDC"]["signal"] == "HOLD"
+        assert overrides["SOL/USDC"]["confidence_adj"] == 0.55  # 0.4 + 0.15, action unchanged
 
     def test_confidence_capped_at_095(self):
         coord = CrossPairCoordinator(PAIRS)

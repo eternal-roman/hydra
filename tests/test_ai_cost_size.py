@@ -36,11 +36,10 @@ def test_cost_scales_the_buy_and_a_larger_cost_skips_it():
     try:
         full = _engine()._maybe_execute(_buy())
         assert full is not None
-        e = _engine()
-        # 2 x atr_pct. Notional is the position cap, which is what the
-        # haircut compares against, not the smaller Kelly crumb.
-        profit = e.balance * e.sizer.max_position_pct * (4.0 / 100.0)
+        # 2 x atr_pct, scored on the order that would actually be sent.
+        profit = full.amount * full.price * (4.0 / 100.0)
         half_cost = profit / 2.0
+        e = _engine()
         scaled = e._maybe_execute(_buy(), decision_cost_usd=half_cost)
         assert scaled is not None
         assert abs(scaled.amount - full.amount * 0.5) / full.amount < 0.02

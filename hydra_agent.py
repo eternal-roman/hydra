@@ -18,8 +18,10 @@ Usage:
     python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD --interval 60   # legacy SOL triangle
 """
 
+import copy
 import json
 import math
+import threading
 import time
 import sys
 import os
@@ -58,7 +60,11 @@ if os.path.exists(_env_path):
                 if _v and _k.strip() not in os.environ:
                     os.environ[_k.strip()] = _v
 
-from hydra_engine import HydraEngine, CrossPairCoordinator, OrderBookAnalyzer, PositionSizer, SIZING_CONSERVATIVE, SIZING_COMPETITION
+from hydra_engine import (
+    HydraEngine, CrossPairCoordinator, OrderBookAnalyzer, PositionSizer,
+    SIZING_CONSERVATIVE, SIZING_COMPETITION,
+    is_entry_veto, is_protected_flatten_reason, session_confidence_delta,
+)
 from hydra_tuner import ParameterTracker
 from hydra_journal_migrator import migrate_legacy_trade_log_file
 
@@ -157,21 +163,23 @@ def resting_order_decision(
     desired_action: str,
     *,
     buy_blocked: bool = False,
+    entry_veto: bool = False,
 ) -> str:
     """One working order per pair.
 
-    Returns ``place`` when nothing is resting, ``skip`` when the new
-    intent must wait (same side, HOLD, or a BUY the portfolio breaker
-    has already forbidden), and ``cancel`` when the new intent is the
-    opposite side and the resting order has to get out of the way
-    before a new one is sent. The new order is never placed on the
-    cancel tick — the book is only safe to trade again after the
-    resting order's terminal event restores its snapshot.
+    ``place`` when nothing is resting. ``skip`` for same-side or an
+    ordinary HOLD. ``cancel`` for the opposite side, and also for a
+    resting BUY when the portfolio halt is on or the new HOLD is an
+    entry veto. A resting SELL is not cancelled by a HOLD, and a
+    forbidden BUY does not cancel a working exit. Nothing new is
+    placed on the cancel tick.
     """
     side = (resting_side or "").strip().upper()
     want = (desired_action or "HOLD").strip().upper()
     if side not in ("BUY", "SELL"):
         return "place"
+    if side == "BUY" and (buy_blocked or (want == "HOLD" and entry_veto)):
+        return "cancel"
     if want not in ("BUY", "SELL") or want == side:
         return "skip"
     if want == "BUY" and buy_blocked:
@@ -210,6 +218,15 @@ def _is_halt_flatten(state: dict) -> bool:
         str(sig.get("action") or "") == "SELL"
         and str(sig.get("reason") or "").startswith("HALT FLATTEN")
     )
+
+
+class _BrainPublish:
+    """One in-flight deliberation. The tick marks it abandoned on timeout."""
+
+    __slots__ = ("abandoned",)
+
+    def __init__(self) -> None:
+        self.abandoned = False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -926,21 +943,21 @@ class HydraAgent:
                 return entry
         return None
 
-    def _hold_for_resting_order(self, pair: str, desired_action: str) -> bool:
-        """True when this tick must not call execute_signal for `pair`.
-
-        Same-side and HOLD wait. An opposite signal cancels the resting
-        order and still waits — the new order is placed only after the
-        cancel's terminal event has restored the pre-trade book.
-        """
+    def _hold_for_resting_order(
+        self, pair: str, desired_action: str, reason: str = "",
+    ) -> bool:
+        """True when this tick must not call execute_signal for `pair`."""
         resting = self._resting_entry(pair)
         if resting is None:
             return False
-        blocked = self._should_block_buy_for_portfolio_dd(
-            getattr(self, "_portfolio_buy_halted", False), desired_action,
-        )
+        halt_on = bool(getattr(self, "_portfolio_buy_halted", False))
+        blocked = (
+            halt_on and str(resting.get("side") or "").upper() == "BUY"
+        ) or self._should_block_buy_for_portfolio_dd(halt_on, desired_action)
         decision = resting_order_decision(
-            resting.get("side"), desired_action, buy_blocked=blocked,
+            resting.get("side"), desired_action,
+            buy_blocked=blocked,
+            entry_veto=is_entry_veto(desired_action, reason),
         )
         if decision == "place":
             return False
@@ -973,6 +990,8 @@ class HydraAgent:
             if eng is not None and isinstance(snap, dict):
                 try:
                     eng.restore_position(snap)
+                    if str(side or "").upper() == "BUY":
+                        eng.release_unfilled_buy_halt()
                 except Exception as e:
                     print(f"  [INFLIGHT] {pair}: paper cancel rollback failed: {e}")
             lifecycle = entry.setdefault("lifecycle", {})
@@ -1770,6 +1789,9 @@ class HydraAgent:
                     state = engine_states.get(pair)
                     if not state:
                         continue
+                    if _is_halt_flatten(state):
+                        print(f"  [CROSS] {pair}: halt flatten kept — override skipped")
+                        continue
                     print(f"  [CROSS] {pair}: {override['action']} → {override['signal']} "
                           f"(conf {override['confidence_adj']:.2f}) — {override['reason']}")
                     state["signal"]["action"] = override["signal"]
@@ -1814,20 +1836,16 @@ class HydraAgent:
                 # London/NY overlap (12-16 UTC) is peak liquidity → signals more reliable.
                 # Dead zone (21-00 UTC) is thinnest → signals less reliable.
                 utc_hour = datetime.now(timezone.utc).hour
-                if 12 <= utc_hour < 16:      # London/NY overlap — peak
-                    session_mod = 0.04
+                session_mod = session_confidence_delta(utc_hour)
+                if 12 <= utc_hour < 16:
                     session_label = "London/NY"
-                elif 7 <= utc_hour < 12:      # London session
-                    session_mod = 0.02
+                elif 7 <= utc_hour < 12:
                     session_label = "London"
-                elif 16 <= utc_hour < 21:     # NY session
-                    session_mod = 0.02
+                elif 16 <= utc_hour < 21:
                     session_label = "New York"
-                elif 0 <= utc_hour < 7:       # Asian session
-                    session_mod = -0.03
+                elif 0 <= utc_hour < 7:
                     session_label = "Asian"
-                else:                          # 21-00 UTC dead zone
-                    session_mod = -0.05
+                else:
                     session_label = "dead zone"
 
                 for pair in self.pairs:
@@ -1858,6 +1876,16 @@ class HydraAgent:
                         state["signal"]["confidence"] = orig_conf + MAX_TOTAL_MODIFIER_BOOST
                     if state["signal"]["confidence"] < 0.0:
                         state["signal"]["confidence"] = 0.0
+                    eng = self.engines.get(pair)
+                    floor = float(getattr(getattr(eng, "sizer", None), "min_confidence", 0.65) or 0.65)
+                    sig = state["signal"]
+                    if (str(sig.get("action") or "") == "BUY"
+                            and float(sig.get("confidence") or 0.0) < floor):
+                        sig["action"] = "HOLD"
+                        sig["reason"] = (
+                            "[CONFIDENCE] below execution floor after book/session"
+                            f"|{sig.get('reason', '')}"
+                        )
 
                 # Phase 1.9: Compute aggregate portfolio context for brain
                 try:
@@ -1990,18 +2018,64 @@ class HydraAgent:
                         all_states[pair] = state
 
                 if brain_pairs:
-                    with ThreadPoolExecutor(max_workers=len(brain_pairs)) as executor:
+                    # Snapshots are the pre-brain states. A timed-out call
+                    # keeps mutating the dict it was given; the tick must
+                    # trade the snapshot, not that half-written object.
+                    # The pool is not a context manager: its exit waits for
+                    # every worker, which would ignore the timeout.
+                    snapshots = {}
+                    publishes = {}
+                    for pair, state in brain_pairs:
+                        try:
+                            snapshots[pair] = copy.deepcopy(state)
+                        except Exception:
+                            snapshots[pair] = state
+                        publishes[pair] = _BrainPublish()
+                    executor = ThreadPoolExecutor(max_workers=len(brain_pairs))
+                    try:
                         futures = {
-                            executor.submit(self._apply_brain, pair, state, engine_states): pair
+                            executor.submit(
+                                self._apply_brain, pair, state, engine_states,
+                                publishes[pair],
+                            ): pair
                             for pair, state in brain_pairs
                         }
-                        for future in as_completed(futures):
-                            pair = futures[future]
-                            try:
-                                all_states[pair] = future.result(timeout=60)
-                            except Exception as e:
-                                print(f"  [WARN] Brain failed for {pair}: {e}")
-                                all_states[pair] = engine_states[pair]
+                        done_pairs = set()
+                        try:
+                            for future in as_completed(futures, timeout=130):
+                                pair = futures[future]
+                                done_pairs.add(pair)
+                                try:
+                                    all_states[pair] = future.result()
+                                except Exception as e:
+                                    print(f"  [WARN] Brain failed for {pair}: {e}")
+                                    self._brain_fallback_state(
+                                        pair, snapshots, engine_states, all_states,
+                                    )
+                        except TimeoutError:
+                            print("  [WARN] Brain timed out — remaining pairs use guardrails only")
+                            for future, pair in futures.items():
+                                if pair in done_pairs or not future.done():
+                                    continue
+                                done_pairs.add(pair)
+                                try:
+                                    all_states[pair] = future.result()
+                                except Exception as e:
+                                    print(f"  [WARN] Brain failed for {pair}: {e}")
+                                    self._brain_fallback_state(
+                                        pair, snapshots, engine_states, all_states,
+                                    )
+                            for pair, _state in brain_pairs:
+                                if pair in done_pairs:
+                                    continue
+                                self._abandon_brain_publish(pair, publishes[pair])
+                                self._brain_fallback_state(
+                                    pair, snapshots, engine_states, all_states,
+                                )
+                    finally:
+                        executor.shutdown(wait=False, cancel_futures=True)
+
+                self._arm_portfolio_before_orders()
 
                 # Phase 2.5: Execute finalized signals on engines (deferred from
                 # generate_only=True). Always runs so coordinator overrides apply
@@ -2023,9 +2097,17 @@ class HydraAgent:
                     # Clamp the brain's size_multiplier to [0.0, 1.5] so no single
                     # modifier can exceed Kelly's hard cap.
                     _sm = ai.get("size_multiplier")
-                    _brain_mult = float(1.0 if _sm is None else _sm)
+                    try:
+                        _brain_mult = 1.0 if _sm is None else float(_sm)
+                    except (TypeError, ValueError):
+                        _brain_mult = 1.0
+                    if (_brain_mult != _brain_mult or _brain_mult == float("inf")
+                            or _brain_mult == float("-inf")):
+                        _brain_mult = 1.0
                     _final_mult = max(0.0, min(1.5, _brain_mult))
                     _action = sig.get("action", "HOLD")
+                    if isinstance(ai, dict):
+                        ai["size_multiplier_applied"] = _action != "SELL"
                     # One working order per pair. execute_signal books the
                     # fill before the exchange has it; a second call while
                     # the first is still PLACED is wiped or doubled when
@@ -2033,7 +2115,7 @@ class HydraAgent:
                     # a flatten then tries to sell coins the entry has not
                     # bought. Hold this tick. Cancel only when the new
                     # intent is the opposite side.
-                    if self._hold_for_resting_order(pair, _action):
+                    if self._hold_for_resting_order(pair, _action, sig.get("reason", "")):
                         continue
                     pre_trade_snap = engine.snapshot_position()
                     if self._should_block_buy_for_portfolio_dd(
@@ -2085,7 +2167,10 @@ class HydraAgent:
                             if not success and state.get("_pre_trade_snapshot"):
                                 engine = self.engines[pair]
                                 engine.restore_position(state["_pre_trade_snapshot"])
-                                print(f"  [ROLLBACK] {pair}: engine state rolled back after failed placement")
+                                if state.pop("_resolve_unsellable", False):
+                                    self._settle_unsellable_base(pair, engine)
+                                else:
+                                    print(f"  [ROLLBACK] {pair}: engine state rolled back after failed placement")
 
                 # Phase 2.6: S3 shadow strategy (HYDRA_S3_STRATEGY=1).
                 # Paper proposals + per-arm shadow position marking only —
@@ -2345,8 +2430,81 @@ class HydraAgent:
         # Always generate_only so coordinator can mutate the signal before
         # phase-2.5 execute_signal. Pre-trade snapshots are taken in phase 2.5
         # immediately before execute (not here).
+        was_halted = bool(engine.halted)
         state = engine.tick(generate_only=True)
+        self._note_unfilled_buy_halt(pair, engine, was_halted)
         return state
+
+    def _note_unfilled_buy_halt(self, pair: str, engine, was_halted: bool) -> None:
+        """Mark a new halt that the pre-buy book does not explain."""
+        dd = None
+        resting = self._resting_entry(pair)
+        if resting and str(resting.get("side") or "").upper() == "BUY":
+            snap = resting.get("pre_trade_snapshot")
+            if isinstance(snap, dict):
+                dd = engine.pretrade_drawdown_pct(snap)
+        engine.note_unfilled_buy_halt(was_halted, dd)
+
+    def _brain_fallback_state(self, pair, snapshots, engine_states, all_states) -> None:
+        restored = snapshots.get(pair) or engine_states.get(pair)
+        if restored is None:
+            return
+        engine_states[pair] = restored
+        all_states[pair] = restored
+        try:
+            self._apply_quant_guardrails(pair, restored)
+        except Exception as e:
+            print(f"  [WARN] Guardrails failed for {pair} after brain miss: "
+                  f"{type(e).__name__}: {e}")
+
+    def _brain_lock(self) -> threading.Lock:
+        lock = getattr(self, "_brain_publish_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._brain_publish_lock = lock
+        return lock
+
+    def _abandon_brain_publish(self, pair: str, publish: _BrainPublish) -> None:
+        """Drop a decision the tick already stopped waiting for.
+
+        The worker may finish later. It must not write the replay cache,
+        and a write that won the race is removed here.
+        """
+        with self._brain_lock():
+            publish.abandoned = True
+            owners = getattr(self, "_brain_cache_owner", None)
+            if owners is not None and owners.get(pair) is publish:
+                self._last_ai_decision.pop(pair, None)
+                owners.pop(pair, None)
+            ts_owners = getattr(self, "_brain_ts_owner", None)
+            if ts_owners is not None and ts_owners.get(pair) is publish:
+                self._last_brain_candle_ts.pop(pair, None)
+                ts_owners.pop(pair, None)
+
+    def _publish_brain_decision(
+        self, pair: str, decision: dict, candle_ts, publish,
+    ) -> None:
+        """Cache the finished decision unless this tick already moved on."""
+        with self._brain_lock():
+            if publish is not None and publish.abandoned:
+                return
+            self._last_ai_decision[pair] = dict(decision)
+            if publish is not None:
+                owners = getattr(self, "_brain_cache_owner", None)
+                if owners is None:
+                    owners = {}
+                    self._brain_cache_owner = owners
+                owners[pair] = publish
+            if candle_ts is None:
+                return
+            self._last_brain_candle_ts[pair] = candle_ts
+            if publish is None:
+                return
+            ts_owners = getattr(self, "_brain_ts_owner", None)
+            if ts_owners is None:
+                ts_owners = {}
+                self._brain_ts_owner = ts_owners
+            ts_owners[pair] = publish
 
     def _apply_quant_guardrails(self, pair: str, state: dict, *, keep_brain: bool = False) -> dict:
         """Apply R1-R11 + QFE with NO brain. Mutates state in place.
@@ -2423,7 +2581,11 @@ class HydraAgent:
             return state
 
         final_size_multiplier = max(0.0, min(1.5, rules_size_mult * (brain_size if keep_brain else 1.0)))
-        if rules_force_hold and not _is_halt_flatten(state):
+        if rules_force_hold and not (
+            _is_halt_flatten(state) or is_protected_flatten_reason(
+                (state.get("signal") or {}).get("reason")
+            )
+        ):
             final_size_multiplier = 0.0
             state["signal"]["action"] = "HOLD"
             state["signal"]["reason"] = (
@@ -2513,7 +2675,8 @@ class HydraAgent:
             }
         return state
 
-    def _apply_brain(self, pair: str, state: dict, all_engine_states: dict) -> dict:
+    def _apply_brain(self, pair: str, state: dict, all_engine_states: dict,
+                     publish: Optional[_BrainPublish] = None) -> dict:
         """Phase 2: Run brain with full cross-pair context. Mutates state in place."""
         if not self.brain or state["signal"]["action"] == "HOLD":
             # Inject cached decision for dashboard persistence (brain didn't fire)
@@ -2522,6 +2685,8 @@ class HydraAgent:
                 state["ai_decision"] = cached
             return state
 
+        replay_candle = None
+        brain_finished = False
         # Pre-brain filter: skip brain for BUY signals that can't produce tradeable order size
         if state["signal"]["action"] == "BUY":
             engine = self.engines[pair]
@@ -2665,7 +2830,11 @@ class HydraAgent:
             pre_clamp_product = brain_size * rules_size_mult
             final_size_multiplier = max(0.0, min(1.5, pre_clamp_product))
             size_clamp_applied = pre_clamp_product != final_size_multiplier
-            if rules_force_hold:
+            protected_flatten = _is_halt_flatten(state) or (
+                is_protected_flatten_reason((state.get("signal") or {}).get("reason"))
+                and str((state.get("signal") or {}).get("action") or "") == "SELL"
+            )
+            if rules_force_hold and not protected_flatten:
                 final_size_multiplier = 0.0
 
             # v2.14.1: preserve the original engine reason when W3 api-down
@@ -2718,14 +2887,6 @@ class HydraAgent:
                 # that didn't re-deliberate, current_tick > this value.
                 "generated_at_tick": state.get("tick", 0),
             }
-            # Cache for dashboard persistence on ticks where brain doesn't fire
-            self._last_ai_decision[pair] = state["ai_decision"]
-
-            # Mark candle as evaluated only when brain ran LLM calls (not fallback).
-            # On fallback (budget exceeded, API down), leave timestamp unchanged so
-            # the next tick retries this candle.
-            if not decision.fallback:
-                self._last_brain_candle_ts[pair] = current_candle_ts
 
             # Apply AI decision to engine state
             # Note: engine ran with generate_only=True, so no trade was executed yet.
@@ -2734,9 +2895,12 @@ class HydraAgent:
             # preserved in state["ai_decision"] for dashboard/logging.
             if blocked_by_api_down:
                 pass  # state["signal"] already rewritten above; skip OVERRIDE/ADJUST below
-            elif _is_halt_flatten(state):
-                # Breaker flatten is already the exit. R10 and an OVERRIDE
-                # to HOLD would leave the inventory open.
+            elif _is_halt_flatten(state) or (
+                is_protected_flatten_reason((state.get("signal") or {}).get("reason"))
+                and str((state.get("signal") or {}).get("action") or "") == "SELL"
+            ):
+                # Breaker flatten and the trend flatten are already the exit.
+                # R10 and an OVERRIDE to HOLD would leave the inventory open.
                 pass
             elif rules_force_hold:
                 # v2.14: a deterministic rule trumped the LLM layer. Force
@@ -2850,10 +3014,25 @@ class HydraAgent:
             state["ai_decision"]["qfe_active"] = qfe_active
             state["ai_decision"]["qfe_reason"] = qfe_reason
             state["ai_decision"]["qfe_trigger_values"] = qfe_trigger_values
+            replay_candle = None if decision.fallback else current_candle_ts
+            brain_finished = True
         except Exception as e:
             state["ai_decision"] = {"action": "FALLBACK", "error": str(e), "fallback": True}
-            # Do NOT update _last_brain_candle_ts — allow retry on next tick
+            # Do NOT update _last_brain_candle_ts — allow retry on next tick.
+            # A thrown deliberation must not skip R1–R11.
+            try:
+                self._apply_quant_guardrails(pair, state)
+            except Exception as ge:
+                print(f"  [QUANT RULES] {pair}: guardrails after brain error failed "
+                      f"({type(ge).__name__}: {ge})")
 
+        # Cache only a finished decision. A timeout sets publish.abandoned
+        # first, so a late return cannot become the next tick's order.
+        # Fallback leaves the candle unmarked and the next tick retries.
+        if brain_finished:
+            self._publish_brain_decision(
+                pair, state["ai_decision"], replay_candle, publish,
+            )
         return state
 
     def _build_triangle_context(self, current_pair: str, all_states: dict) -> dict:
@@ -3218,7 +3397,20 @@ class HydraAgent:
             base = pair.split("/")[0]
             real_base_bal = self._get_real_quote_balance(base)
             if real_base_bal is not None:
-                min_size = PositionSizer.MIN_ORDER_SIZE.get(base, 0.02)
+                eng_for_min = self.engines.get(pair)
+                min_size = (
+                    eng_for_min.sizer.min_order_size(pair)
+                    if eng_for_min is not None else None
+                )
+                if min_size is None:
+                    min_size = PositionSizer.MIN_ORDER_SIZE.get(base)
+                if min_size is None:
+                    print(f"  [TRADE] {pair} SELL: unknown ordermin for {base} "
+                          f"— not treating the book as dust")
+                    self._finalize_failed_entry(
+                        entry, terminal_reason=f"unknown_ordermin_{base}",
+                    )
+                    return False
                 if real_base_bal < min_size:
                     # The EXCHANGE holding is below ordermin, so this SELL can
                     # never succeed — not this tick, not any tick. Previously
@@ -3250,15 +3442,11 @@ class HydraAgent:
                               f"({min_size}) but {staked_bal:.8f} {base} is "
                               f"STAKED — not dust. Unstake to trade it; "
                               f"engine position left intact.")
-                    elif eng is not None and eng.position.size > 0:
-                        written = eng.write_off_dust(
-                            reason="exchange_balance_below_ordermin")
-                        print(f"  [TRADE] {pair} SELL: exchange {base} balance "
-                              f"({real_base_bal:.8f}) below ordermin "
-                              f"({min_size}) — wrote off {written:.8f} unsellable "
-                              f"dust so the engine returns to flat instead of "
-                              f"retrying every tick.")
                     else:
+                        # The optimistic sell already zeroed the book, so a
+                        # write-off here cannot see the position. The caller
+                        # restores the snapshot and then settles from gross.
+                        state["_resolve_unsellable"] = True
                         print(f"  [TRADE] Insufficient {base} balance "
                               f"({real_base_bal:.8f}) for {pair} SELL — "
                               f"below ordermin ({min_size}) — skipping")
@@ -3283,6 +3471,9 @@ class HydraAgent:
                                 fill_price=float(px),
                                 pre_trade_snapshot=snap,
                                 reason="SELL clamp to exchange base before place",
+                            )
+                            eng.set_base_remainder(
+                                self._gross_asset_balance(base), float(real_base_bal),
                             )
                     amount = real_base_bal
                     trade["amount"] = amount
@@ -3748,6 +3939,11 @@ class HydraAgent:
                         reason=f"FILLED true-up: {event.get('terminal_reason') or ''}",
                     )
                     if ok:
+                        if str(side or "").upper() == "SELL" and pair:
+                            base = str(pair).split("/")[0]
+                            gross_now = self._gross_asset_balance(base)
+                            if gross_now is not None:
+                                engine.set_base_remainder(gross_now + fill_amt, fill_amt)
                         print(f"  [EXEC] {pair} {side} FILLED: true-up "
                               f"{fill_amt:.8f} @ {fill_price}")
                 except Exception as e:
@@ -3762,6 +3958,8 @@ class HydraAgent:
                 snap = entry.get("pre_trade_snapshot")
             if engine is not None and snap is not None:
                 engine.restore_position(snap)
+                if str(side or "").upper() == "BUY":
+                    engine.release_unfilled_buy_halt()
                 print(f"  [EXEC] {pair} {side} {state_name}: engine rolled back "
                       f"(reason: {event.get('terminal_reason') or 'n/a'})")
             elif engine is not None and snap is None:
@@ -3949,6 +4147,29 @@ class HydraAgent:
                 self.engines[pair].apply_tuned_params(new_params)
         self._completed_trades_since_update = 0
 
+    def _rules_block_order(self, state: dict, action: str) -> bool:
+        """True when R1–R11 force-hold this swap leg.
+
+        A hold-through or halt flatten is not blocked. Missing indicators
+        are passed through; the rules fail safe on a covered pair.
+        """
+        if os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1":
+            return False
+        reason = ((state or {}).get("signal") or {}).get("reason") or ""
+        if action == "SELL" and is_protected_flatten_reason(reason):
+            return False
+        try:
+            from hydra_quant_rules import apply_rules
+            result = apply_rules(
+                engine_action=action,
+                quant_output={"positioning_bias": "", "force_hold": False},
+                quant_indicators=(state or {}).get("quant_indicators") or None,
+            )
+        except Exception as e:
+            print(f"  [SWAP] rules check failed ({type(e).__name__}: {e})")
+            return False
+        return bool(result.force_hold)
+
     def _execute_coordinated_swap(self, swap: dict, all_states: dict):
         """Execute a coordinated cross-pair swap (sell one pair, buy another).
 
@@ -3993,6 +4214,9 @@ class HydraAgent:
 
         print(f"  [SWAP] Coordinated swap {swap_id}: SELL {sell_amount:.8f} {sell_pair} @ {sell_price} → BUY {buy_pair}")
         print(f"  [SWAP] Reason: {reason}")
+        if self._rules_block_order(sell_state, "SELL"):
+            print(f"  [SWAP] {sell_pair}: rules force_hold — swap aborted before the sell")
+            return
 
         # Leg 1: Sell — update engine state first, then execute on exchange
         sell_snap = sell_engine.snapshot_position()
@@ -4046,8 +4270,8 @@ class HydraAgent:
             log the unbalanced swap so the operator can see it.
             """
             if self.paper:
-                print(f"  [SWAP] WARNING: paper sell already synthesized as filled; "
-                      f"swap {swap_id} half-executed ({why})")
+                sell_engine.restore_position(sell_snap)
+                print(f"  [SWAP] paper sell restored; swap {swap_id} not left one-sided ({why})")
                 return
             if not sell_order_id or sell_order_id == "unknown":
                 print(f"  [SWAP] WARNING: no order_id captured for sell leg; "
@@ -4079,6 +4303,9 @@ class HydraAgent:
         # position sizing, balance check, and minimum order enforcement internally.
         if self._should_block_buy_for_portfolio_dd(self._portfolio_buy_halted, "BUY"):
             _cancel_orphan_sell("portfolio circuit breaker blocks BUY leg")
+            return
+        if self._rules_block_order(buy_state, "BUY"):
+            _cancel_orphan_sell("rules force_hold on buy leg")
             return
         buy_snap = buy_engine.snapshot_position()
         buy_trade_obj = buy_engine.execute_signal(
@@ -4690,6 +4917,92 @@ class HydraAgent:
             "assets": assets,
         }
 
+    def _gross_asset_balance(self, asset: str) -> Optional[float]:
+        """Gross (not free) units of `asset`. None when the map is unknown.
+
+        A non-empty map that does not mention the asset is 0. Staked keys
+        are excluded; the caller reads staked separately.
+        """
+        bal = None
+        stream = getattr(self, "balance_stream", None)
+        if not self.paper and stream is not None and getattr(stream, "healthy", False):
+            latest = stream.latest_balances()
+            if isinstance(latest, dict) and latest and "error" not in latest:
+                bal = latest
+        if bal is None:
+            cached = getattr(self, "_cached_balance", None)
+            if isinstance(cached, dict) and cached and "error" not in cached:
+                bal = cached
+        if not isinstance(bal, dict) or not bal:
+            return None
+        total = 0.0
+        matched = False
+        for key, amount in bal.items():
+            if not isinstance(key, str) or KrakenCLI._is_staked(key):
+                continue
+            if KrakenCLI._normalize_asset(key) != asset:
+                continue
+            matched = True
+            try:
+                total += float(amount)
+            except (TypeError, ValueError):
+                continue
+        return total if matched else 0.0
+
+    def _settle_unsellable_base(self, pair: str, engine) -> None:
+        """After a failed sell is restored, write off only a book the exchange cannot sell."""
+        base = pair.split("/")[0]
+        staked = self._get_staked_balance(base)
+        if staked > 0:
+            print(f"  [TRADE] {pair}: {staked:.8f} {base} staked — position kept")
+            return
+        gross = self._gross_asset_balance(base)
+        min_size = engine.sizer.min_order_size(pair) if engine is not None else None
+        if gross is None or min_size is None:
+            print(f"  [TRADE] {pair}: gross {base} unknown — not writing the position off")
+            return
+        if gross >= min_size:
+            print(f"  [TRADE] {pair}: {gross:.8f} {base} still on the exchange "
+                  f"(locked or free) — not writing the position off")
+            return
+        written = engine.write_off_position()
+        print(f"  [TRADE] {pair}: exchange {base} {gross:.8f} below ordermin "
+              f"{min_size} — wrote off {written:.8f}")
+
+    def _note_portfolio_equity(self, total_usd: float) -> None:
+        """Arm the portfolio buy halt on current drawdown, before orders."""
+        if total_usd <= 0:
+            return
+        if total_usd > self._portfolio_peak_usd:
+            self._portfolio_peak_usd = total_usd
+        if self._portfolio_peak_usd <= 0:
+            return
+        cur_dd = (self._portfolio_peak_usd - total_usd) / self._portfolio_peak_usd * 100.0
+        self._portfolio_current_drawdown_pct = round(cur_dd, 4)
+        if cur_dd > self._portfolio_max_drawdown_pct:
+            self._portfolio_max_drawdown_pct = cur_dd
+        threshold = float(getattr(self, "PORTFOLIO_CIRCUIT_BREAKER_PCT", 15.0))
+        if cur_dd >= threshold:
+            if not getattr(self, "_portfolio_buy_halted", False):
+                print(
+                    f"  [PORTFOLIO CB] drawdown {cur_dd:.1f}% ≥ {threshold:.0f}% — "
+                    f"blocking new BUYs (SELL still allowed)"
+                )
+            self._portfolio_buy_halted = True
+
+    def _arm_portfolio_before_orders(self) -> None:
+        ws_bal = (
+            self.balance_stream.latest_balances()
+            if not self.paper and getattr(self, "balance_stream", None) is not None
+            and self.balance_stream.healthy
+            else None
+        )
+        if ws_bal:
+            self._cached_balance = ws_bal
+        bal = getattr(self, "_cached_balance", {}) or {}
+        breakdown = self._compute_balance_usd(bal) if bal else {}
+        self._note_portfolio_equity(float(breakdown.get("total_usd") or 0.0))
+
     def _publish_tick_state(self, tick: int, all_states: dict, elapsed: float) -> None:
         """Refresh pair books and broadcast. Drops `_pre_trade_snapshot` first."""
         # Strip internal rollback data before broadcasting to dashboard
@@ -4786,35 +5099,7 @@ class HydraAgent:
         if total_usd_live > 0:
             if total_usd_live > self._portfolio_peak_usd:
                 self._portfolio_peak_usd = total_usd_live
-            if self._portfolio_peak_usd > 0:
-                cur_dd = ((self._portfolio_peak_usd - total_usd_live) /
-                          self._portfolio_peak_usd * 100.0)
-                self._portfolio_current_drawdown_pct = round(cur_dd, 4)
-                if cur_dd > self._portfolio_max_drawdown_pct:
-                    self._portfolio_max_drawdown_pct = cur_dd
-                # PR-B / B4: sticky portfolio BUY halt at 15% drawdown.
-                #
-                # Arms on the CURRENT drawdown, matching the engine breaker.
-                # `_portfolio_max_drawdown_pct` is a monotone running max that
-                # nothing ever lowers, so arming on it re-halted the portfolio
-                # on the first tick after HYDRA_RESET_CIRCUIT_BREAKER=1 cleared
-                # the flag at resume — even from a fully recovered account —
-                # which left the documented escape hatch a no-op for the
-                # portfolio half exactly as it had been for the engine half.
-                # The halt stays STICKY once tripped (cleared only by the
-                # explicit operator reset), so recovery inside a session does
-                # not silently re-enable BUYs; this only means the reset holds
-                # when the account is no longer underwater.
-                _pcb = float(getattr(self, "PORTFOLIO_CIRCUIT_BREAKER_PCT", 15.0))
-                if cur_dd >= _pcb:
-                    if not getattr(self, "_portfolio_buy_halted", False):
-                        print(
-                            f"  [PORTFOLIO CB] drawdown "
-                            f"{cur_dd:.1f}% ≥ "
-                            f"{_pcb:.0f}% — "
-                            f"blocking new BUYs (SELL still allowed)"
-                        )
-                    self._portfolio_buy_halted = True
+            self._note_portfolio_equity(total_usd_live)
 
         pairs_data = {}
         for pair, state in all_states.items():
@@ -5272,7 +5557,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.34.1",
+            "version": "2.34.3",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

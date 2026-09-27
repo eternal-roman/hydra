@@ -6,6 +6,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.34.3] — 2026-09-26
+
+### Fixed
+
+- **A buy cancel no longer clears a real 15% halt.** The halt is dropped on cancel only when the pre-buy book was under 15% and the unfilled buy is what armed it. That mark is saved on the engine snapshot. A restarted process marks it again while the live book is still past 15%. A real breach stays until the operator reset, including after the account recovers.
+- **A brain timeout no longer waits out the call.** The tick keeps the pre-brain state and runs the deterministic rules for any pair that did not finish. A call that returns after that does not become the next tick's cached decision. The thread pool does not block shutdown on the workers still running.
+
+---
+
+## [2.34.2] — 2026-09-26
+
+### Fixed
+
+- **The order is the decision that survived the rules.** A rules HOLD is no longer sold by the downtrend rail. A halt flatten and a hold-through flatten are not rewritten to HOLD. A resting buy is cancelled by an entry veto or the portfolio buy halt. An ordinary HOLD still leaves a working order alone.
+- **The portfolio 15% buy halt arms before the order.** The crossing tick no longer buys. A halt that existed only because an unfilled buy was already on the book is cleared when that cancel restores a book under 15%.
+- **Size 1.5 means 1.5.** The engine no longer expands it to 2. Non-numeric size is neutral in the brain and sends nothing if it reaches the engine. A sell at multiplier 0 does not send, except a flatten the rail already chose. A partial sell penalty still full-closes, and the decision records that the penalty was not applied to the quantity. The API-cost haircut scores the order about to be sent.
+- **An unsellable sell stays flat.** When the exchange gross base is below the minimum and nothing is staked, the restored book is written off instead of being retried forever. A clamped sell keeps only coins the exchange still has. An unknown order side does not restore the book first.
+- **Coordinator.** Rule 2 boosts confidence and does not force a buy. A halt flatten is not overwritten. A cross-pair sell is allowed through an uptrend ride. A halted engine publishes the real regime. Swap legs are scored by the rules, and a paper swap restores the sell if the buy does not place.
+- **Replay.** The backtest applies the portfolio halt, the UTC session weight, coordinator prices, and swap legs. It does not invent a derivatives feed, an order book, or a brain.
+- **Indicators.** A tuned RSI upper band of 85 or more still exits at RSI 100. MACD keeps its first valid bar. Volume confirmation uses the bars before the one being judged. A non-finite basis is missing, not a live value. An unknown base is not sized or written off at 0.02.
+
+---
+
 ## [2.34.1] — 2026-09-26
 
 ### Fixed
