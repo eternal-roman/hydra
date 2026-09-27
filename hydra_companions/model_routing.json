@@ -144,7 +144,7 @@
     "apex":   { "daily_usd": 16.00, "alert_at_pct": 80, "hard_stop_at_pct": 100 },
     "broski": { "daily_usd": 12.00, "alert_at_pct": 80, "hard_stop_at_pct": 100 },
     "global_companion_daily_usd": 40.00,
-    "note": "Separate from the brain budget. Brain disclosure is COST_ALERT_USD ($20) and the hard stop defaults to $40."
+    "note": "Separate from brain's max_daily_cost. Shared $50/day disclosure threshold remains on the brain side. A BUY is sized by whether its expected dollar profit covers the cost of the decision that produced it."
   },
 
   "safety_caps": {
