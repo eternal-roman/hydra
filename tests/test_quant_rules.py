@@ -435,6 +435,19 @@ def test_qfe_crowded_short_bias_alone_does_not_block():
     assert r.force_exit is True
 
 
+def test_qfe_stale_squeeze_does_not_block():
+    """A frozen short_squeeze on a dead feed is not a live catalyst."""
+    qi = dict(
+        FRESH_INDICATORS_BALANCED,
+        oi_price_regime="short_squeeze",
+        funding_bps_8h=-200.0,
+        cvd_divergence_sigma=4.0,
+        staleness_s=900.0,
+    )
+    r = evaluate_qfe(position_size=1.5, unrealized_pnl_pct=3.0, quant_indicators=qi)
+    assert r.force_exit is True
+
+
 def test_qfe_blocked_by_short_squeeze_regime():
     """Squeeze in progress = long is winning, hold it."""
     qi = dict(FRESH_INDICATORS_BALANCED, oi_price_regime="short_squeeze")

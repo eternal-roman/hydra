@@ -11,6 +11,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **Heartbeat scores the first print.** The robust scaler used to return no z-score until 30 closed bars, and an OHLC bootstrap has no aggressor volume, so live order-flow features stayed blank while the dashboard hid them. The first print is now the score. Robust scaling starts once a scale exists.
+- **A sub-lot Kelly buy still runs the guardrails.** Conviction sizing can lift that crumb into a real order. Skipping R1–R11 because `calculate()` returned 0 let that order through extreme funding and a stale derivatives feed.
+- **A circuit-breaker flatten is not turned into a hold** when the derivatives feed is stale, and a brain override cannot replace it. A stale squeeze print no longer blocks the profit-exit escape. A derivatives feed that has never updated is recorded as stale instead of age-unknown.
+- **An older candle is dropped** instead of becoming the latest price.
 
 ---
 

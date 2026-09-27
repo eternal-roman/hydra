@@ -305,14 +305,25 @@ def evaluate_qfe(
     funding = qi.get("funding_bps_8h")
     cvd = qi.get("cvd_divergence_sigma")
 
+    # A stale block must not keep a frozen squeeze print. R10 already
+    # held the book because the feed is old; QFE is the profit-exit
+    # escape, and it cannot see a catalyst that is no longer live.
+    feed_stale = False
+    try:
+        age = qi.get("staleness_s")
+        feed_stale = age is not None and float(age) > STALENESS_SECONDS_MAX
+    except (TypeError, ValueError):
+        feed_stale = False
+
     # 1. Squeeze already in progress (OI falling + price rising)
-    if oi_regime == "short_squeeze":
+    if not feed_stale and oi_regime == "short_squeeze":
         return QfeResult(
             trigger_values=_qfe_snapshot(qi, unrealized_pnl_pct, bias),
         )
 
     # 2. Extreme short funding + accumulation flow = squeeze setup
-    if (funding is not None and funding < -FUNDING_EXTREME_BPS
+    if (not feed_stale
+            and funding is not None and funding < -FUNDING_EXTREME_BPS
             and cvd is not None and cvd > CVD_DIVERGENCE_SIGMA_THRESHOLD):
         return QfeResult(
             trigger_values=_qfe_snapshot(qi, unrealized_pnl_pct, bias),

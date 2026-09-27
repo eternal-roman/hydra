@@ -1471,6 +1471,11 @@ class HydraEngine:
         )):
             return
         signed = _chaikin_signed_volume(candle)
+        # A delayed frame must not become the mark. The daily series already
+        # drops an older day; the hourly series used to append it, so one
+        # late close could arm the breaker and flatten at the wrong price.
+        if has_timestamp and self.candles and candle.timestamp < self.candles[-1].timestamp:
+            return
         # Deduplicate: if Kraken timestamp matches last candle, update in place (incomplete candle refresh)
         if has_timestamp and self.candles and self.candles[-1].timestamp == candle.timestamp:
             self.candles[-1] = candle
