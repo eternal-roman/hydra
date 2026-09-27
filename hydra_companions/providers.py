@@ -106,12 +106,16 @@ class ProviderClient:
         # hung Anthropic socket (TLS handshake stall, silent 504, etc.) fails
         # loudly as an error — previously users only saw "(no response in
         # 30 s)" because the SDK default timeout is 10 minutes.
+        # anthropic>=1 removed temperature from messages.create(). The
+        # Messages API still accepts it for claude-sonnet-4-6, the only
+        # Anthropic model in model_routing.json. extra_body merges the
+        # field into the request JSON. Opus 4.7 and later reject it.
         resp = client.with_options(timeout=25.0).messages.create(
             model=model_id,
             max_tokens=max_tokens,
-            temperature=temperature,
             system=system,
             messages=messages,
+            extra_body={"temperature": temperature},
         )
         text_parts = []
         for block in resp.content:

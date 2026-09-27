@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/eternal-roman/hydra/actions/workflows/ci.yml/badge.svg)](https://github.com/eternal-roman/hydra/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
 **Regime-adaptive Kraken spot trading agent** — detects trending / ranging / volatile markets, switches among Momentum, Mean Reversion, Grid, and Defensive strategies, and places **limit post-only** orders only. Live React dashboard included.
 
@@ -66,7 +66,7 @@ download works before installing WSL or provisioning keys.
 
 ### Requirements (live / paper)
 
-- Python **3.10+**
+- Python **3.11+**
 - Node.js **18+** (dashboard only)
 - WSL Ubuntu with [kraken-cli](https://github.com/krakenfx/kraken-cli) (`kraken --version` → 0.4.1+)
 - Kraken API keys for **live** trading (spot trade; **no withdraw**)
@@ -132,7 +132,7 @@ Candle/Ticker WS → indicators → regime → strategy signal
 
 ## Testing
 
-CI runs on every PR to `main` (Python 3.10–3.12 + dashboard build + mock harness).
+CI runs on every PR to `main` (Python 3.11–3.12 + dashboard build + mock harness).
 
 ```bash
 # Full suite (preferred)

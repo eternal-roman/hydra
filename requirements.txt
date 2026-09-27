@@ -6,14 +6,14 @@
 # replacing passlib. (On bcrypt 4.x passlib also logs a trapped
 # "error reading bcrypt version" from the removed __about__ attribute; that
 # one is harmless and is NOT the reason for the pin.)
-anthropic>=0.122.0,<1.0
+anthropic>=1.6.0,<2.0
 openai>=3.14.0,<4.0
 pytest>=9.1.1
 PyJWT>=2.14.0
 cryptography>=50.0.1
 passlib[bcrypt]>=1.7.4
 bcrypt<5.0
-websockets>=16.1.1
+websockets>=17.1
 # heartbeat/src/heartbeat/config.py imports yaml. Absent from this file until
 # v2.32, so `pytest tests/` red-lined on test_heartbeat_surface.py the moment
 # the catch-all CI step existed to run it.

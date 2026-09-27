@@ -100,6 +100,7 @@ regression bug, not a style issue.
 - min_confidence: 0.65 (both modes); warmup_candles: 50
 - Circuit breaker: **15% drawdown sticky-halts new BUYs for session; SELL flatten still allowed (PR-A)**
 - WS dashboard port: 8765; Vite dev: 3000 (`strictPort: true`)
+- Python **3.11+**. CI `engine-tests` runs 3.11 and 3.12.
 - CI authority: `.github/workflows/ci.yml` (jobs: `watermark-gate`,
   `engine-tests`, `dashboard-build`)
 

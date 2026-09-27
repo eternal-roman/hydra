@@ -7,7 +7,7 @@ name = "s3bounce"
 version = "0.1.0"
 description = "Daily bounce-leg continuation classifier with gate-adopted exit policy (S3, HYDRA heartbeat research program)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = []
 
