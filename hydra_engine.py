@@ -1551,6 +1551,9 @@ class HydraEngine:
         self.tick_count = 0
         self.halted = False
         self.halt_reason = ""
+        # True only when this halt was armed by an unfilled buy whose
+        # pre-trade book was still under 15%. A real breach stays False.
+        self._halt_from_unfilled_buy = False
         self.gross_profit = 0.0
         self.gross_loss = 0.0
 
@@ -1942,13 +1945,56 @@ class HydraEngine:
         """
         if not self.halted:
             return False
+        # A real breach stays sticky until the operator reset, even after
+        # the book recovers. Only a halt that was armed by this unfilled
+        # buy (the pre-buy book was under 15%) may clear on cancel.
+        if not getattr(self, "_halt_from_unfilled_buy", False):
+            return False
         if not str(self.halt_reason).startswith("CIRCUIT BREAKER:"):
             return False
         if self.current_drawdown_pct() >= self.CIRCUIT_BREAKER_PCT:
             return False
         self.halted = False
         self.halt_reason = ""
+        self._halt_from_unfilled_buy = False
         return True
+
+    def note_unfilled_buy_halt(self, was_halted: bool, pretrade_dd: Optional[float]) -> None:
+        """Remember whether this halt is the optimistic buy, not the pre-buy book.
+
+        `pretrade_dd` is the drawdown of the buy's pre-trade snapshot at the
+        current price. None means there is no resting buy to blame.
+        """
+        if not self.halted:
+            self._halt_from_unfilled_buy = False
+            return
+        phantom = (
+            isinstance(pretrade_dd, (int, float))
+            and math.isfinite(pretrade_dd)
+            and pretrade_dd < self.CIRCUIT_BREAKER_PCT
+        )
+        # `was_halted` is False on the arming tick. A resumed process is
+        # already halted, so the same mark has to be recomputed while the
+        # live book is still past 15% and the pre-buy book is not. A
+        # recovered real breach (live book back under 15%) is left sticky.
+        if not was_halted or (
+            phantom and self.current_drawdown_pct() >= self.CIRCUIT_BREAKER_PCT
+        ):
+            self._halt_from_unfilled_buy = phantom
+        elif not phantom:
+            self._halt_from_unfilled_buy = False
+
+    def pretrade_drawdown_pct(self, snap: Dict[str, Any]) -> Optional[float]:
+        """Drawdown of a pre-trade snapshot marked at the current price."""
+        try:
+            price = self.prices[-1] if self.prices else 0.0
+            peak = float(snap["peak_equity"])
+            equity = float(snap["balance"]) + float(snap["position_size"]) * price
+        except (KeyError, TypeError, ValueError):
+            return None
+        if price <= 0 or peak <= 0 or not math.isfinite(equity):
+            return None
+        return (peak - equity) / peak * 100.0
 
     def set_base_remainder(self, gross_base: Optional[float], sold_amount: float) -> None:
         """Keep only coins still owned after an optimistic sell of `sold_amount`.
@@ -2830,6 +2876,7 @@ class HydraEngine:
             "tick_count": self.tick_count,
             "halted": self.halted,
             "halt_reason": self.halt_reason,
+            "halt_from_unfilled_buy": bool(self._halt_from_unfilled_buy),
             "gross_profit": self.gross_profit,
             "gross_loss": self.gross_loss,
             "equity_history": self.equity_history[-500:],
@@ -2916,12 +2963,15 @@ class HydraEngine:
         # to prevent.
         self.halted = bool(snapshot.get("halted", False))
         self.halt_reason = str(snapshot.get("halt_reason", ""))
+        # Absent on snapshots from before this mark existed: stay sticky.
+        self._halt_from_unfilled_buy = bool(snapshot.get("halt_from_unfilled_buy", False))
         if self.halted and os.environ.get("HYDRA_RESET_CIRCUIT_BREAKER") == "1":
             print(f"  [ENGINE] {self.asset}: circuit breaker CLEARED by "
                   f"HYDRA_RESET_CIRCUIT_BREAKER=1 (was: {self.halt_reason[:60]}). "
                   f"Drawdown history preserved; breaker re-arms on the next breach.")
             self.halted = False
             self.halt_reason = ""
+            self._halt_from_unfilled_buy = False
         elif self.halted:
             print(f"  [ENGINE] {self.asset}: RESUMED STILL HALTED — new BUYs "
                   f"blocked, SELL/flatten still allowed. Reason: "

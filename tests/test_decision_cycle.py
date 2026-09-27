@@ -237,18 +237,125 @@ def test_remainder_drops_phantom_coins_and_keeps_locked_ones():
     assert eng.position.size == pytest.approx(0.7)
 
 
-def test_unfilled_buy_halt_clears_when_the_book_is_restored():
+def test_unfilled_buy_halt_clears_only_when_the_buy_caused_it():
     eng = _up()
     eng.halted = True
     eng.halt_reason = "CIRCUIT BREAKER: drawdown 20.0% >= 15.0% limit"
+    # A real halt, with no unfilled-buy mark, stays after the book recovers.
+    assert eng.release_unfilled_buy_halt() is False
+    assert eng.halted is True
+    eng._halt_from_unfilled_buy = True
     assert eng.release_unfilled_buy_halt() is True
     assert eng.halted is False
     eng.balance = 1.0
     eng.peak_equity = 100_000.0
     eng.halted = True
+    eng._halt_from_unfilled_buy = True
     eng.halt_reason = "CIRCUIT BREAKER: drawdown 99.0% >= 15.0% limit"
     assert eng.release_unfilled_buy_halt() is False
     assert eng.halted is True
+
+
+def test_real_breach_of_the_pre_buy_book_is_not_marked_phantom():
+    eng = _up()
+    eng.balance = 1.0
+    eng.peak_equity = 100_000.0
+    snap = eng.snapshot_position()
+    eng.halted = True
+    eng.halt_reason = "CIRCUIT BREAKER: drawdown 99.0% >= 15.0% limit"
+    dd = eng.pretrade_drawdown_pct(snap)
+    assert dd is not None and dd >= 15.0
+    eng.note_unfilled_buy_halt(False, dd)
+    assert eng._halt_from_unfilled_buy is False
+    flat = _up()
+    flat_snap = flat.snapshot_position()
+    flat.halted = True
+    flat.halt_reason = "CIRCUIT BREAKER: drawdown 20.0% >= 15.0% limit"
+    flat.note_unfilled_buy_halt(False, flat.pretrade_drawdown_pct(flat_snap))
+    assert flat._halt_from_unfilled_buy is True
+
+
+def test_resumed_halt_is_marked_again_while_the_buy_is_still_the_breach():
+    eng = _up()
+    eng.peak_equity = 200_000.0
+    eng.balance = 50_000.0
+    eng.position.size = 100.0
+    eng.halted = True
+    eng.halt_reason = "CIRCUIT BREAKER: drawdown 66.0% >= 15.0% limit"
+    pre = {"balance": 100_000.0, "position_size": 0.0, "peak_equity": 100_000.0}
+    dd = eng.pretrade_drawdown_pct(pre)
+    assert dd == pytest.approx(0.0)
+    assert eng.current_drawdown_pct() >= 15.0
+    # was_halted=True is the resume path: the arming edge already passed.
+    eng.note_unfilled_buy_halt(True, dd)
+    assert eng._halt_from_unfilled_buy is True
+
+
+def test_recovered_real_halt_is_not_remarked_from_a_healthy_snapshot():
+    eng = _up()
+    eng.halted = True
+    eng.halt_reason = "CIRCUIT BREAKER: drawdown 20.0% >= 15.0% limit"
+    dd = eng.pretrade_drawdown_pct(eng.snapshot_position())
+    assert dd is not None and dd < 15.0
+    eng.note_unfilled_buy_halt(True, dd)
+    assert eng._halt_from_unfilled_buy is False
+    assert eng.release_unfilled_buy_halt() is False
+    assert eng.halted is True
+
+
+def test_unfilled_buy_mark_survives_resume_and_reset_clears_it(monkeypatch):
+    eng = _up()
+    eng.halted = True
+    eng.halt_reason = "CIRCUIT BREAKER: drawdown 20.0% >= 15.0% limit"
+    eng._halt_from_unfilled_buy = True
+    snap = eng.snapshot_runtime()
+    assert snap["halt_from_unfilled_buy"] is True
+    fresh = _up()
+    fresh.restore_runtime(snap)
+    assert fresh.halted is True
+    assert fresh._halt_from_unfilled_buy is True
+    assert fresh.release_unfilled_buy_halt() is True
+    assert fresh.halted is False
+
+    monkeypatch.setenv("HYDRA_RESET_CIRCUIT_BREAKER", "1")
+    reset = _up()
+    reset.restore_runtime(snap)
+    assert reset.halted is False
+    assert reset._halt_from_unfilled_buy is False
+
+    legacy = dict(snap)
+    legacy.pop("halt_from_unfilled_buy")
+    monkeypatch.delenv("HYDRA_RESET_CIRCUIT_BREAKER", raising=False)
+    old = _up()
+    old.restore_runtime(legacy)
+    assert old.halted is True
+    assert old._halt_from_unfilled_buy is False
+    assert old.release_unfilled_buy_halt() is False
+
+
+def test_abandoned_brain_publish_does_not_replace_the_replay_cache():
+    from hydra_agent import HydraAgent, _BrainPublish
+
+    agent = HydraAgent.__new__(HydraAgent)
+    agent._last_ai_decision = {"BTC/USD": {"action": "CONFIRM", "size_multiplier": 1.0}}
+    agent._last_brain_candle_ts = {"BTC/USD": 1.0}
+    token = _BrainPublish()
+    body = {"action": "OVERRIDE", "size_multiplier": 1.5}
+    agent._publish_brain_decision("BTC/USD", body, 2.0, token)
+    body["size_multiplier"] = 0.1
+    assert agent._last_ai_decision["BTC/USD"]["action"] == "OVERRIDE"
+    assert agent._last_ai_decision["BTC/USD"]["size_multiplier"] == 1.5
+    assert agent._last_brain_candle_ts["BTC/USD"] == 2.0
+    # The cached dict is a copy. Mutating the worker's object must not leak.
+    late_body = {"action": "OVERRIDE", "size_multiplier": 0.1}
+    late = _BrainPublish()
+    late.abandoned = True
+    agent._publish_brain_decision("BTC/USD", late_body, 3.0, late)
+    assert agent._last_ai_decision["BTC/USD"]["size_multiplier"] == 1.5
+    assert agent._last_brain_candle_ts["BTC/USD"] == 2.0
+    agent._abandon_brain_publish("BTC/USD", token)
+    assert "BTC/USD" not in agent._last_ai_decision
+    assert "BTC/USD" not in agent._last_brain_candle_ts
 
 
 def test_nonfinite_basis_is_missing():
