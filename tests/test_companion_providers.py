@@ -48,7 +48,7 @@ def test_anthropic_temperature_goes_through_extra_body():
     sdk = _SDK()
     client._anthropic = sdk
     resp = client._call_anthropic(
-        "claude-sonnet-4-6",
+        "claude-opus-5-5",
         "system",
         [{"role": "user", "content": "hi"}],
         64,
@@ -58,12 +58,13 @@ def test_anthropic_temperature_goes_through_extra_body():
     assert resp.provider == "anthropic"
     assert resp.tokens_in == 3
     assert resp.tokens_out == 5
-    assert sdk.timeout_s == 25.0
+    assert sdk.timeout_s == 110.0
     kwargs = sdk.messages.kwargs
     assert "temperature" not in kwargs
-    assert kwargs["extra_body"] == {"temperature": 0.2}
-    assert kwargs["model"] == "claude-sonnet-4-6"
-    assert kwargs["max_tokens"] == 64
+    assert "extra_body" not in kwargs
+    assert kwargs["output_config"] == {"effort": "max"}
+    assert kwargs["model"] == "claude-opus-5-5"
+    assert kwargs["max_tokens"] == 8192
 
 
 class _Choice:
@@ -114,3 +115,23 @@ def test_xai_still_passes_temperature_as_a_keyword():
     assert resp.text == "xai-ok"
     assert resp.provider == "xai"
     assert sdk.chat.completions.kwargs["temperature"] == 0.4
+    assert "extra_body" not in sdk.chat.completions.kwargs
+    assert sdk.chat.completions.kwargs["max_tokens"] == 32
+
+
+def test_grok_4_7_asks_for_xhigh_and_keeps_temperature():
+    client = ProviderClient()
+    sdk = _XAI()
+    client._xai = sdk
+    client._call_xai(
+        "grok-4.7",
+        "system",
+        [{"role": "user", "content": "hi"}],
+        32,
+        0.15,
+    )
+    kwargs = sdk.chat.completions.kwargs
+    assert kwargs["temperature"] == 0.15
+    assert kwargs["extra_body"] == {"reasoning_effort": "xhigh"}
+    assert kwargs["max_tokens"] == 8192
+    assert sdk.timeout_s == 110.0

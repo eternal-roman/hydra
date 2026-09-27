@@ -51,7 +51,7 @@ def test_fallback_chain_returns_other_provider():
 def test_fallback_cascade_walks_past_tried_candidates():
     """If the first fallback was already attempted, return the next one."""
     r = Router()
-    primary = r.pick("athena", "teaching_explanation")  # anthropic:claude-sonnet-4-6
+    primary = r.pick("athena", "teaching_explanation")  # anthropic:claude-opus-5-5
     fb1 = r.fallback(primary)
     # Simulate fb1 also failed; ask for the next one.
     tried = [f"{primary.provider}:{primary.model_id}",
@@ -104,14 +104,14 @@ def test_v11_apex_trade_proposal_uses_grok_reasoning():
     r = Router()
     d = r.pick("apex", "trade_proposal", seed=0)
     assert d.provider == "xai"
-    assert "reasoning" in d.model_id
+    assert d.model_id == "grok-4.7"
 
 
 def test_v11_apex_ladder_proposal_uses_grok_reasoning():
     r = Router()
     d = r.pick("apex", "ladder_proposal", seed=0)
     assert d.provider == "xai"
-    assert "reasoning" in d.model_id
+    assert d.model_id == "grok-4.7"
 
 
 def test_v11_apex_teaching_rotates_grok():
@@ -122,12 +122,13 @@ def test_v11_apex_teaching_rotates_grok():
     assert d.provider == "xai"
 
 
-def test_v11_athena_keeps_sonnet_on_teaching_and_trade():
-    """Sonnet remains Athena's primary for deep intents."""
+def test_athena_deep_intents_use_opus():
+    """Athena's deep intents stay on Anthropic, now Opus 5.5."""
     r = Router()
-    assert r.pick("athena", "teaching_explanation").provider == "anthropic"
-    assert r.pick("athena", "trade_proposal").provider == "anthropic"
-    assert r.pick("athena", "chart_analysis").provider == "anthropic"
+    for intent in ("teaching_explanation", "trade_proposal", "chart_analysis"):
+        decision = r.pick("athena", intent)
+        assert decision.provider == "anthropic"
+        assert decision.model_id == "claude-opus-5-5"
 
 
 def test_v11_apex_chart_analysis_primary_is_grok_reasoning():

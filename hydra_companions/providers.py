@@ -47,6 +47,18 @@ class ProviderResponse:
     error: Optional[str] = None
 
 
+# Opus 5.5 rejects temperature/top_p/top_k. Effort "max" is its highest
+# setting; thinking shares the max_tokens budget with the reply.
+_OPUS_EFFORT = "max"
+_OPUS_MAX_TOKENS_FLOOR = 8192
+# grok-4.7's deepest reasoning_effort. grok-4.3 does not accept it.
+_GROK_TRADING_MODEL = "grok-4.7"
+_GROK_REASONING_EFFORT = "xhigh"
+_GROK_MAX_TOKENS_FLOOR = 8192
+# Under the dashboard wait (120s) so a hung socket fails as an error.
+_CALL_TIMEOUT_S = 110.0
+
+
 def _est_cost(provider: str, model_id: str, tokens_in: int, tokens_out: int) -> float:
     rates = _COST_TABLE.get((provider, model_id))
     if not rates:
@@ -102,20 +114,14 @@ class ProviderClient:
     def _call_anthropic(self, model_id: str, system: str, messages: list,
                         max_tokens: int, temperature: float) -> ProviderResponse:
         client = self._anthropic_client()
-        # v2.16.2: per-request timeout under the 30 s dashboard ceiling so a
-        # hung Anthropic socket (TLS handshake stall, silent 504, etc.) fails
-        # loudly as an error — previously users only saw "(no response in
-        # 30 s)" because the SDK default timeout is 10 minutes.
-        # anthropic>=1 removed temperature from messages.create(). The
-        # Messages API still accepts it for claude-sonnet-4-6, the only
-        # Anthropic model in model_routing.json. extra_body merges the
-        # field into the request JSON. Opus 4.7 and later reject it.
-        resp = client.with_options(timeout=25.0).messages.create(
+        # Opus 5.5 returns 400 if temperature is present. The routing table
+        # still carries a temperature for the xAI fallback.
+        resp = client.with_options(timeout=_CALL_TIMEOUT_S).messages.create(
             model=model_id,
-            max_tokens=max_tokens,
+            max_tokens=max(int(max_tokens), _OPUS_MAX_TOKENS_FLOOR),
             system=system,
             messages=messages,
-            extra_body={"temperature": temperature},
+            output_config={"effort": _OPUS_EFFORT},
         )
         text_parts = []
         for block in resp.content:
@@ -140,14 +146,16 @@ class ProviderClient:
         client = self._xai_client()
         chat_messages = [{"role": "system", "content": system}]
         chat_messages.extend(messages)
-        # Same 25 s cap as the Anthropic path so the dashboard 30 s timeout
-        # always wins and the user gets a concrete error instead of silence.
-        resp = client.with_options(timeout=25.0).chat.completions.create(
+        call = dict(
             model=model_id,
             max_tokens=max_tokens,
             temperature=temperature,
             messages=chat_messages,
         )
+        if model_id == _GROK_TRADING_MODEL:
+            call["max_tokens"] = max(int(max_tokens), _GROK_MAX_TOKENS_FLOOR)
+            call["extra_body"] = {"reasoning_effort": _GROK_REASONING_EFFORT}
+        resp = client.with_options(timeout=_CALL_TIMEOUT_S).chat.completions.create(**call)
         choice = resp.choices[0]
         text = choice.message.content or ""
         usage = getattr(resp, "usage", None)
