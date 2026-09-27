@@ -1,16 +1,16 @@
 {
   "schema_version": "1.1",
-  "updated": "2026-04-18",
-  "comment": "Per-intent per-companion model routing. Deterministic. Retune without code changes. Every routing decision logs to .hydra-companions/routing.jsonl for auditing. v1.1: added chart_analysis intent + classifier heuristic; Apex migrated from Sonnet to Grok reasoning for deep intents (Sonnet remains Athena's primary); rotation pools added for Apex non-execution intents.",
+  "updated": "2026-09-27",
+  "comment": "Per-intent per-companion model routing. Athena deep intents use claude-opus-5-5 at effort max (set in providers.py; Opus 5.5 rejects temperature). Apex and Broski trading intents use grok-4.7 at reasoning_effort xhigh. grok-4.3 stays on greetings, banter, and acks.",
 
   "providers": {
     "anthropic": {
       "env_key": "ANTHROPIC_API_KEY",
       "models": {
-        "claude-sonnet-4-6": {
+        "claude-opus-5-5": {
           "tier": "top",
-          "est_input_per_mtok_usd": 3.00,
-          "est_output_per_mtok_usd": 15.00,
+          "est_input_per_mtok_usd": 4.00,
+          "est_output_per_mtok_usd": 20.00,
           "supports_tool_use": true,
           "supports_streaming": true,
           "prompt_cache": true
@@ -28,10 +28,10 @@
           "supports_streaming": true,
           "use_for": "low-latency chat, banter, acks, one-liners"
         },
-        "grok-4.20-0309-reasoning": {
+        "grok-4.7": {
           "tier": "reasoning",
-          "est_input_per_mtok_usd": 1.00,
-          "est_output_per_mtok_usd": 3.00,
+          "est_input_per_mtok_usd": 2.00,
+          "est_output_per_mtok_usd": 6.00,
           "supports_tool_use": true,
           "supports_streaming": true,
           "use_for": "trade proposals, ladders, teaching, market synthesis"
@@ -61,38 +61,38 @@
       "greeting": { "primary": "xai:grok-4.3", "temperature": 0.6 },
       "small_talk": { "primary": "xai:grok-4.3", "temperature": 0.6 },
       "ack_confirmation": { "primary": "xai:grok-4.3", "temperature": 0.4 },
-      "market_state_query": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.4 },
-      "teaching_explanation": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.5 },
-      "trade_proposal": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.2 },
-      "ladder_proposal": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.2 },
+      "market_state_query": { "primary": "anthropic:claude-opus-5-5", "temperature": 0.4 },
+      "teaching_explanation": { "primary": "anthropic:claude-opus-5-5", "temperature": 0.5 },
+      "trade_proposal": { "primary": "anthropic:claude-opus-5-5", "temperature": 0.2 },
+      "ladder_proposal": { "primary": "anthropic:claude-opus-5-5", "temperature": 0.2 },
       "post_trade_reaction": { "primary": "xai:grok-4.3", "temperature": 0.5 },
       "banter_humor": { "primary": "xai:grok-4.3", "temperature": 0.7, "note": "athena rarely banters — low weight on this intent" },
       "adherence_nudge": { "primary": "xai:grok-4.3", "temperature": 0.4 },
       "idle_proactive_nudge": { "primary": "xai:grok-4.3", "temperature": 0.5 },
-      "chart_analysis": { "primary": "anthropic:claude-sonnet-4-6", "temperature": 0.3 }
+      "chart_analysis": { "primary": "anthropic:claude-opus-5-5", "temperature": 0.3 }
     },
     "apex": {
       "greeting": { "primary": "xai:grok-4.3", "temperature": 0.3 },
       "small_talk": { "primary": "xai:grok-4.3", "temperature": 0.4 },
       "ack_confirmation": { "primary": "xai:grok-4.3", "temperature": 0.2 },
-      "market_state_query": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.3, "note": "v1.1: migrated from Sonnet to Grok reasoning" },
-      "teaching_explanation": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.4, "note": "v1.1: migrated from Sonnet to Grok reasoning" },
-      "trade_proposal": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.15, "note": "v1.1: migrated from Sonnet; no rotation on execution-class calls" },
-      "ladder_proposal": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.15, "note": "v1.1: migrated from Sonnet; no rotation on execution-class calls" },
+      "market_state_query": { "primary": "xai:grok-4.7", "temperature": 0.3, "note": "v1.1: migrated from Sonnet to Grok reasoning" },
+      "teaching_explanation": { "primary": "xai:grok-4.7", "temperature": 0.4, "note": "v1.1: migrated from Sonnet to Grok reasoning" },
+      "trade_proposal": { "primary": "xai:grok-4.7", "temperature": 0.15, "note": "v1.1: migrated from Sonnet; no rotation on execution-class calls" },
+      "ladder_proposal": { "primary": "xai:grok-4.7", "temperature": 0.15, "note": "v1.1: migrated from Sonnet; no rotation on execution-class calls" },
       "post_trade_reaction": { "primary": "xai:grok-4.3", "temperature": 0.3 },
       "banter_humor": { "primary": "xai:grok-4.3", "temperature": 0.6, "note": "dry only" },
       "adherence_nudge": { "primary": "xai:grok-4.3", "temperature": 0.3 },
       "idle_proactive_nudge": { "primary": "xai:grok-4.3", "temperature": 0.3 },
-      "chart_analysis": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.3, "note": "v1.1: new intent; Grok reasoning for structural chart reads" }
+      "chart_analysis": { "primary": "xai:grok-4.7", "temperature": 0.3, "note": "v1.1: new intent; Grok reasoning for structural chart reads" }
     },
     "broski": {
       "greeting": { "primary": "xai:grok-4.3", "temperature": 0.8 },
       "small_talk": { "primary": "xai:grok-4.3", "temperature": 0.8 },
       "ack_confirmation": { "primary": "xai:grok-4.3", "temperature": 0.6 },
-      "market_state_query": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.5 },
-      "teaching_explanation": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.6 },
-      "trade_proposal": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.3 },
-      "ladder_proposal": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.3 },
+      "market_state_query": { "primary": "xai:grok-4.7", "temperature": 0.5 },
+      "teaching_explanation": { "primary": "xai:grok-4.7", "temperature": 0.6 },
+      "trade_proposal": { "primary": "xai:grok-4.7", "temperature": 0.3 },
+      "ladder_proposal": { "primary": "xai:grok-4.7", "temperature": 0.3 },
       "post_trade_reaction": { "primary": "xai:grok-4.3", "temperature": 0.8 },
       "banter_humor": { "primary": "xai:grok-4.3", "temperature": 0.85, "note": "highest creative temp — bro dialect + humor is his signature" },
       "adherence_nudge": { "primary": "xai:grok-4.3", "temperature": 0.6 },
@@ -103,7 +103,7 @@
         "temperature_delta": -0.2,
         "note": "when broski flips to serious mode, temperatures drop so output is calmer/tighter"
       },
-      "chart_analysis": { "primary": "xai:grok-4.20-0309-reasoning", "temperature": 0.4 }
+      "chart_analysis": { "primary": "xai:grok-4.7", "temperature": 0.4 }
     }
   },
 
@@ -111,40 +111,40 @@
     "comment": "Optional: rotate among models for an intent to prevent pattern fatigue. Weights sum to 1.0 per intent. Seeded per-day so a single conversation stays coherent. v1.1: Apex gets rotation on non-execution intents (teaching, market_state, chart_analysis); trade_proposal and ladder_proposal stay 100% reasoning (execution-class, no variance).",
     "broski.banter_humor": [
       { "model": "xai:grok-4.3", "weight": 0.75 },
-      { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.25 }
+      { "model": "xai:grok-4.7", "weight": 0.25 }
     ],
     "broski.idle_proactive_nudge": [
       { "model": "xai:grok-4.3", "weight": 0.8 },
-      { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.2 }
+      { "model": "xai:grok-4.7", "weight": 0.2 }
     ],
     "apex.teaching_explanation": [
-      { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.85 },
+      { "model": "xai:grok-4.7", "weight": 0.85 },
       { "model": "xai:grok-4.3", "weight": 0.15 }
     ],
     "apex.market_state_query": [
-      { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.75 },
+      { "model": "xai:grok-4.7", "weight": 0.75 },
       { "model": "xai:grok-4.3", "weight": 0.25 }
     ],
     "apex.chart_analysis": [
-      { "model": "xai:grok-4.20-0309-reasoning", "weight": 0.8 },
+      { "model": "xai:grok-4.7", "weight": 0.8 },
       { "model": "xai:grok-4.3", "weight": 0.2 }
     ]
   },
 
   "fallbacks": {
     "comment": "If a provider errors (rate limit, 5xx, missing key), route to fallback. Classifier logs the degradation.",
-    "anthropic:claude-sonnet-4-6": ["xai:grok-4.20-0309-reasoning", "xai:grok-4.3"],
-    "xai:grok-4.20-0309-reasoning": ["xai:grok-4.3", "anthropic:claude-sonnet-4-6"],
-    "xai:grok-4.3": ["xai:grok-4.20-0309-reasoning"]
+    "anthropic:claude-opus-5-5": ["xai:grok-4.7", "xai:grok-4.3"],
+    "xai:grok-4.7": ["xai:grok-4.3", "anthropic:claude-opus-5-5"],
+    "xai:grok-4.3": ["xai:grok-4.7"]
   },
 
   "budgets": {
     "comment": "Per-companion daily USD cap, independent of brain budget. Hard-stop at 100% degrades to fast-tier only (no reasoning, no tool use, minimal context). Alert WS message at 80%.",
-    "athena": { "daily_usd": 2.00, "alert_at_pct": 80, "hard_stop_at_pct": 100 },
-    "apex":   { "daily_usd": 3.00, "alert_at_pct": 80, "hard_stop_at_pct": 100 },
-    "broski": { "daily_usd": 2.00, "alert_at_pct": 80, "hard_stop_at_pct": 100 },
-    "global_companion_daily_usd": 7.00,
-    "note": "Separate from brain's max_daily_cost. Shared $10/day disclosure threshold remains on the brain side."
+    "athena": { "daily_usd": 12.00, "alert_at_pct": 80, "hard_stop_at_pct": 100 },
+    "apex":   { "daily_usd": 16.00, "alert_at_pct": 80, "hard_stop_at_pct": 100 },
+    "broski": { "daily_usd": 12.00, "alert_at_pct": 80, "hard_stop_at_pct": 100 },
+    "global_companion_daily_usd": 40.00,
+    "note": "Separate from the brain budget. Brain disclosure is COST_ALERT_USD ($20) and the hard stop defaults to $40."
   },
 
   "safety_caps": {

@@ -10,7 +10,7 @@ Agent 1: Market Quant — quantitative market analysis with
 Agent 2: Risk Manager — structured risk metrics, stress-scenario loss,
          liquidity score, correlation cluster; outputs decision +
          size_multiplier.
-Agent 3: Strategic Advisor (Grok 4 Reasoning) — deep analysis on contested
+Agent 3: Strategic Advisor (Grok 4.7) — deep analysis on contested
          decisions (OVERRIDE or ADJUST from Risk Manager, or low-conviction
          disagreement between Quant and engine).
 
@@ -384,15 +384,24 @@ Do NOT output JSON. Output plain text only."""
 # ═══════════════════════════════════════════════════════════════
 
 # Cost per million tokens: (input, output).
-# Verified against https://platform.claude.com/docs/en/about-claude/pricing.
-# IF YOU BUMP self.primary_model BELOW, RE-VERIFY THESE NUMBERS.
-#   Claude Sonnet 4.6 / 4.5 / 4 — $3 in / $15 out per MTok
-#   Claude Opus 4.7 / 4.6 / 4.5 — $5 in / $25 out per MTok
-#   Claude Haiku 4.5           — $1 in / $5 out per MTok
-#   Grok 4 reasoning           — ~$2 in / $6 out (xAI published; recheck at bump time)
-COST_ANTHROPIC = (3.0, 15.0)    # Sonnet 4.6
+# IF YOU BUMP THE MODEL IDS BELOW, RE-VERIFY THESE NUMBERS.
+#   Claude Opus 5.5 — $4 in / $20 out per MTok (platform.claude.com, 2026-09-22)
+#   Grok 4.7        — $2 in / $6 out per MTok under 200k prompt tokens (docs.x.ai, 2026-09-21)
+COST_ANTHROPIC = (4.0, 20.0)
 COST_OPENAI = (2.0, 8.0)
-COST_XAI = (2.0, 6.0)            # Grok 4 reasoning
+COST_XAI = (2.0, 6.0)
+
+# Opus 5.5 defaults to medium effort. "max" is the highest level it accepts.
+# Adaptive thinking is always on and shares this max_tokens budget with the
+# visible answer, so a few hundred tokens truncates the JSON.
+ANTHROPIC_MODEL = "claude-opus-5-5"
+ANTHROPIC_EFFORT = "max"
+ANTHROPIC_MAX_TOKENS_FLOOR = 8192
+# grok-4.7 is the flagship. Its deepest reasoning_effort is "xhigh"
+# (there is no "max"). grok-4.3 does not take that parameter.
+GROK_TRADING_MODEL = "grok-4.7"
+GROK_REASONING_EFFORT = "xhigh"
+GROK_MAX_TOKENS_FLOOR = 8192
 
 
 def _coerce_size_mult(v, default: float = 1.0) -> float:
@@ -433,17 +442,16 @@ class HydraBrain:
     # per UTC day. Decoupled from max_daily_cost: a caller can disable budget
     # enforcement (enforce_budget=False, e.g., backtest context) and the
     # user still gets disclosure.
-    # v2.14: lowered 10.0 → 3.0 (Sonnet-4.6 daily target).
-    # Meaningful 3-agent activity (Quant + Risk + occasional Grok) lands
-    # well under $3/day; anything higher is a signal to investigate.
-    COST_ALERT_USD = 3.0
+    # Opus 5.5 at max effort bills thinking as output ($20/MTok). $20 is
+    # the disclosure line; the hard stop is max_daily_cost (default $40).
+    COST_ALERT_USD = 20.0
 
     def __init__(
         self,
         anthropic_key: str = "",
         openai_key: str = "",
         xai_key: str = "",
-        max_daily_cost: float = 3.0,
+        max_daily_cost: float = 40.0,
         tool_dispatcher: Optional[Any] = None,
         enable_tool_use: Optional[bool] = None,
         enforce_budget: bool = True,
@@ -458,7 +466,7 @@ class HydraBrain:
         if anthropic_key and HAS_ANTHROPIC:
             self.primary_client = anthropic.Anthropic(api_key=anthropic_key)
             self.primary_provider = "anthropic"
-            self.primary_model = "claude-sonnet-4-6"
+            self.primary_model = ANTHROPIC_MODEL
         elif openai_key and HAS_OPENAI:
             # OpenAI: same SDK as xAI but default base_url + gpt-4.1
             self.primary_client = openai.OpenAI(api_key=openai_key)
@@ -468,11 +476,11 @@ class HydraBrain:
             # Fallback: use xAI for primary if no Anthropic or OpenAI key
             self.primary_client = openai.OpenAI(api_key=xai_key, base_url="https://api.x.ai/v1")
             self.primary_provider = "xai"
-            self.primary_model = "grok-4.20-0309-reasoning"
+            self.primary_model = GROK_TRADING_MODEL
 
-        # Strategist: Grok for deep reasoning on contested decisions
+        # Strategist: Grok 4.7 at xhigh on contested decisions
         self.strategist_client = None
-        self.strategist_model = "grok-4.20-0309-reasoning"
+        self.strategist_model = GROK_TRADING_MODEL
         self.has_strategist = False
         if xai_key and HAS_OPENAI:
             self.strategist_client = openai.OpenAI(api_key=xai_key, base_url="https://api.x.ai/v1")
@@ -837,15 +845,19 @@ class HydraBrain:
         model = model or self.primary_model
 
         if provider in ("xai", "openai"):
-            response = client.chat.completions.create(
+            call = dict(
                 model=model,
                 max_tokens=max_tokens,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_msg},
                 ],
-                timeout=60.0,
+                timeout=120.0,
             )
+            if provider == "xai" and model == GROK_TRADING_MODEL:
+                call["max_tokens"] = max(max_tokens, GROK_MAX_TOKENS_FLOOR)
+                call["extra_body"] = {"reasoning_effort": GROK_REASONING_EFFORT}
+            response = client.chat.completions.create(**call)
             choice = response.choices[0] if response.choices else None
             text = choice.message.content if choice else ""
             # Parity with the Anthropic branch: surface truncation so the
@@ -857,10 +869,11 @@ class HydraBrain:
         else:
             response = client.messages.create(
                 model=model,
-                max_tokens=max_tokens,
+                max_tokens=max(max_tokens, ANTHROPIC_MAX_TOKENS_FLOOR),
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_msg}],
-                timeout=60.0,
+                output_config={"effort": ANTHROPIC_EFFORT},
+                timeout=120.0,
             )
             text_blocks = [b.text for b in response.content if getattr(b, "type", None) == "text" and hasattr(b, "text")]
             text = text_blocks[0] if text_blocks else ""
@@ -942,11 +955,12 @@ class HydraBrain:
             for _iter in range(self._tool_iterations_cap):
                 response = self.primary_client.messages.create(
                     model=self.primary_model,
-                    max_tokens=max_tokens,
+                    max_tokens=max(max_tokens, ANTHROPIC_MAX_TOKENS_FLOOR),
                     system=system_prompt,
                     tools=tools,
                     messages=messages,
-                    timeout=60.0,
+                    output_config={"effort": ANTHROPIC_EFFORT},
+                    timeout=120.0,
                 )
                 usage = getattr(response, "usage", None)
                 if usage is not None:
@@ -1132,7 +1146,7 @@ class HydraBrain:
         return parsed, tok_in, tok_out
 
     def _run_strategist(self, state: Dict, analyst: Dict, risk: Dict) -> tuple:
-        """Strategic Advisor (Grok 4 Reasoning). Only called on contested decisions."""
+        """Strategic Advisor (Grok 4.7, xhigh). Only called on contested decisions."""
         user_msg = self._build_strategist_prompt(state, analyst, risk)
         text, tok_in, tok_out = self._call_llm(
             STRATEGIST_PROMPT, user_msg, 350,

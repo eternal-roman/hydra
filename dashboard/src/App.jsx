@@ -1608,8 +1608,8 @@ export function HydraDashboard({ jwtToken, onLogout }) {
             case "companion.message.complete": {
               const cid = msg.companion_id;
               if (cid) {
-                // Cancel the pending 30s timeout for this msg (if any) so we
-                // don't append a "(no response in 30s)" note after the fact.
+                // Cancel the pending reply wait for this msg (if any) so we
+                // don't append a "(no response in 120s)" note after the fact.
                 const originalMsgId = msg.message_id;
                 if (originalMsgId && pendingTimeoutsRef.current[originalMsgId]) {
                   clearTimeout(pendingTimeoutsRef.current[originalMsgId]);
@@ -1938,20 +1938,18 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       }].slice(-200));
       return;
     }
-    // 30s timeout \u2014 helpful error if no reply arrives. Cancellable so a
-    // successful message.complete kills the timer instead of spamming the
-    // "(no response in 30s)" note after the fact.
+    // 120s wait. Opus 5.5 at max effort and Grok 4.7 at xhigh outlast the old 30s cap.
     const handle = setTimeout(() => {
       delete pendingTimeoutsRef.current[msgId];
       getMessageSetter(cid)((list) => {
         if (list.some((m) => m.id === `timeout-${msgId}`)) return list;
         return [...list, {
           id: `timeout-${msgId}`, role: "system",
-          text: "(no response in 30s \u2014 check the agent console for errors; API key may be missing or model rate-limited)",
+          text: "(no response in 120s \u2014 check the agent console for errors; API key may be missing or model rate-limited)",
         }].slice(-200);
       });
       getTypingSetter(cid)(false);
-    }, 30000);
+    }, 120000);
     pendingTimeoutsRef.current[msgId] = handle;
   }, [sendMessage, activeCompanion, getMessageSetter, getTypingSetter]);
 

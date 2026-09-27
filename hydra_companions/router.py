@@ -17,7 +17,7 @@ from hydra_companions.config import ROUTING_CONFIG
 @dataclass(frozen=True)
 class RouteDecision:
     provider: str          # "anthropic" | "xai"
-    model_id: str          # "claude-sonnet-4-6" | "grok-4.3" | ...
+    model_id: str          # "claude-opus-5-5" | "grok-4.7" | "grok-4.3" | ...
     max_tokens: int
     temperature: float
     intent: str

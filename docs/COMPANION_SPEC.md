@@ -452,7 +452,7 @@ Rendered blocks are the ✓ rows of the section table above; every one is gated 
 ### Routing changes (`hydra_companions/model_routing.json` v1.0 → v1.1)
 
 - **New intent:** `chart_analysis` (`depth: medium`, `tools: true`, `default_max_tokens: 500`). Classifier heuristic matches chart / candles / tape-read language.
-- **Apex migration:** `market_state_query`, `teaching_explanation`, `trade_proposal`, `ladder_proposal`, `chart_analysis` all move from `anthropic:claude-sonnet-4-6` to `xai:grok-4.20-0309-reasoning`. Sonnet remains Athena's primary; Broski unchanged.
+- **Apex migration:** `market_state_query`, `teaching_explanation`, `trade_proposal`, `ladder_proposal`, `chart_analysis` use `xai:grok-4.7` at `reasoning_effort=xhigh`. Athena's deep intents use `anthropic:claude-opus-5-5` at effort `max`. Greetings, banter, and acks stay on `xai:grok-4.3`.
 - **New Apex rotation pools:** `apex.teaching_explanation`, `apex.market_state_query`, `apex.chart_analysis` rotate between Grok reasoning (≥0.75 weight) and Grok fast (≤0.25). Execution-class intents (`trade_proposal`, `ladder_proposal`) stay 100% reasoning — no variance on trade-building calls.
 
 ### Companion turn flow (`hydra_companions/companion.py`)
