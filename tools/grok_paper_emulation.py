@@ -24,6 +24,12 @@ Sequence:
   python tools/grok_paper_emulation.py self-check
   python tools/grok_paper_emulation.py prepare
   python tools/grok_paper_emulation.py apply --decisions PATH
+  python tools/grok_paper_emulation.py walk --decisions PATH
+
+`walk` scores a 60-minute window one hour at a time. Each Grok opinion
+is locked before the next hour can fill or reject the post-only order.
+The report is before/after dollars, accumulated ROI, and net ROI per
+closed trade.
 """
 
 from __future__ import annotations
@@ -949,6 +955,54 @@ def apply_cycle(out_dir: Path, decisions_path: Path) -> dict:
     return out
 
 
+def walk_cmd(out_dir: Path, decisions_path: Path, score_hours: int, skip_last_hours: int) -> None:
+    """One causal pass. Stops when the next scored hour has no Grok seats."""
+    from tools.grok_paper_walk import common_timestamps, score_window, walk_book
+
+    market = _load(out_dir / "market.json")
+    bars = {}
+    daily = {}
+    now = float(market["asof_unix"])
+    for pair in market["pairs_order"]:
+        done, _forming = completed_bars(market["pairs"][pair]["hourly"], now, HOURLY_S)
+        bars[pair] = done
+        daily[pair] = market["pairs"][pair]["daily"]
+    stamps = common_timestamps(bars)
+    start, end = score_window(stamps, score_hours, skip_last_hours, HOURLY_S)
+    decisions = {}
+    if decisions_path.is_file():
+        raw = _load(decisions_path)
+        if raw.get("model") not in (None, "grok-4.7"):
+            raise SystemExit("walk decisions must be grok-4.7")
+        decisions = raw.get("bars") or {}
+    os.environ["HYDRA_BRAIN_JSONL"] = str(out_dir / "walk_brain.jsonl")
+    result = walk_book(
+        bars, daily, decisions, float(market["nav"]), start, end,
+        fill_model="realistic",
+    )
+    if result["status"] == "need_decision":
+        _dump(out_dir / "pending.json", result)
+        print(
+            f"need decision {result['bar_index']}/{result['bar_count']} "
+            f"at {int(result['timestamp'])}"
+        )
+        print(f"wrote {out_dir / 'pending.json'}")
+        raise SystemExit(3)
+    _dump(out_dir / "walk_results.json", result)
+    print(
+        f"before {result['before_usd']:.2f}  after {result['after_usd']:.2f}  "
+        f"net {result['net_usd']:+.2f}  roi {result['accumulated_roi'] * 100:.3f}%"
+    )
+    print(f"closed {len(result['closed_trades'])}  open {len(result['open_marks'])}")
+    for trade in result["closed_trades"]:
+        print(
+            f"  {trade['pair']} net {trade['net_usd']:+.2f}  "
+            f"roi {trade['roi_on_notional'] * 100:.3f}%  "
+            f"in {trade['entry_price']:.4f} out {trade['exit_price']:.4f}"
+        )
+    print(f"wrote {out_dir / 'walk_results.json'}")
+
+
 def main(argv: Sequence[str]) -> None:
     parser = argparse.ArgumentParser(description="Grok 4.7 paper emulation cycle")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -959,6 +1013,11 @@ def main(argv: Sequence[str]) -> None:
     app = sub.add_parser("apply")
     app.add_argument("--out", default=str(DEFAULT_OUT))
     app.add_argument("--decisions", default="")
+    walk = sub.add_parser("walk")
+    walk.add_argument("--out", default=str(DEFAULT_OUT))
+    walk.add_argument("--decisions", default="")
+    walk.add_argument("--score-hours", type=int, default=24)
+    walk.add_argument("--skip-last-hours", type=int, default=6)
     args = parser.parse_args(list(argv))
     if args.cmd == "self-check":
         self_check()
@@ -966,6 +1025,10 @@ def main(argv: Sequence[str]) -> None:
     out_dir = Path(args.out)
     if args.cmd == "prepare":
         prepare(out_dir, float(args.nav))
+        return
+    if args.cmd == "walk":
+        decisions = Path(args.decisions) if args.decisions else out_dir / "walk_decisions.json"
+        walk_cmd(out_dir, decisions, int(args.score_hours), int(args.skip_last_hours))
         return
     decisions = Path(args.decisions) if args.decisions else out_dir / "decisions.json"
     apply_cycle(out_dir, decisions)
