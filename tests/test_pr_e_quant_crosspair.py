@@ -16,7 +16,7 @@ def test_usdt_pairs_in_derivatives_map():
 
 
 def test_rule2_recovery_not_overwritten_by_rule3():
-    """BTC TREND_UP + SOL TREND_DOWN + bridge TREND_UP: prefer Rule 2 BUY ADJUST."""
+    """BTC TREND_UP + SOL TREND_DOWN + bridge TREND_UP: Rule 2 boosts confidence and does not force a BUY."""
     pairs = ["SOL/USD", "SOL/BTC", "BTC/USD"]
     coord = CrossPairCoordinator(pairs)
     states = {
@@ -42,8 +42,9 @@ def test_rule2_recovery_not_overwritten_by_rule3():
     ov = coord.get_overrides(states)
     sol = ov.get("SOL/USD")
     assert sol is not None
-    assert sol["signal"] == "BUY"
+    assert sol["signal"] == "SELL"
     assert sol["action"] == "ADJUST"
+    assert sol["confidence_adj"] == pytest.approx(0.75)
     assert "swap" not in sol
 
 

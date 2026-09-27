@@ -677,9 +677,12 @@ def _maybe_float(v) -> Optional[float]:
     if v is None:
         return None
     try:
-        return float(v)
+        n = float(v)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(n):
+        return None
+    return n
 
 
 def _prune_before(history: Deque[Tuple[float, float]], cutoff: float) -> None:
@@ -704,4 +707,7 @@ def _delta_pct(
             break
     if closest is None or closest[1] == 0:
         return None
-    return round(100.0 * (current - closest[1]) / closest[1], 2)
+    out = round(100.0 * (current - closest[1]) / closest[1], 2)
+    if not math.isfinite(out):
+        return None
+    return out
