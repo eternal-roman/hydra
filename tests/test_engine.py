@@ -252,11 +252,14 @@ class TestRegimeDetection:
 
 class TestSignalGeneration:
     def test_warmup_hold(self):
+        """Ten closes are enough to publish a reading. MACD is still zero,
+        so momentum holds, and the reading is not a blank warmup."""
         prices = [100.0] * 10
         candles = make_candles(prices)
         signal = SignalGenerator.generate(Strategy.MOMENTUM, prices, candles)
         assert signal.action == SignalAction.HOLD
-        assert signal.confidence == 0.0
+        assert signal.confidence > 0.0
+        assert "rsi" in signal.indicators
 
     def test_momentum_returns_signal(self):
         prices = make_trending_up(60)
@@ -539,15 +542,21 @@ class TestHydraEngine:
         assert regime != Regime.VOLATILE
 
     def test_candle_status(self):
-        """Candle status reports forming/closed based on age."""
+        """Candle status reports forming/closed based on age.
+
+        An older frame must not replace the latest bar. A book whose only
+        bar is already old is closed.
+        """
         import time as _time
         engine = HydraEngine(initial_balance=10000, asset="SOL/USDC", candle_interval=5)
-        # Recent candle should be "forming"
         engine.ingest_candle({"open": 100, "high": 101, "low": 99, "close": 100, "volume": 50, "timestamp": _time.time()})
         assert engine._candle_status() == "forming"
-        # Old candle should be "closed"
-        engine.ingest_candle({"open": 100, "high": 101, "low": 99, "close": 100, "volume": 50, "timestamp": _time.time() - 600})
-        assert engine._candle_status() == "closed"
+        engine.ingest_candle({"open": 50, "high": 51, "low": 49, "close": 50, "volume": 50, "timestamp": _time.time() - 600})
+        assert engine.prices[-1] == 100
+        assert engine._candle_status() == "forming"
+        older = HydraEngine(initial_balance=10000, asset="SOL/USDC", candle_interval=5)
+        older.ingest_candle({"open": 100, "high": 101, "low": 99, "close": 100, "volume": 50, "timestamp": _time.time() - 600})
+        assert older._candle_status() == "closed"
 
     def test_circuit_breaker(self):
         engine = HydraEngine(initial_balance=10000, asset="BTC/USD")

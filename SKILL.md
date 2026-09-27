@@ -211,7 +211,7 @@ END LOOP
 3. **Position Limits**: No single position notional > max_position_pct of equity (30%/40%), applied after brain size_multiplier
 4. **Trade Threshold**: Entries only when confidence ≥ 0.65; exits do not use this floor
 5. **Minimum Size**: Enforce Kraken ordermin per asset + costmin per quote currency; dust below ordermin written off
-6. **Regime Warmup**: Require 50+ candles before generating **any** non-HOLD signal (`SignalGenerator.WARMUP_CANDLES`)
+6. **Indicator history**: There is no 50-bar hold. A signal uses an indicator only once that indicator has the closes it needs (RSI 15, Bollinger 20, MACD 26, EMA trend 50). A collapsed band is not a touch.
 7. **Rate Limiting**: Respect Kraken API limits — minimum 2s between requests
 8. **Fill true-up**: Engine books exchange `avg_fill_price` on FILLED/PARTIAL (not candle close)
 9. **Quant R2**: Extreme negative funding force_holds **BUY** (bounce-chase), never spot **SELL** (long close)

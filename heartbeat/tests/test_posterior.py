@@ -60,7 +60,25 @@ def test_robust_scaler_hand():
     s2 = RobustScaler(min_history=5)
     s2.push(1.0)
     s2.freeze()
-    assert s2.scale(1.0) is None    # warming
+    # Below a robust scale the print is shown, not dropped for warmup.
+    assert s2.scale(1.0) == 1.0
+
+
+def test_first_print_is_scored_without_thirty_bar_warmup():
+    """The live status file had ofi raw and z=null for 30 bars. That
+    blanked the dashboard row and added 0 evidence. The first print is
+    the score."""
+    s = RobustScaler()
+    assert s.min_history == 1
+    raw = -0.2411346482296512
+    assert s.scale(raw) == raw
+    s.push(raw)
+    s.freeze()
+    assert s.scale(raw) == raw
+    s.push(0.10)
+    s.freeze()
+    z = s.scale(0.50)
+    assert -1.0 <= z <= 1.0
 
 
 def test_scaler_serialization_roundtrip():
@@ -118,6 +136,37 @@ def test_empty_candle_decays_one_unit():
     empty = ClosedCandle(3600, 7200, 100, 100, 100, 100, 0, 0, 0, 0, 100)
     eng.on_candle_close(empty)
     assert abs(eng.L - L0 * eng.lambda_candle) < 1e-12
+
+
+def test_ohlc_bootstrap_still_scores_live_ofi():
+    """REST OHLC warmup has no aggressor volume, so the ofi scaler stays
+    empty. The live print must still produce a finite z. The on-disk
+    status had ofi raw=-0.24 and z=null, and the dashboard hid the row."""
+    from heartbeat.engine.candle import FormingCandle
+    from heartbeat.features.registry import FeatureContext
+
+    cfg = base_config()
+    eng = PosteriorEngine(cfg)
+    candles = [
+        mk_candle(open_ts=i * 3600.0, buy=0.0, sell=0.0, vol=10.0, n=8)
+        for i in range(40)
+    ]
+    eng.warm_scalers_from_candles(candles)
+    eng.on_candle_open()
+    forming = FormingCandle(open_ts=40 * 3600.0, tf_s=3600)
+    forming.open = forming.high = forming.low = forming.close = 100.0
+    forming.buy_vol = 2.0
+    forming.sell_vol = 8.0
+    forming.volume = 10.0
+    forming.trade_count = 10
+    forming._last_ts = 40 * 3600.0 + 100.0
+    ctx = FeatureContext(forming=forming, closed=tuple(candles), atr=1.0,
+                         config=cfg)
+    out = eng.heartbeat(ctx, ts=forming._last_ts)
+    assert out.raw["ofi"] == -0.6
+    assert out.z["ofi"] == -0.6
+    assert out.z["ofi_momentum"] is not None
+    assert out.z["ofi_momentum"] < 0
 
 
 def test_none_feature_contributes_zero():

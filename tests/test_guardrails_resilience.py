@@ -289,3 +289,176 @@ class TestGuardrailsWithoutBrain:
         agent._apply_quant_guardrails("BTC/USD", state)
         assert state["signal"]["action"] != "BUY"
         assert state["ai_decision"]["qfe_active"] is False
+
+    def test_halt_flatten_survives_r10(self, monkeypatch):
+        """A 15% flatten is usually underwater, so QFE will not restore it.
+        R10 must not rewrite the SELL into HOLD."""
+        monkeypatch.delenv("HYDRA_QUANT_INDICATORS_DISABLED", raising=False)
+        agent = self._agent()
+        state = {
+            "signal": {
+                "action": "SELL",
+                "confidence": 1.0,
+                "reason": "HALT FLATTEN: CIRCUIT BREAKER: drawdown 18.0% >= 15% limit",
+            },
+            "price": 80.0,
+            "position": {"size": 0.5, "avg_entry": 100.0},
+            "quant_indicators": {
+                "funding_bps_8h": None,
+                "oi_price_regime": None,
+                "cvd_divergence_sigma": None,
+                "basis_apr_pct": None,
+                "staleness_s": 900.0,
+            },
+        }
+        agent._apply_quant_guardrails("BTC/USD", state)
+        assert state["signal"]["action"] == "SELL"
+        assert state["signal"]["reason"].startswith("HALT FLATTEN")
+
+    def test_r10_still_holds_a_normal_sell(self, monkeypatch):
+        """Negative control: a discretionary SELL still waits out a dark feed.
+        QFE is what releases a profitable one."""
+        monkeypatch.delenv("HYDRA_QUANT_INDICATORS_DISABLED", raising=False)
+        agent = self._agent()
+        state = {
+            "signal": {"action": "SELL", "confidence": 0.8, "reason": "Momentum fading"},
+            "price": 90.0,
+            "position": {"size": 0.5, "avg_entry": 100.0},
+            "quant_indicators": {
+                "funding_bps_8h": None,
+                "oi_price_regime": None,
+                "cvd_divergence_sigma": None,
+                "basis_apr_pct": None,
+                "staleness_s": 900.0,
+            },
+        }
+        agent._apply_quant_guardrails("BTC/USD", state)
+        assert state["signal"]["action"] == "HOLD"
+
+    def test_sub_lot_kelly_buy_still_hits_r1(self, monkeypatch):
+        """Conviction sizing places this buy. The brain-path token skip
+        must not be the thing that skips R1."""
+        from hydra_engine import SIZING_COMPETITION
+        monkeypatch.delenv("HYDRA_QUANT_INDICATORS_DISABLED", raising=False)
+        agent = self._agent()
+        agent.brain = object()
+        agent._last_ai_decision = {}
+        eng = HydraEngine(
+            initial_balance=180.0, asset="BTC/USD", sizing=dict(SIZING_COMPETITION),
+        )
+        agent.engines = {"BTC/USD": eng}
+        assert eng.sizer.calculate(0.65, 180.0, 200_000.0, "BTC/USD") == 0.0
+        state = {
+            "signal": {"action": "BUY", "confidence": 0.65, "reason": "entry"},
+            "price": 200_000.0,
+            "position": {"size": 0.0, "avg_entry": 0.0},
+            "quant_indicators": {
+                "funding_bps_8h": 140.0,
+                "oi_price_regime": "neutral",
+                "cvd_divergence_sigma": 0.1,
+                "basis_apr_pct": 5.0,
+                "staleness_s": 10.0,
+            },
+        }
+        agent._apply_brain("BTC/USD", state, {})
+        assert state["signal"]["action"] == "HOLD"
+        assert state["ai_decision"]["rules_force_hold"] is True
+
+    def test_brain_override_cannot_drop_halt_flatten(self, monkeypatch):
+        from hydra_brain import BrainDecision
+        monkeypatch.delenv("HYDRA_QUANT_INDICATORS_DISABLED", raising=False)
+        agent = self._agent()
+        decision = BrainDecision(
+            action="OVERRIDE",
+            final_signal="HOLD",
+            confidence_adj=0.0,
+            size_multiplier=0.0,
+            analyst_reasoning="",
+            risk_reasoning="",
+            combined_summary="stay long",
+            fallback=False,
+        )
+
+        class _Brain:
+            api_available = True
+
+            def deliberate(self, state):
+                return decision
+
+        agent.brain = _Brain()
+        agent._last_ai_decision = {}
+        agent._last_brain_candle_ts = {}
+        agent._current_portfolio_summary = ""
+        agent._portfolio_guidance = None
+        agent.ticker_stream = type("T", (), {"latest_ticker": lambda self, pair: {}})()
+        agent._build_quant_indicators = lambda pair, state: None
+        agent._build_triangle_context = lambda *a, **k: {}
+        state = {
+            "signal": {
+                "action": "SELL",
+                "confidence": 1.0,
+                "reason": "HALT FLATTEN: CIRCUIT BREAKER: drawdown 18.0% >= 15% limit",
+            },
+            "price": 80.0,
+            "position": {"size": 0.5, "avg_entry": 100.0},
+            "quant_indicators": {
+                "funding_bps_8h": 5.0,
+                "oi_price_regime": "neutral",
+                "cvd_divergence_sigma": 0.1,
+                "basis_apr_pct": 5.0,
+                "oi_delta_1h_pct": 0.0,
+                "staleness_s": 10.0,
+            },
+        }
+        agent._apply_brain("BTC/USD", state, {})
+        assert state["signal"]["action"] == "SELL"
+        assert state["signal"]["reason"].startswith("HALT FLATTEN")
+
+
+def test_never_updated_derivatives_feed_is_stale(monkeypatch):
+    """staleness inf used to become None, so R10 did not see a dead feed
+    whose last regime was still filled in."""
+    from hydra_derivatives_stream import DerivativesSnapshot
+    monkeypatch.setenv("HYDRA_RM_FEATURES_DISABLED", "1")
+    agent = HydraAgent.__new__(HydraAgent)
+    snap = DerivativesSnapshot(
+        pair="BTC/USD",
+        funding_bps_8h=10.0,
+        oi_delta_1h_pct=1.0,
+        oi_price_regime="short_squeeze",
+        basis_apr_pct=5.0,
+        staleness_s=float("inf"),
+    )
+
+    class _Stream:
+        pairs = ["BTC/USD"]
+
+        def latest(self, pair):
+            return snap
+
+    agent.derivatives_stream = _Stream()
+    agent.engines = {"BTC/USD": HydraEngine(initial_balance=1000, asset="BTC/USD")}
+    agent.s3 = None
+    state = {"signal": {"action": "BUY", "confidence": 0.8, "reason": "entry"}}
+    agent._build_quant_indicators("BTC/USD", state)
+    age = state["quant_indicators"]["staleness_s"]
+    assert age is not None and age > 300
+    from hydra_quant_rules import apply_rules
+    result = apply_rules("BUY", {}, state["quant_indicators"])
+    assert result.force_hold is True
+
+
+def test_older_candle_does_not_become_the_mark():
+    eng = HydraEngine(initial_balance=1000.0, asset="BTC/USD")
+    base = 1_700_000_000.0
+    for i, close in enumerate((100.0, 101.0, 102.0, 110.0)):
+        eng.ingest_candle({
+            "open": close, "high": close, "low": close, "close": close,
+            "volume": 1.0, "timestamp": base + i * 3600,
+        })
+    eng.ingest_candle({
+        "open": 50, "high": 50, "low": 50, "close": 50,
+        "volume": 1.0, "timestamp": base,
+    })
+    assert eng.prices[-1] == 110.0
+    assert len(eng.prices) == 4

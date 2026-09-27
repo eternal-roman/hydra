@@ -301,7 +301,7 @@ class RegimeDetector:
                trend_ema_ratio: float = 1.005,
                volatile_atr_floor: float = 1.5,
                volatile_bb_floor: float = 0.03) -> Regime:
-        if len(prices) < 50:
+        if not prices:
             return Regime.RANGING
 
         ema20 = Indicators.ema(prices, 20)
@@ -314,21 +314,23 @@ class RegimeDetector:
         # Adaptive volatility threshold — derived from asset's own history.
         # VOLATILE fires only when current volatility is significantly above
         # the asset's own median, not a fixed absolute number.
+        # No absolute floor until this asset has its own median. A short
+        # book of ordinary 2% candles is not a volatility regime.
+        atr_hot = False
         atr_series = Indicators.atr_pct_series(candles)
         if len(atr_series) >= 20:
             median_atr = statistics.median(atr_series)
             atr_threshold = max(volatile_atr_mult * median_atr, volatile_atr_floor)
-        else:
-            atr_threshold = volatile_atr_floor  # warmup fallback
+            atr_hot = atr_pct > atr_threshold
 
+        bb_hot = False
         bb_series = Indicators.bb_width_series(prices)
         if len(bb_series) >= 20:
             median_bb = statistics.median(bb_series)
             bb_threshold = max(volatile_bb_mult * median_bb, volatile_bb_floor)
-        else:
-            bb_threshold = volatile_bb_floor
+            bb_hot = bb["width"] > bb_threshold
 
-        if atr_pct > atr_threshold or bb["width"] > bb_threshold:
+        if atr_hot or bb_hot:
             return Regime.VOLATILE
 
         # Trend detection with tunable threshold
@@ -416,21 +418,17 @@ class SignalGenerator:
     # Volume is confirmatory, not primary — caps at VOLUME_WEIGHT above average
     VOLUME_WEIGHT = 0.05
 
-    # PR-F: single warmup gate (matches RegimeDetector's 50-bar requirement).
-    # Pre-PR-F signals could fire at 26 bars while regime was still forced RANGING.
-    WARMUP_CANDLES = 50
-
     @staticmethod
     def generate(
         strategy: Strategy, prices: List[float], candles: List[Candle],
         momentum_rsi_lower: float = 30.0, momentum_rsi_upper: float = 70.0,
         mean_reversion_rsi_buy: float = 35.0, mean_reversion_rsi_sell: float = 65.0,
     ) -> Signal:
-        if len(prices) < SignalGenerator.WARMUP_CANDLES:
+        if not prices:
             return Signal(
                 action=SignalAction.HOLD,
                 confidence=0.0,
-                reason="Insufficient data — warming up indicators",
+                reason="No price yet",
                 strategy=strategy,
             )
 
@@ -590,6 +588,15 @@ class SignalGenerator:
         wf = ctx["bb_width_factor"]
         vol = SignalGenerator._vol_bonus(ctx)
         band_span = bb["upper"] - bb["lower"]
+        # A collapsed band is "not enough closes for Bollinger", not a touch.
+        if band_span <= 0:
+            return Signal(
+                action=SignalAction.HOLD,
+                confidence=BASE,
+                reason=f"Price {_fmt_price(price)} — bands not formed",
+                strategy=Strategy.MEAN_REVERSION,
+                indicators=indicators,
+            )
 
         if price <= bb["lower"] and rsi < rsi_buy:
             # Penetration: how far below lower band, normalized by band span
@@ -630,7 +637,15 @@ class SignalGenerator:
     @staticmethod
     def _grid(bb, price, indicators, ctx) -> Signal:
         BASE = SignalGenerator.BASE
-        grid_spacing = (bb["upper"] - bb["lower"]) / 5 if bb["upper"] != bb["lower"] else 1.0
+        if bb["upper"] == bb["lower"]:
+            return Signal(
+                action=SignalAction.HOLD,
+                confidence=BASE,
+                reason="Grid HOLD: bands not formed",
+                strategy=Strategy.GRID,
+                indicators=indicators,
+            )
+        grid_spacing = (bb["upper"] - bb["lower"]) / 5
         dist_from_lower = (price - bb["lower"]) / grid_spacing if grid_spacing > 0 else 2.5
 
         # Band span vs ATR: reference = 4*ATR (BB = 4*std, std approx ATR)
@@ -1451,7 +1466,11 @@ class HydraEngine:
 
     def ingest_candle(self, raw: Dict[str, Any]) -> None:
         """Add a candle from kraken ohlc JSON output. Deduplicates by timestamp."""
-        has_timestamp = "timestamp" in raw
+        # Timestamp 0 is a real epoch, not a missing field. `or time.time()`
+        # turned that first bar into "now", and every later historical bar
+        # then looked older and was dropped.
+        ts_raw = raw.get("timestamp") if isinstance(raw, dict) else None
+        has_timestamp = ts_raw is not None and ts_raw != ""
         try:
             candle = Candle(
                 open=float(raw.get("open") or 0),
@@ -1459,7 +1478,7 @@ class HydraEngine:
                 low=float(raw.get("low") or 0),
                 close=float(raw.get("close") or 0),
                 volume=float(raw.get("volume") or 0),
-                timestamp=float(raw.get("timestamp") or time.time()),
+                timestamp=float(ts_raw) if has_timestamp else time.time(),
             )
         except (TypeError, ValueError):
             return  # Malformed candle data — skip silently
@@ -1471,6 +1490,11 @@ class HydraEngine:
         )):
             return
         signed = _chaikin_signed_volume(candle)
+        # A delayed frame must not become the mark. The daily series already
+        # drops an older day; the hourly series used to append it, so one
+        # late close could arm the breaker and flatten at the wrong price.
+        if has_timestamp and self.candles and candle.timestamp < self.candles[-1].timestamp:
+            return
         # Deduplicate: if Kraken timestamp matches last candle, update in place (incomplete candle refresh)
         if has_timestamp and self.candles and self.candles[-1].timestamp == candle.timestamp:
             self.candles[-1] = candle

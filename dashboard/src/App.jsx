@@ -2296,7 +2296,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                     </div>
 
                     {/* Candlestick Chart */}
-                    {(ps.candles && ps.candles.length > 5) && (
+                    {(ps.candles && ps.candles.length >= 1) && (
                       <div style={{ background: "#0d0d0f", borderRadius: 8, border: `1px solid ${COLORS.panelBorder}`, overflow: "hidden", margin: "0 -4px" }}>
                         <CandleChart candles={ps.candles.slice(-80)} height={254} />
                       </div>
@@ -2327,8 +2327,12 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                       const featBits = ok && hb.features && typeof hb.features === "object"
                         ? Object.entries(hb.features).slice(0, 5).map(([k, v]) => {
                             const z = v && typeof v === "object" ? v.z : v;
-                            if (z == null || Number.isNaN(Number(z))) return null;
-                            const n = Number(z);
+                            const raw = v && typeof v === "object" ? v.raw : null;
+                            const source = (z != null && !Number.isNaN(Number(z)))
+                              ? Number(z)
+                              : (raw != null && !Number.isNaN(Number(raw)) ? Number(raw) : null);
+                            if (source == null) return null;
+                            const n = source;
                             const c = n > 0.15 ? COLORS.buy : n < -0.15 ? COLORS.sell : COLORS.text;
                             return { k, n, c };
                           }).filter(Boolean)
@@ -3026,7 +3030,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
       {/* Footer */}
       <div style={{ padding: "10px 24px", borderTop: `1px solid ${COLORS.panelBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 8, color: COLORS.textMuted, fontFamily: mono }}>
-          HYDRA v2.34.0 | kraken-cli v0.4.1 (WSL) | {DEFAULT_WS_URL}
+          HYDRA v2.34.1 | kraken-cli v0.4.1 (WSL) | {DEFAULT_WS_URL}
           {jwtToken && (
             <span style={{ marginLeft: 16, cursor: "pointer", color: COLORS.warn }} onClick={onLogout}>
               [Logout]

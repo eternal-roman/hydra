@@ -79,7 +79,7 @@ regression bug, not a style issue.
   (BTC/USD snap → BTC/USDC engine) even when `triangle` is None;
   mixed leftover quotes (ZEC/USD) stay exact — never a global
   quote flip that would invent ZEC/USDC.
-- **Version pin:** v2.34.0
+- **Version pin:** v2.34.1
 
 ## Defaults (inherited)
 
@@ -149,7 +149,7 @@ regression bug, not a style issue.
 - **Fill true-up (PR-C)** — Every terminal FILLED/PARTIAL restores `pre_trade_snapshot` and replays at exchange `avg_fill_price` (not candle close). `pre_trade_snapshot` **is** persisted (only `PLACEMENT_FAILED` entries are stripped by `_journal_for_persistence`), so `_reconcile_stale_placed` trues up a previous-session fill and rolls back a phantom position on CANCELLED/REJECTED exactly like `_apply_execution_event` does live — treating it as in-memory-only is what left resume passing `None` and skipping both repairs. Unsellable dust below ordermin is written off. BUY limit offsets capped (≤20 bps SOL/STABLE) for post-only fill rate.
 - **Kelly / friction honesty (PR-D)** — PositionSizer uses excess-over-threshold Kelly (conf=min → edge 0.10, conf=1 → 1.0), not `(conf*2-1)`. Friction hurdle is timeframe-aware (≥2.0% on 1h+ bars). Go-live plumbing gates: `python scripts/go_live_gates.py`.
 - **Quant/cross-pair (PR-E)** — `HYDRA_QUANT_INDICATORS_DISABLED=1` skips `apply_rules`/QFE (no R10 blackout). Rules re-applied after brain OVERRIDE. Rule 2 recovery preferred over Rule 3 swap; Rule 3 requires bridge `tradable` (emitted on engine state from `_build_state`). Always `tick(generate_only=True)` then post-coord execute. USDT pairs mapped in `SPOT_TO_DERIVATIVES`. Companion live (opt-in) registers orders on `ExecutionStream` but remains engine-inventory-blind until a full agent place adapter exists.
-- **Unified warmup (PR-F)** — `SignalGenerator.WARMUP_CANDLES = 50` (aligned with regime detector).
+- **No blanket bar-count hold (was PR-F's 50)** — regime and signals use whatever history each indicator actually has. RSI is neutral until 15 closes, MACD is zero until 26, Bollinger does not count a collapsed band as a touch. EMA trend cannot classify until both averages exist. There is no "warming up indicators" hold.
 
 Subsystem detail (indicators, regime, Kelly sizing, price precision,
 execution stream lifecycle, resume reconciliation, forex modifier,

@@ -61,41 +61,51 @@ class RobustScaler:
 
     Parameters are frozen at candle open (`freeze`) and used for every
     heartbeat of the forming candle; new raw values are pushed only at
-    candle close. z = clip((x - med) / (clip_mads * 1.4826 * MAD), -1, 1).
-    Returns None (no evidence) until `min_history` samples are seen or
-    when MAD degenerates to 0 with x == med.
+    candle close. Once enough closes exist, z = clip((x - med) /
+    (clip_mads * 1.4826 * MAD), -1, 1).
+
+    A print is never withheld for warmup. Before a robust scale exists
+    (no samples yet, or MAD still 0), z is the raw value clipped to
+    [-1, 1]. ofi and clv already live on that interval, so the dashboard
+    and the posterior see them on the first trade.
     """
 
     def __init__(self, window: int = 500, clip_mads: float = 3.0,
-                 min_history: int = 30) -> None:
+                 min_history: int = 1) -> None:
         self.window = window
         self.clip_mads = clip_mads
-        self.min_history = min_history
+        self.min_history = max(1, int(min_history))
         self.values: deque[float] = deque(maxlen=window)
         self._med: Optional[float] = None
         self._mad: Optional[float] = None
+        self._robust: bool = False
 
     def push(self, x: float) -> None:
         self.values.append(x)
 
     def freeze(self) -> None:
-        if len(self.values) < self.min_history:
+        if not self.values:
             self._med = None
             self._mad = None
+            self._robust = False
             return
         vals = list(self.values)
         self._med = median(vals)
         self._mad = median(abs(v - self._med) for v in vals)
+        self._robust = (
+            len(vals) >= self.min_history and (self._mad or 0.0) > 0.0
+        )
 
-    def scale(self, x: float) -> Optional[float]:
-        if self._med is None:
-            return None
+    def scale(self, x: float) -> float:
+        """Finite score in [-1, 1]. The first print is the raw value."""
+        if not math.isfinite(x):
+            return 0.0
+        if self._med is None or not self._robust:
+            return max(-1.0, min(1.0, x))
         delta = x - self._med
         denom = self.clip_mads * MAD_CONSISTENCY * (self._mad or 0.0)
         if denom <= 0:
-            if delta == 0:
-                return 0.0
-            return 1.0 if delta > 0 else -1.0
+            return max(-1.0, min(1.0, x))
         return max(-1.0, min(1.0, delta / denom))
 
     def to_dict(self) -> dict:

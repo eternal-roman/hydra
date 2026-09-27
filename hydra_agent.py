@@ -196,6 +196,22 @@ def _apply_buy_limit_offset(pair: str, bid: float, regime: Optional[str]) -> tup
     return float(formatted), bps
 
 
+def _is_halt_flatten(state: dict) -> bool:
+    """True when this signal is the circuit-breaker's inventory flatten.
+
+    R10 and a brain OVERRIDE must not turn it into HOLD. The breaker
+    already decided the book is past the loss limit; a stale funding
+    print is not a reason to keep the position.
+    """
+    sig = state.get("signal") if isinstance(state, dict) else None
+    if not isinstance(sig, dict):
+        return False
+    return (
+        str(sig.get("action") or "") == "SELL"
+        and str(sig.get("reason") or "").startswith("HALT FLATTEN")
+    )
+
+
 # ═══════════════════════════════════════════════════════════════
 # HYDRA AGENT (Main Loop)
 # ═══════════════════════════════════════════════════════════════
@@ -748,7 +764,16 @@ class HydraAgent:
                         "oi_delta_24h_pct": snap.oi_delta_24h_pct,
                         "oi_price_regime": snap.oi_price_regime,
                         "basis_apr_pct": snap.basis_apr_pct,
-                        "staleness_s": round(snap.staleness_s, 1) if snap.staleness_s != float("inf") else None,
+                        # JSON has no infinity. A feed that has never
+                        # updated is stale, not "age unknown" — unknown
+                        # skipped R10 while the last regime stayed live.
+                        "staleness_s": (
+                            round(float(snap.staleness_s), 1)
+                            if isinstance(snap.staleness_s, (int, float))
+                            and snap.staleness_s == snap.staleness_s
+                            and snap.staleness_s != float("inf")
+                            else 1_000_000.0
+                        ),
                         "synthetic_pair": snap.synthetic,
                         "basis_available": getattr(snap, "basis_available", True),
                     }
@@ -2398,13 +2423,16 @@ class HydraAgent:
             return state
 
         final_size_multiplier = max(0.0, min(1.5, rules_size_mult * (brain_size if keep_brain else 1.0)))
-        if rules_force_hold:
+        if rules_force_hold and not _is_halt_flatten(state):
             final_size_multiplier = 0.0
             state["signal"]["action"] = "HOLD"
             state["signal"]["reason"] = (
                 f"[QUANT RULES FORCE_HOLD] {rules_force_hold_reason}"
             )
             print(f"  [QUANT RULES] {pair}: force_hold — {rules_force_hold_reason}")
+        elif rules_force_hold:
+            print(f"  [QUANT RULES] {pair}: {rules_force_hold_reason} "
+                  f"— HALT FLATTEN still sells")
 
         # R11/QFE — rescue a profitable exit that the rules just blocked.
         # Same contract as the brain path: exit-only, profit-only,
@@ -2501,10 +2529,10 @@ class HydraAgent:
                 state["signal"]["confidence"], engine.balance, state["price"], pair,
             )
             if test_size == 0:
-                cached = self._last_ai_decision.get(pair)
-                if cached:
-                    state["ai_decision"] = cached
-                return state  # Signal too weak to trade; don't waste brain tokens
+                # Kelly under the lot is not "no order". Conviction sizing
+                # lifts that crumb to max_position_pct. Skip the LLM spend;
+                # do not skip R1–R11, or that lift bypasses the guardrails.
+                return self._apply_quant_guardrails(pair, state)
 
         # Candle-freshness gate: only invoke brain when the pair has a NEW candle.
         # On forming-candle updates (same interval_begin), the engine deduplicates
@@ -2706,6 +2734,10 @@ class HydraAgent:
             # preserved in state["ai_decision"] for dashboard/logging.
             if blocked_by_api_down:
                 pass  # state["signal"] already rewritten above; skip OVERRIDE/ADJUST below
+            elif _is_halt_flatten(state):
+                # Breaker flatten is already the exit. R10 and an OVERRIDE
+                # to HOLD would leave the inventory open.
+                pass
             elif rules_force_hold:
                 # v2.14: a deterministic rule trumped the LLM layer. Force
                 # HOLD and surface which rule, so audit is unambiguous.
@@ -5240,7 +5272,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.34.0",
+            "version": "2.34.1",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
