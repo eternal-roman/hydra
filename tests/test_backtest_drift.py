@@ -93,11 +93,27 @@ class TestZeroDrift(unittest.TestCase):
                 "volume": c.volume, "timestamp": c.timestamp,
             })
             s = engine.tick(generate_only=True)
+            sig = s.get("signal", {})
+            action = sig.get("action")
+            conf = float(sig.get("confidence", 0.0))
+            # The replay applies the same UTC session weight and execution
+            # floor as the live tick. The direct path has to as well, or
+            # the comparison is two different decision surfaces.
+            if c.timestamp:
+                from datetime import datetime, timezone
+                from hydra_engine import session_confidence_delta
+                mod = session_confidence_delta(
+                    datetime.fromtimestamp(c.timestamp, tz=timezone.utc).hour
+                )
+                if mod and action != "HOLD":
+                    conf = max(0.0, min(1.0, conf + mod))
+            if action == "BUY" and conf < engine.sizer.min_confidence:
+                action = "HOLD"
             states.append({
                 "regime": s.get("regime"),
                 "strategy": s.get("strategy"),
-                "action": s.get("signal", {}).get("action"),
-                "confidence": round(s.get("signal", {}).get("confidence", 0.0), 9),
+                "action": action,
+                "confidence": round(conf, 9),
             })
         return states
 

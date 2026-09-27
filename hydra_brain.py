@@ -221,7 +221,8 @@ Your job is capital protection AND opportunity capture — missed good
 trades cost real money too. Output quantitative risk metrics, a
 decision, and a multiplicative size_multiplier that STACKS on top
 of the Quant's (the engine multiplies all multipliers together and
-clamps to [0.0, 1.5]).
+applies that product as a pass-through capped at [0.0, 1.5]; it does
+not expand values above 1).
 
 ────────────────────────────────────────────────────────────────────
 HARD MANDATES (non-negotiable — violation = bug)
@@ -423,6 +424,21 @@ def _coerce_size_mult(v, default: float = 1.0) -> float:
     if n != n or n == float("inf") or n == float("-inf"):
         return default
     return max(0.0, min(1.5, n))
+
+
+def _canonical_action(value, fallback: str) -> str:
+    text = str(value or "").strip().upper()
+    if text in ("BUY", "SELL", "HOLD"):
+        return text
+    fb = str(fallback or "HOLD").strip().upper()
+    return fb if fb in ("BUY", "SELL", "HOLD") else "HOLD"
+
+
+def _canonical_decision(value) -> str:
+    text = str(value or "").strip().upper()
+    if text in ("CONFIRM", "ADJUST", "OVERRIDE"):
+        return text
+    return "CONFIRM"
 
 
 def _coerce_bool(v, default: bool = False) -> bool:
@@ -714,11 +730,20 @@ class HydraBrain:
             quant_force_hold = _coerce_bool(analyst_output.get("force_hold"))
             force_hold_reason = analyst_output.get("force_hold_reason", "") if quant_force_hold else ""
 
+            engine_action = (state.get("signal") or {}).get("action", "HOLD")
             if strategist_output and not quant_force_hold:
                 # Grok arbitrates the contested point (action + decision).
                 # Size stays the quant × rm product.
-                final_action = strategist_output.get("final_action", risk_output.get("final_action", state["signal"]["action"]))
-                final_decision = strategist_output.get("decision", risk_output.get("decision", "CONFIRM"))
+                final_action = _canonical_action(
+                    strategist_output.get(
+                        "final_action",
+                        risk_output.get("final_action", engine_action),
+                    ),
+                    engine_action,
+                )
+                final_decision = _canonical_decision(
+                    strategist_output.get("decision", risk_output.get("decision", "CONFIRM")),
+                )
                 final_conviction = analyst_output.get("conviction", state["signal"]["confidence"])
                 final_size = brain_stacked_size
                 strategist_reasoning = strategist_output.get("reasoning", "")
@@ -729,8 +754,10 @@ class HydraBrain:
                 final_size = 0.0
                 strategist_reasoning = strategist_output.get("reasoning", "") if strategist_output else ""
             else:
-                final_action = risk_output.get("final_action", state["signal"]["action"])
-                final_decision = risk_output.get("decision", "CONFIRM")
+                final_action = _canonical_action(
+                    risk_output.get("final_action", engine_action), engine_action,
+                )
+                final_decision = _canonical_decision(risk_output.get("decision", "CONFIRM"))
                 final_conviction = analyst_output.get("conviction", state["signal"]["confidence"])
                 final_size = brain_stacked_size
                 strategist_reasoning = ""
@@ -1111,12 +1138,7 @@ class HydraBrain:
         parsed = self._parse_json(text)
         if isinstance(parsed, dict):
             if "size_multiplier" in parsed:
-                try:
-                    raw = parsed["size_multiplier"]
-                    clamped = max(0.0, min(1.5, float(raw)))
-                except (TypeError, ValueError):
-                    clamped = 1.0
-                parsed["size_multiplier"] = clamped
+                parsed["size_multiplier"] = _coerce_size_mult(parsed.get("size_multiplier"))
             if "force_hold" in parsed:
                 parsed["force_hold"] = _coerce_bool(parsed.get("force_hold"))
             else:
@@ -1151,10 +1173,7 @@ class HydraBrain:
         # directly, so an unclamped 2.5 would oversize by 67%.
         if isinstance(parsed, dict) and "size_multiplier" in parsed:
             raw = parsed["size_multiplier"]
-            try:
-                clamped = max(0.0, min(1.5, float(raw)))
-            except (TypeError, ValueError):
-                clamped = 1.0
+            clamped = _coerce_size_mult(raw)
             if clamped != raw:
                 print(f"  [BRAIN] size_multiplier clamped: {raw!r} -> {clamped}")
             parsed["size_multiplier"] = clamped

@@ -27,7 +27,7 @@ from typing import List, Optional, Dict, Any, Tuple
 
 # pair_registry is pure stdlib (dataclasses/typing only); importing it
 # does NOT violate the engine's "no numpy/pandas" isolation rule.
-from hydra_pair_registry import STABLE_QUOTES
+from hydra_pair_registry import STABLE_QUOTES, default_registry
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -269,7 +269,9 @@ class Indicators:
         # Advance fast EMA to slow start point
         for i in range(fast, slow):
             ema_f = prices[i] * k_fast + ema_f * (1 - k_fast)
-        macd_hist = []
+        # Index slow-1 is a real MACD point. Starting the loop at `slow`
+        # dropped it and left a 26-close series at zero.
+        macd_hist = [ema_f - ema_s]
         for i in range(slow, len(prices)):
             ema_f = prices[i] * k_fast + ema_f * (1 - k_fast)
             ema_s = prices[i] * k_slow + ema_s * (1 - k_slow)
@@ -359,6 +361,48 @@ REGIME_STRATEGY_MAP = {
 # SIGNAL GENERATOR
 # ═══════════════════════════════════════════════════════════════
 
+def is_rules_force_hold_reason(reason: str) -> bool:
+    """Quant-rules HOLD. Hold-through must not turn it back into a sell."""
+    return str(reason or "").startswith("[QUANT RULES FORCE_HOLD]")
+
+
+def is_protected_flatten_reason(reason: str) -> bool:
+    """Halt flatten and hold-through flatten survive a zero size multiplier."""
+    text = str(reason or "")
+    low = text.lower()
+    return (
+        text.upper().startswith("HALT FLATTEN")
+        or "hold_through:force_flatten" in low
+        or "hold_through:daily_trend_exit" in low
+    )
+
+
+def is_entry_veto(action: str, reason: str) -> bool:
+    """HOLD that means do not enter. An ordinary engine HOLD is not a veto."""
+    if str(action or "").upper() != "HOLD":
+        return False
+    text = str(reason or "")
+    return text.startswith((
+        "[QUANT RULES FORCE_HOLD]",
+        "[API DOWN BLOCK]",
+        "[AI OVERRIDE]",
+        "[BRAIN CACHE]",
+        "[CONFIDENCE]",
+    ))
+
+
+def session_confidence_delta(hour: int) -> float:
+    """UTC-hour confidence weight shared by the live tick and the backtest."""
+    hour = int(hour) % 24
+    if 12 <= hour < 16:
+        return 0.04
+    if 7 <= hour < 12 or 16 <= hour < 21:
+        return 0.02
+    if 0 <= hour < 7:
+        return -0.03
+    return -0.05
+
+
 def _fmt_price(p: float) -> str:
     """Format a price for human-readable signal reasons.
     Uses full precision for small prices (e.g. SOL/BTC at 0.0012)."""
@@ -438,11 +482,15 @@ class SignalGenerator:
         atr = Indicators.atr(candles) if len(candles) >= 15 else 0.0
         current = prices[-1]
 
-        # Volume context: ratio of latest candle volume to 20-period average
-        vol_window = candles[-20:] if len(candles) >= 20 else candles
-        volumes = [c.volume for c in vol_window]
-        avg_volume = sum(volumes) / len(volumes) if volumes else 1.0
-        vol_ratio = candles[-1].volume / avg_volume if avg_volume > 0 else 1.0
+        # Confirm with the bars before this one. Including the bar being
+        # judged pulls a 2x spike toward 1.
+        if len(candles) >= 2:
+            prior = candles[-21:-1] if len(candles) >= 21 else candles[:-1]
+            volumes = [c.volume for c in prior]
+            avg_volume = sum(volumes) / len(volumes) if volumes else 1.0
+            vol_ratio = candles[-1].volume / avg_volume if avg_volume > 0 else 1.0
+        else:
+            vol_ratio = 1.0
 
         atr_pct = (atr / current * 100) if current > 0 else 0.0
 
@@ -554,7 +602,13 @@ class SignalGenerator:
             and price < bb["middle"]
             and (hist < prev or prev >= 0)
         )
-        extreme_overbought = rsi > rsi_upper + 15
+        # RSI cannot exceed 100. A tuned upper of 85 makes upper+15 == 100,
+        # and a strict `>` then never fires.
+        panic_line = rsi_upper + 15.0
+        if panic_line >= 100.0:
+            extreme_overbought = rsi >= 100.0
+        else:
+            extreme_overbought = rsi > panic_line
         if symmetric_sell or extreme_overbought:
             rsi_strength = max(0.0, rsi - rsi_upper) / (100.0 - rsi_upper) if rsi_upper < 100 else 0.0
             macd_strength = min(1.0, abs(hist) / ctx["atr"]) if hist < 0 and ctx["atr"] > 0 else 0.0
@@ -562,7 +616,12 @@ class SignalGenerator:
             vol = SignalGenerator._vol_bonus(ctx)
             conf = min(0.90, BASE + primary * 0.35 + vol)
             if extreme_overbought and not symmetric_sell:
-                reason = f"Momentum fading: RSI {rsi:.1f} > {rsi_upper + 15:.0f} extreme overbought"
+                shown = 100.0 if panic_line >= 100.0 else panic_line
+                op = ">=" if panic_line >= 100.0 else ">"
+                reason = (
+                    f"Momentum fading: RSI {rsi:.1f} {op} {shown:.0f} "
+                    f"extreme overbought"
+                )
             else:
                 reason = (f"Momentum fading: MACD hist {hist:.2f} < 0, "
                           f"price {_fmt_price(price)} < BB mid {_fmt_price(bb['middle'])}, RSI {rsi:.1f}")
@@ -790,14 +849,44 @@ class PositionSizer:
             if quote and "costmin" in info:
                 PositionSizer.MIN_COST[quote] = info["costmin"]
 
+    def min_order_size(self, asset: str) -> Optional[float]:
+        """Ordermin, or None when the base is unknown. Never invent 0.02."""
+        base = asset.split("/")[0] if asset and "/" in asset else (asset or "")
+        if base in self.MIN_ORDER_SIZE:
+            return float(self.MIN_ORDER_SIZE[base])
+        if not asset or "/" not in asset:
+            return None
+        pair = default_registry().get(asset)
+        if pair is None:
+            return None
+        return float(pair.ordermin)
+
+    def min_cost(self, asset: str) -> Optional[float]:
+        """Costmin for the quote, or None when that quote is unknown."""
+        if asset and "/" in asset:
+            quote = asset.split("/")[1]
+        elif asset in self.MIN_COST:
+            quote = asset
+        else:
+            quote = "USD" if not asset else ""
+        if quote in self.MIN_COST:
+            return float(self.MIN_COST[quote])
+        if not asset or "/" not in asset:
+            return None
+        pair = default_registry().get(asset)
+        if pair is None:
+            return None
+        return float(pair.costmin)
+
     def calculate(self, confidence: float, balance: float, price: float,
                   asset: str = "") -> float:
         """Returns position size in asset units using Kelly criterion."""
         # Pair-aware costmin: use quote currency's minimum (e.g. 0.5 USD, 0.00002 BTC).
         # The fallback "USD" applies only when an asset is passed without
         # "/" — in normal use every asset is a triangle pair like "SOL/USD".
-        quote = asset.split("/")[1] if "/" in asset else "USD"
-        costmin = self.MIN_COST.get(quote, 0.5)
+        costmin = self.min_cost(asset)
+        if costmin is None:
+            return 0.0
 
         if confidence < self.min_confidence or balance < costmin or price <= 0:
             return 0.0
@@ -825,9 +914,8 @@ class PositionSizer:
         size = position_value / price
 
         # Enforce Kraken minimum order sizes (ordermin per base asset)
-        base_asset = asset.split("/")[0] if "/" in asset else asset
-        min_size = self.MIN_ORDER_SIZE.get(base_asset, 0.02)
-        if size < min_size:
+        min_size = self.min_order_size(asset)
+        if min_size is None or size < min_size:
             return 0.0
 
         return size
@@ -1152,13 +1240,15 @@ class CrossPairCoordinator:
         rule2_recovery = (
             btc_regime == "TREND_UP" and sol_regime == "TREND_DOWN"
         )
-        if rule2_recovery:
-            sol_conf = 0.5
-            if sol_state and sol_state.get("signal"):
-                sol_conf = sol_state["signal"].get("confidence", 0.5)
+        if rule2_recovery and sol_state and sol_state.get("signal"):
+            # Confidence only. Forcing BUY overwrote a defensive sell and
+            # could replace a halt-flatten reason.
+            sol_sig = sol_state["signal"]
+            sol_action = str(sol_sig.get("action") or "HOLD")
+            sol_conf = float(sol_sig.get("confidence") or 0.5)
             overrides[sol_key] = {
                 "action": "ADJUST",
-                "signal": "BUY",
+                "signal": sol_action,
                 "confidence_adj": min(0.95, sol_conf + 0.15),
                 "reason": "Cross-pair: BTC recovering — SOL recovery likely, boosting confidence",
             }
@@ -1723,10 +1813,10 @@ class HydraEngine:
                         strategy=Strategy.DEFENSIVE,
                     )
                 return self._build_state(
-                    Regime.VOLATILE, Strategy.DEFENSIVE, out_sig, flatten_trade,
+                    self._detected_regime(), Strategy.DEFENSIVE, out_sig, flatten_trade,
                 )
             return self._build_state(
-                Regime.VOLATILE,
+                self._detected_regime(),
                 Strategy.DEFENSIVE,
                 Signal(SignalAction.HOLD, 0.0, self.halt_reason, Strategy.DEFENSIVE),
             )
@@ -1828,12 +1918,79 @@ class HydraEngine:
 
         return self._build_state(regime, strategy, signal, trade)
 
+    def _detected_regime(self) -> Regime:
+        if not self.candles or not self.prices:
+            return Regime.RANGING
+        return RegimeDetector.detect(
+            self.candles, self.prices,
+            self.volatile_atr_mult, self.volatile_bb_mult, self.trend_ema_ratio,
+        )
+
+    def current_drawdown_pct(self) -> float:
+        price = self.prices[-1] if self.prices else 0.0
+        if price <= 0 or self.peak_equity <= 0:
+            return 0.0
+        equity = self.balance + self.position.size * price
+        return (self.peak_equity - equity) / self.peak_equity * 100.0
+
+    def release_unfilled_buy_halt(self) -> bool:
+        """Clear a breaker halt when the restored book is back under 15%.
+
+        An optimistic buy is in marked equity, so a dip can arm the halt
+        on coins the cancel gives back. A book that is still at or past
+        15% stays halted. Only a circuit-breaker reason is cleared.
+        """
+        if not self.halted:
+            return False
+        if not str(self.halt_reason).startswith("CIRCUIT BREAKER:"):
+            return False
+        if self.current_drawdown_pct() >= self.CIRCUIT_BREAKER_PCT:
+            return False
+        self.halted = False
+        self.halt_reason = ""
+        return True
+
+    def set_base_remainder(self, gross_base: Optional[float], sold_amount: float) -> None:
+        """Keep only coins still owned after an optimistic sell of `sold_amount`.
+
+        `gross_base` is the exchange gross holding before this sell.
+        Unknown or non-finite gross leaves the book unchanged.
+        """
+        if gross_base is None:
+            return
+        try:
+            gross = float(gross_base)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(gross) or gross < 0:
+            return
+        remaining = max(0.0, gross - float(sold_amount))
+        # Never adopt coins this engine was not tracking. Only drop a
+        # remainder the exchange does not have.
+        if remaining >= self.position.size - 1e-12:
+            return
+        if remaining <= 0:
+            self.position.size = 0.0
+            self.position.avg_entry = 0.0
+            self.position.params_at_entry = None
+            return
+        self.position.size = remaining
+
     @staticmethod
     def _apply_size_multiplier(raw: float) -> float:
-        """Apply brain size multiplier: raw below 1.0, exponential above, cap 2.0."""
-        if raw <= 1.0:
-            return raw
-        return min(2.0, 4.0 ** (raw - 1.0))
+        """Pass-through size factor, capped at 1.5.
+
+        Non-finite or negative sends nothing. Values above 1 used to be
+        expanded with ``4 ** (raw - 1)`` so 1.5 became 2.0 and undid the
+        volatility haircut. 1.5 means 1.5.
+        """
+        try:
+            n = float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+        if n != n or n == float("inf") or n == float("-inf") or n < 0.0:
+            return 0.0
+        return min(1.5, n)
 
     def _apply_hold_through(self, regime: Regime, signal: Signal) -> Signal:
         """Default rails: TREND_UP BUY ≥0.65, flatten TREND_DOWN, ride mid-UP.
@@ -1841,6 +1998,9 @@ class HydraEngine:
         Kill: ``hold_through=False`` / ``HYDRA_HOLD_THROUGH=0``.
         """
         if not self.hold_through:
+            return signal
+        # A rules veto is already HOLD. Do not sell it from this rail.
+        if is_rules_force_hold_reason(signal.reason):
             return signal
         # Daily trend overlay: None = warming up / disabled → fail open
         # (rails behave exactly as pre-overlay).
@@ -1857,6 +2017,7 @@ class HydraEngine:
                 ),
                 reason=f"HOLD_THROUGH:{tag}|{signal.reason}",
                 strategy=Strategy.DEFENSIVE,
+                indicators=dict(signal.indicators or {}),
             )
         if signal.action == SignalAction.BUY:
             if daily_long is False:
@@ -1869,6 +2030,7 @@ class HydraEngine:
                     confidence=signal.confidence,
                     reason=f"HOLD_THROUGH:daily_trend_flat|{signal.reason}",
                     strategy=signal.strategy,
+                    indicators=dict(signal.indicators or {}),
                 )
             if regime != Regime.TREND_UP:
                 return Signal(
@@ -1878,6 +2040,7 @@ class HydraEngine:
                         f"HOLD_THROUGH:skip_buy_{regime.value}|{signal.reason}"
                     ),
                     strategy=signal.strategy,
+                    indicators=dict(signal.indicators or {}),
                 )
             if float(signal.confidence) < self.HOLD_THROUGH_BUY_MIN_CONF:
                 return Signal(
@@ -1885,12 +2048,14 @@ class HydraEngine:
                     confidence=signal.confidence,
                     reason=f"HOLD_THROUGH:low_conf|{signal.reason}",
                     strategy=signal.strategy,
+                    indicators=dict(signal.indicators or {}),
                 )
         _reason_l = (signal.reason or "").lower()
         _midtrend_exit_ok = (
             "extreme overbought" in _reason_l
             or "[qfe profit exit]" in _reason_l
             or "halt flatten" in _reason_l
+            or "[cross-pair]" in _reason_l
         )
         if (
             signal.action == SignalAction.SELL
@@ -1903,6 +2068,7 @@ class HydraEngine:
                 confidence=signal.confidence,
                 reason=f"HOLD_THROUGH:ride_trend|{signal.reason}",
                 strategy=signal.strategy,
+                indicators=dict(signal.indicators or {}),
             )
         return signal
 
@@ -2012,24 +2178,6 @@ class HydraEngine:
         if not math.isfinite(current_price) or current_price <= 0:
             return None
         effective_mult = self._apply_size_multiplier(size_multiplier)
-        # BUY only. The $50/day budget is the cap; this haircut is the cost
-        # of the decision in front of us versus the dollars the trade can make.
-        # SELLs are not scaled — an exit does not have to earn the analysis back.
-        if signal.action == SignalAction.BUY and decision_cost_usd:
-            expected = self._expected_move_pct(signal, current_price)
-            notional = (
-                self.balance * self.sizer.max_position_pct
-                * min(max(effective_mult, 0.0), 1.0)
-            )
-            profit = None if expected is None else notional * (expected / 100.0)
-            factor = self.ai_cost_size_factor(profit, decision_cost_usd)
-            if factor < 1.0:
-                self._last_ai_cost_scale = {
-                    "expected_profit_usd": profit,
-                    "decision_cost_usd": float(decision_cost_usd),
-                    "factor": factor,
-                }
-            effective_mult *= factor
 
         # Friction expectancy gate (v2.27, entries only): a BUY whose
         # strategy-implied expected move cannot clear a multiple of the
@@ -2108,12 +2256,29 @@ class HydraEngine:
                 # rejections and littering the journal with placement_error.
                 # Parsed exactly as PositionSizer.calculate does: self.asset is
                 # the full pair ("BTC/USD"), base before the slash, quote after.
-                _base = self.asset.split("/")[0] if "/" in self.asset else self.asset
-                _quote = self.asset.split("/")[1] if "/" in self.asset else "USD"
-                min_size = self.sizer.MIN_ORDER_SIZE.get(_base, 0.02)
-                costmin = self.sizer.MIN_COST.get(_quote, 0.5)
-                if size < min_size or size * current_price < costmin:
+                min_size = self.sizer.min_order_size(self.asset)
+                costmin = self.sizer.min_cost(self.asset)
+                if (min_size is None or costmin is None
+                        or size < min_size or size * current_price < costmin):
                     size = 0.0
+            if size > 0 and decision_cost_usd:
+                expected = self._expected_move_pct(signal, current_price)
+                notional = size * current_price
+                profit = None if expected is None else notional * (expected / 100.0)
+                factor = self.ai_cost_size_factor(profit, decision_cost_usd)
+                if factor < 1.0:
+                    self._last_ai_cost_scale = {
+                        "expected_profit_usd": profit,
+                        "decision_cost_usd": float(decision_cost_usd),
+                        "factor": factor,
+                    }
+                if factor <= 0.0:
+                    size = 0.0
+                elif factor < 1.0:
+                    size *= factor
+                    if (min_size is None or costmin is None
+                            or size < min_size or size * current_price < costmin):
+                        size = 0.0
             if size > 0:
                 cost = size * current_price
                 # Update position (average in)
@@ -2146,15 +2311,21 @@ class HydraEngine:
                 return trade
 
         elif signal.action == SignalAction.SELL and self.position.size > 0:
+            # 0 means do not send. A partial penalty still full-closes.
+            # Halt flatten and the trend flatten are exempt: the rules
+            # stack can zero the multiplier on an exit the rail already chose.
+            if effective_mult <= 0 and not is_protected_flatten_reason(signal.reason):
+                return None
             # PR-A / A2: exits ignore min_confidence. Kelly sizes entries only.
             # Soft DEFENSIVE/GRID SELL signals (conf 0.50–0.64) must still
             # flatten inventory — reusing the entry floor trapped longs in
             # TREND_DOWN (audit: 200+ dead SELLs / SOL-year).
             # Full-close only (Fix 6): spot-only half-exit does not reduce risk
             # proportionally; it delays the exit to a worse price.
-            base_asset = self.asset.split("/")[0] if "/" in self.asset else self.asset
-            min_size = self.sizer.MIN_ORDER_SIZE.get(base_asset, 0.02)
-            if self.position.size < min_size:
+            min_size = self.sizer.min_order_size(self.asset)
+            if min_size is None:
+                min_size = 0.0
+            if min_size > 0 and self.position.size < min_size:
                 # PR-C / C4: write off unsellable dust instead of leaving a
                 # permanent [0, ordermin) bag that blocks state forever.
                 written = self.write_off_dust(reason="unsellable_below_ordermin")
@@ -2228,7 +2399,7 @@ class HydraEngine:
             reason: Human-readable reason string
             strategy: Strategy name for logging
             size_multiplier: Brain-derived sizing multiplier (default 1.0).
-                Raw pass-through below 1.0; exponential above 1.0 (cap 2.0).
+                Pass-through, capped at 1.5. Non-finite or negative sends nothing.
 
         Returns:
             Trade if executed, None otherwise
@@ -2422,7 +2593,11 @@ class HydraEngine:
         ``fill_price``. Used for both full FILLED and partial events so
         avg_entry / balance match Kraken truth (not candle close).
         Returns True if true-up applied, False if skipped (no snapshot).
+        An unknown side returns False before any restore.
         """
+        side_u = (side or "").strip().upper()
+        if side_u not in ("BUY", "SELL"):
+            return False
         if amount <= 0 or fill_price <= 0:
             return False
         if pre_trade_snapshot is None:
@@ -2432,12 +2607,10 @@ class HydraEngine:
             sig_strategy = Strategy(strategy)
         except ValueError:
             sig_strategy = Strategy.MOMENTUM
-        if side.upper() == "BUY":
+        if side_u == "BUY":
             self._apply_buy_fill(amount, fill_price, reason, sig_strategy, confidence)
-        elif side.upper() == "SELL":
-            self._apply_sell_fill(amount, fill_price, reason, sig_strategy, confidence)
         else:
-            return False
+            self._apply_sell_fill(amount, fill_price, reason, sig_strategy, confidence)
         return True
 
     def write_off_dust(self, reason: str = "dust_write_off") -> float:
@@ -2445,15 +2618,16 @@ class HydraEngine:
 
         Returns the written-off size (0 if nothing done).
         """
-        base_asset = self.asset.split("/")[0] if "/" in self.asset else self.asset
-        min_size = self.sizer.MIN_ORDER_SIZE.get(base_asset, 0.02)
+        min_size = self.sizer.min_order_size(self.asset)
         size = self.position.size
         if size <= 0:
             return 0.0
-        if size >= min_size:
+        if min_size is None or size >= min_size:
             return 0.0
         # Anything below ordermin is unsellable on Kraken — clear books.
-        written = size
+        return self._book_write_off(size)
+
+    def _book_write_off(self, size: float) -> float:
         leftover = float(self.position.realized_pnl or 0.0)
         self.position.size = 0.0
         self.position.avg_entry = 0.0
@@ -2471,7 +2645,19 @@ class HydraEngine:
                 self.loss_count += 1
                 self.gross_loss += abs(leftover)
         self.position.realized_pnl = 0.0
-        return written
+        return size
+
+    def write_off_position(self, reason: str = "exchange_balance_below_ordermin") -> float:
+        """Zero the whole book when the exchange gross base is unsellable.
+
+        `write_off_dust` only clears a size below ordermin. This clears a
+        larger engine book after the caller has checked gross and staked.
+        """
+        del reason
+        size = self.position.size
+        if size <= 0:
+            return 0.0
+        return self._book_write_off(size)
 
     def reconcile_partial_fill(
         self,
@@ -2586,8 +2772,9 @@ class HydraEngine:
         revenue = amount * price
         profit = (price - self.position.avg_entry) * amount
         entry_params = self.position.params_at_entry
-        base_asset = self.asset.split("/")[0] if "/" in self.asset else self.asset
-        min_size = self.sizer.MIN_ORDER_SIZE.get(base_asset, 0.02)
+        min_size = self.sizer.min_order_size(self.asset)
+        if min_size is None:
+            min_size = 0.0
         self.balance += revenue
         self.position.size -= amount
         self.position.realized_pnl += profit
