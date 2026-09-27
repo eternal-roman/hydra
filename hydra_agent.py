@@ -21,6 +21,7 @@ Usage:
 import copy
 import json
 import math
+import threading
 import time
 import sys
 import os
@@ -217,6 +218,15 @@ def _is_halt_flatten(state: dict) -> bool:
         str(sig.get("action") or "") == "SELL"
         and str(sig.get("reason") or "").startswith("HALT FLATTEN")
     )
+
+
+class _BrainPublish:
+    """One in-flight deliberation. The tick marks it abandoned on timeout."""
+
+    __slots__ = ("abandoned",)
+
+    def __init__(self) -> None:
+        self.abandoned = False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2014,15 +2024,20 @@ class HydraAgent:
                     # The pool is not a context manager: its exit waits for
                     # every worker, which would ignore the timeout.
                     snapshots = {}
+                    publishes = {}
                     for pair, state in brain_pairs:
                         try:
                             snapshots[pair] = copy.deepcopy(state)
                         except Exception:
                             snapshots[pair] = state
+                        publishes[pair] = _BrainPublish()
                     executor = ThreadPoolExecutor(max_workers=len(brain_pairs))
                     try:
                         futures = {
-                            executor.submit(self._apply_brain, pair, state, engine_states): pair
+                            executor.submit(
+                                self._apply_brain, pair, state, engine_states,
+                                publishes[pair],
+                            ): pair
                             for pair, state in brain_pairs
                         }
                         done_pairs = set()
@@ -2039,9 +2054,21 @@ class HydraAgent:
                                     )
                         except TimeoutError:
                             print("  [WARN] Brain timed out — remaining pairs use guardrails only")
+                            for future, pair in futures.items():
+                                if pair in done_pairs or not future.done():
+                                    continue
+                                done_pairs.add(pair)
+                                try:
+                                    all_states[pair] = future.result()
+                                except Exception as e:
+                                    print(f"  [WARN] Brain failed for {pair}: {e}")
+                                    self._brain_fallback_state(
+                                        pair, snapshots, engine_states, all_states,
+                                    )
                             for pair, _state in brain_pairs:
                                 if pair in done_pairs:
                                     continue
+                                self._abandon_brain_publish(pair, publishes[pair])
                                 self._brain_fallback_state(
                                     pair, snapshots, engine_states, all_states,
                                 )
@@ -2424,7 +2451,60 @@ class HydraAgent:
             return
         engine_states[pair] = restored
         all_states[pair] = restored
-        self._apply_quant_guardrails(pair, restored)
+        try:
+            self._apply_quant_guardrails(pair, restored)
+        except Exception as e:
+            print(f"  [WARN] Guardrails failed for {pair} after brain miss: "
+                  f"{type(e).__name__}: {e}")
+
+    def _brain_lock(self) -> threading.Lock:
+        lock = getattr(self, "_brain_publish_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._brain_publish_lock = lock
+        return lock
+
+    def _abandon_brain_publish(self, pair: str, publish: _BrainPublish) -> None:
+        """Drop a decision the tick already stopped waiting for.
+
+        The worker may finish later. It must not write the replay cache,
+        and a write that won the race is removed here.
+        """
+        with self._brain_lock():
+            publish.abandoned = True
+            owners = getattr(self, "_brain_cache_owner", None)
+            if owners is not None and owners.get(pair) is publish:
+                self._last_ai_decision.pop(pair, None)
+                owners.pop(pair, None)
+            ts_owners = getattr(self, "_brain_ts_owner", None)
+            if ts_owners is not None and ts_owners.get(pair) is publish:
+                self._last_brain_candle_ts.pop(pair, None)
+                ts_owners.pop(pair, None)
+
+    def _publish_brain_decision(
+        self, pair: str, decision: dict, candle_ts, publish,
+    ) -> None:
+        """Cache the finished decision unless this tick already moved on."""
+        with self._brain_lock():
+            if publish is not None and publish.abandoned:
+                return
+            self._last_ai_decision[pair] = dict(decision)
+            if publish is not None:
+                owners = getattr(self, "_brain_cache_owner", None)
+                if owners is None:
+                    owners = {}
+                    self._brain_cache_owner = owners
+                owners[pair] = publish
+            if candle_ts is None:
+                return
+            self._last_brain_candle_ts[pair] = candle_ts
+            if publish is None:
+                return
+            ts_owners = getattr(self, "_brain_ts_owner", None)
+            if ts_owners is None:
+                ts_owners = {}
+                self._brain_ts_owner = ts_owners
+            ts_owners[pair] = publish
 
     def _apply_quant_guardrails(self, pair: str, state: dict, *, keep_brain: bool = False) -> dict:
         """Apply R1-R11 + QFE with NO brain. Mutates state in place.
@@ -2595,7 +2675,8 @@ class HydraAgent:
             }
         return state
 
-    def _apply_brain(self, pair: str, state: dict, all_engine_states: dict) -> dict:
+    def _apply_brain(self, pair: str, state: dict, all_engine_states: dict,
+                     publish: Optional[_BrainPublish] = None) -> dict:
         """Phase 2: Run brain with full cross-pair context. Mutates state in place."""
         if not self.brain or state["signal"]["action"] == "HOLD":
             # Inject cached decision for dashboard persistence (brain didn't fire)
@@ -2604,6 +2685,8 @@ class HydraAgent:
                 state["ai_decision"] = cached
             return state
 
+        replay_candle = None
+        brain_finished = False
         # Pre-brain filter: skip brain for BUY signals that can't produce tradeable order size
         if state["signal"]["action"] == "BUY":
             engine = self.engines[pair]
@@ -2804,14 +2887,6 @@ class HydraAgent:
                 # that didn't re-deliberate, current_tick > this value.
                 "generated_at_tick": state.get("tick", 0),
             }
-            # Cache for dashboard persistence on ticks where brain doesn't fire
-            self._last_ai_decision[pair] = state["ai_decision"]
-
-            # Mark candle as evaluated only when brain ran LLM calls (not fallback).
-            # On fallback (budget exceeded, API down), leave timestamp unchanged so
-            # the next tick retries this candle.
-            if not decision.fallback:
-                self._last_brain_candle_ts[pair] = current_candle_ts
 
             # Apply AI decision to engine state
             # Note: engine ran with generate_only=True, so no trade was executed yet.
@@ -2939,6 +3014,8 @@ class HydraAgent:
             state["ai_decision"]["qfe_active"] = qfe_active
             state["ai_decision"]["qfe_reason"] = qfe_reason
             state["ai_decision"]["qfe_trigger_values"] = qfe_trigger_values
+            replay_candle = None if decision.fallback else current_candle_ts
+            brain_finished = True
         except Exception as e:
             state["ai_decision"] = {"action": "FALLBACK", "error": str(e), "fallback": True}
             # Do NOT update _last_brain_candle_ts — allow retry on next tick.
@@ -2949,6 +3026,13 @@ class HydraAgent:
                 print(f"  [QUANT RULES] {pair}: guardrails after brain error failed "
                       f"({type(ge).__name__}: {ge})")
 
+        # Cache only a finished decision. A timeout sets publish.abandoned
+        # first, so a late return cannot become the next tick's order.
+        # Fallback leaves the candle unmarked and the next tick retries.
+        if brain_finished:
+            self._publish_brain_decision(
+                pair, state["ai_decision"], replay_candle, publish,
+            )
         return state
 
     def _build_triangle_context(self, current_pair: str, all_states: dict) -> dict:

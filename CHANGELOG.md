@@ -10,8 +10,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **A buy cancel no longer clears a real 15% halt.** The halt is dropped on cancel only when the pre-buy book was under 15% and the unfilled buy is what armed it. A real breach stays until the operator reset, including after the account recovers.
-- **A brain timeout no longer waits out the call.** The tick keeps the pre-brain state and runs the deterministic rules for any pair that did not finish. The thread pool does not block shutdown on the workers still running.
+- **A buy cancel no longer clears a real 15% halt.** The halt is dropped on cancel only when the pre-buy book was under 15% and the unfilled buy is what armed it. That mark is saved on the engine snapshot. A restarted process marks it again while the live book is still past 15%. A real breach stays until the operator reset, including after the account recovers.
+- **A brain timeout no longer waits out the call.** The tick keeps the pre-brain state and runs the deterministic rules for any pair that did not finish. A call that returns after that does not become the next tick's cached decision. The thread pool does not block shutdown on the workers still running.
 
 ---
 
