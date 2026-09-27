@@ -35,7 +35,7 @@ scaling:
   # raw feature values, frozen at candle open. z = clip(x-med / (c*1.4826*MAD)).
   window_candles: 500
   clip_mads: 3.0
-  min_history: 30     # feature contributes 0 until this many samples seen
+  min_history: 1      # robust MAD once a scale exists; the first print is never withheld
 
 atr:
   period: 14

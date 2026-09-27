@@ -2327,8 +2327,12 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                       const featBits = ok && hb.features && typeof hb.features === "object"
                         ? Object.entries(hb.features).slice(0, 5).map(([k, v]) => {
                             const z = v && typeof v === "object" ? v.z : v;
-                            if (z == null || Number.isNaN(Number(z))) return null;
-                            const n = Number(z);
+                            const raw = v && typeof v === "object" ? v.raw : null;
+                            const source = (z != null && !Number.isNaN(Number(z)))
+                              ? Number(z)
+                              : (raw != null && !Number.isNaN(Number(raw)) ? Number(raw) : null);
+                            if (source == null) return null;
+                            const n = source;
                             const c = n > 0.15 ? COLORS.buy : n < -0.15 ? COLORS.sell : COLORS.text;
                             return { k, n, c };
                           }).filter(Boolean)

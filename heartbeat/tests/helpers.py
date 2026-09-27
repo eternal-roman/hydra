@@ -29,7 +29,7 @@ def base_config(**over) -> dict:
                       "default_heartbeats_per_candle": 60},
         "features": {"enabled_tiers": [0], "overrides": {}, "weights": {},
                      "default_weight": 0.5},
-        "scaling": {"window_candles": 500, "clip_mads": 3.0, "min_history": 30},
+        "scaling": {"window_candles": 500, "clip_mads": 3.0, "min_history": 1},
         "atr": {"period": 14, "outlier_mult": 3.0},
         "vol_z": {"window": 96},
         "labeler": {"ma_period": 9, "swing_window": 2, "down_leg_lookback": 30,

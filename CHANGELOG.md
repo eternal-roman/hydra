@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Heartbeat scores the first print.** The robust scaler used to return no z-score until 30 closed bars, and an OHLC bootstrap has no aggressor volume, so live order-flow features stayed blank while the dashboard hid them. The first print is now the score. Robust scaling starts once a scale exists.
+
+---
+
 ## [2.34.0] — 2026-09-27
 
 ### Changed
