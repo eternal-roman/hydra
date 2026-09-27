@@ -237,18 +237,42 @@ def test_remainder_drops_phantom_coins_and_keeps_locked_ones():
     assert eng.position.size == pytest.approx(0.7)
 
 
-def test_unfilled_buy_halt_clears_when_the_book_is_restored():
+def test_unfilled_buy_halt_clears_only_when_the_buy_caused_it():
     eng = _up()
     eng.halted = True
     eng.halt_reason = "CIRCUIT BREAKER: drawdown 20.0% >= 15.0% limit"
+    # A real halt, with no unfilled-buy mark, stays after the book recovers.
+    assert eng.release_unfilled_buy_halt() is False
+    assert eng.halted is True
+    eng._halt_from_unfilled_buy = True
     assert eng.release_unfilled_buy_halt() is True
     assert eng.halted is False
     eng.balance = 1.0
     eng.peak_equity = 100_000.0
     eng.halted = True
+    eng._halt_from_unfilled_buy = True
     eng.halt_reason = "CIRCUIT BREAKER: drawdown 99.0% >= 15.0% limit"
     assert eng.release_unfilled_buy_halt() is False
     assert eng.halted is True
+
+
+def test_real_breach_of_the_pre_buy_book_is_not_marked_phantom():
+    eng = _up()
+    eng.balance = 1.0
+    eng.peak_equity = 100_000.0
+    snap = eng.snapshot_position()
+    eng.halted = True
+    eng.halt_reason = "CIRCUIT BREAKER: drawdown 99.0% >= 15.0% limit"
+    dd = eng.pretrade_drawdown_pct(snap)
+    assert dd is not None and dd >= 15.0
+    eng.note_unfilled_buy_halt(False, dd)
+    assert eng._halt_from_unfilled_buy is False
+    flat = _up()
+    flat_snap = flat.snapshot_position()
+    flat.halted = True
+    flat.halt_reason = "CIRCUIT BREAKER: drawdown 20.0% >= 15.0% limit"
+    flat.note_unfilled_buy_halt(False, flat.pretrade_drawdown_pct(flat_snap))
+    assert flat._halt_from_unfilled_buy is True
 
 
 def test_nonfinite_basis_is_missing():

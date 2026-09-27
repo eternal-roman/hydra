@@ -1942,13 +1942,49 @@ class HydraEngine:
         """
         if not self.halted:
             return False
+        # A real breach stays sticky until the operator reset, even after
+        # the book recovers. Only a halt that was armed by this unfilled
+        # buy (the pre-buy book was under 15%) may clear on cancel.
+        if not getattr(self, "_halt_from_unfilled_buy", False):
+            return False
         if not str(self.halt_reason).startswith("CIRCUIT BREAKER:"):
             return False
         if self.current_drawdown_pct() >= self.CIRCUIT_BREAKER_PCT:
             return False
         self.halted = False
         self.halt_reason = ""
+        self._halt_from_unfilled_buy = False
         return True
+
+    def note_unfilled_buy_halt(self, was_halted: bool, pretrade_dd: Optional[float]) -> None:
+        """Remember whether this halt is the optimistic buy, not the pre-buy book.
+
+        `pretrade_dd` is the drawdown of the buy's pre-trade snapshot at the
+        current price. None means there is no resting buy to blame.
+        """
+        if not self.halted:
+            self._halt_from_unfilled_buy = False
+            return
+        phantom = (
+            pretrade_dd is not None
+            and pretrade_dd < self.CIRCUIT_BREAKER_PCT
+        )
+        if not was_halted:
+            self._halt_from_unfilled_buy = phantom
+        elif not phantom:
+            self._halt_from_unfilled_buy = False
+
+    def pretrade_drawdown_pct(self, snap: Dict[str, Any]) -> Optional[float]:
+        """Drawdown of a pre-trade snapshot marked at the current price."""
+        try:
+            price = self.prices[-1] if self.prices else 0.0
+            peak = float(snap["peak_equity"])
+            equity = float(snap["balance"]) + float(snap["position_size"]) * price
+        except (KeyError, TypeError, ValueError):
+            return None
+        if price <= 0 or peak <= 0 or not math.isfinite(equity):
+            return None
+        return (peak - equity) / peak * 100.0
 
     def set_base_remainder(self, gross_base: Optional[float], sold_amount: float) -> None:
         """Keep only coins still owned after an optimistic sell of `sold_amount`.

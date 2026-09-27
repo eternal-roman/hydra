@@ -18,6 +18,7 @@ Usage:
     python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD --interval 60   # legacy SOL triangle
 """
 
+import copy
 import json
 import math
 import time
@@ -2007,7 +2008,19 @@ class HydraAgent:
                         all_states[pair] = state
 
                 if brain_pairs:
-                    with ThreadPoolExecutor(max_workers=len(brain_pairs)) as executor:
+                    # Snapshots are the pre-brain states. A timed-out call
+                    # keeps mutating the dict it was given; the tick must
+                    # trade the snapshot, not that half-written object.
+                    # The pool is not a context manager: its exit waits for
+                    # every worker, which would ignore the timeout.
+                    snapshots = {}
+                    for pair, state in brain_pairs:
+                        try:
+                            snapshots[pair] = copy.deepcopy(state)
+                        except Exception:
+                            snapshots[pair] = state
+                    executor = ThreadPoolExecutor(max_workers=len(brain_pairs))
+                    try:
                         futures = {
                             executor.submit(self._apply_brain, pair, state, engine_states): pair
                             for pair, state in brain_pairs
@@ -2021,15 +2034,19 @@ class HydraAgent:
                                     all_states[pair] = future.result()
                                 except Exception as e:
                                     print(f"  [WARN] Brain failed for {pair}: {e}")
-                                    all_states[pair] = engine_states[pair]
-                                    self._apply_quant_guardrails(pair, all_states[pair])
+                                    self._brain_fallback_state(
+                                        pair, snapshots, engine_states, all_states,
+                                    )
                         except TimeoutError:
                             print("  [WARN] Brain timed out — remaining pairs use guardrails only")
-                        for pair, _state in brain_pairs:
-                            if pair in done_pairs:
-                                continue
-                            all_states[pair] = engine_states.get(pair) or _state
-                            self._apply_quant_guardrails(pair, all_states[pair])
+                            for pair, _state in brain_pairs:
+                                if pair in done_pairs:
+                                    continue
+                                self._brain_fallback_state(
+                                    pair, snapshots, engine_states, all_states,
+                                )
+                    finally:
+                        executor.shutdown(wait=False, cancel_futures=True)
 
                 self._arm_portfolio_before_orders()
 
@@ -2386,8 +2403,28 @@ class HydraAgent:
         # Always generate_only so coordinator can mutate the signal before
         # phase-2.5 execute_signal. Pre-trade snapshots are taken in phase 2.5
         # immediately before execute (not here).
+        was_halted = bool(engine.halted)
         state = engine.tick(generate_only=True)
+        self._note_unfilled_buy_halt(pair, engine, was_halted)
         return state
+
+    def _note_unfilled_buy_halt(self, pair: str, engine, was_halted: bool) -> None:
+        """Mark a new halt that the pre-buy book does not explain."""
+        dd = None
+        resting = self._resting_entry(pair)
+        if resting and str(resting.get("side") or "").upper() == "BUY":
+            snap = resting.get("pre_trade_snapshot")
+            if isinstance(snap, dict):
+                dd = engine.pretrade_drawdown_pct(snap)
+        engine.note_unfilled_buy_halt(was_halted, dd)
+
+    def _brain_fallback_state(self, pair, snapshots, engine_states, all_states) -> None:
+        restored = snapshots.get(pair) or engine_states.get(pair)
+        if restored is None:
+            return
+        engine_states[pair] = restored
+        all_states[pair] = restored
+        self._apply_quant_guardrails(pair, restored)
 
     def _apply_quant_guardrails(self, pair: str, state: dict, *, keep_brain: bool = False) -> dict:
         """Apply R1-R11 + QFE with NO brain. Mutates state in place.
@@ -5436,7 +5473,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.34.2",
+            "version": "2.34.3",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,
