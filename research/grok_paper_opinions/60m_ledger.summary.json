@@ -1,0 +1,33 @@
+{
+  "interval_min": 60,
+  "decision_source": "session ledger opinion, one hour at a time",
+  "score_start": 1788742800.0,
+  "score_end": 1790449200.0,
+  "bars": 474,
+  "opinion_rows": 1422,
+  "before_usd": 20000.0,
+  "after_usd": 20000.0,
+  "net_usd": 0.0,
+  "accumulated_roi": 0.0,
+  "realized_net_usd": 0,
+  "fees_usd": 0,
+  "actions": {
+    "HOLD": 1420,
+    "BUY": 2
+  },
+  "regimes": {
+    "RANGING": 830,
+    "TREND_UP": 246,
+    "TREND_DOWN": 122,
+    "VOLATILE": 224
+  },
+  "outcomes": {
+    "no_order": 1420,
+    "blocked": 2
+  },
+  "closed_trades": [],
+  "open_marks": [],
+  "history": "C:\\Users\\elamj\\Dev\\Hydra\\research\\grok_paper_opinions\\60m_ledger.jsonl",
+  "warmup_bars": 240,
+  "skip_last_bars": 6
+}
