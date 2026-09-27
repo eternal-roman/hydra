@@ -2027,6 +2027,7 @@ class HydraAgent:
                             reason=sig.get("reason", ""),
                             strategy=state.get("strategy", "MOMENTUM"),
                             size_multiplier=_final_mult,
+                            decision_cost_usd=float(ai.get("decision_cost_usd") or 0.0),
                         )
                     if trade is None and sig.get("action") in ("BUY", "SELL") and ai:
                         print(f"  [BRAIN] {pair}: {sig['action']} signal did not execute "
@@ -2652,6 +2653,7 @@ class HydraAgent:
                 "confidence_adj": decision.confidence_adj,
                 # v2.14: three-layer size disclosure for auditability.
                 "size_multiplier": final_size_multiplier,
+                "decision_cost_usd": round(float(getattr(decision, "decision_cost_usd", 0.0) or 0.0), 6),
                 "size_multiplier_brain": brain_size,           # quant × rm
                 "size_multiplier_rules": rules_size_mult,      # R1-R10 stack
                 # v2.14.1: unclamped product and clamp-applied flag so the
@@ -5238,7 +5240,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.33.3",
+            "version": "2.34.0",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

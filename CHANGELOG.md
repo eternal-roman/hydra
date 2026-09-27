@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.34.0] — 2026-09-27
+
+### Changed
+
+- **Python floor is 3.11.** The 3.10 engine job is gone from CI and from branch protection. `websockets` is `>=17.1`. Heartbeat and s3bounce declare the same floor.
+- **Anthropic SDK `>=1.6,<2`.** Companion Anthropic calls omit temperature. Opus 5.5 rejects it. The xAI path still sends temperature.
+- **Dashboard eslint 10.11.0.**
+- **Models.** Quant, risk manager, and Athena's deep intents use `claude-opus-5-5` at effort `max`. The strategist and the trading companion routes use `grok-4.7` at `reasoning_effort` `xhigh`. Greetings and banter stay on `grok-4.3`. Output budgets floor at 8192 tokens so thinking does not eat the answer. The companion panel waits 120 seconds.
+- **Brain budget is $50/day**, both the disclosure line and the hard stop. Companion budgets stay separate.
+- **BUY size covers the decision.** Expected dollar profit is the position cap times the strategy's expected move. If that profit does not cover the API cost of the deliberation, the buy is skipped. If it covers part of the cost, size is scaled by the share that remains. Sells are not scaled. A missing expected move fails open, the same way the friction gate does.
+
+---
+
 ## [2.33.3] — 2026-09-26
 
 ### Added

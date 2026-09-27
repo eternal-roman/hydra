@@ -1882,6 +1882,30 @@ class HydraEngine:
             )
         return signal
 
+    @staticmethod
+    def ai_cost_size_factor(expected_profit_usd, decision_cost_usd) -> float:
+        """Scale a BUY by whether its expected dollars cover this decision.
+
+        1.0 when the decision was free or the expected profit is unknown
+        (same fail-open as the friction gate). 0.0 when the profit does not
+        cover the cost. Otherwise the fraction of profit left after the cost.
+        """
+        try:
+            cost = float(decision_cost_usd or 0.0)
+        except (TypeError, ValueError):
+            return 1.0
+        if cost <= 0.0 or not math.isfinite(cost):
+            return 1.0
+        if expected_profit_usd is None:
+            return 1.0
+        try:
+            profit = float(expected_profit_usd)
+        except (TypeError, ValueError):
+            return 1.0
+        if not math.isfinite(profit) or profit <= cost:
+            return 0.0
+        return (profit - cost) / profit
+
     def _expected_move_pct(self, signal: Signal, current_price: float) -> Optional[float]:
         """Strategy-implied expected gross move for a BUY, in percent.
 
@@ -1915,7 +1939,8 @@ class HydraEngine:
             return 2.0 * atr_pct
         return None
 
-    def _maybe_execute(self, signal: Signal, size_multiplier: float = 1.0) -> Optional[Trade]:
+    def _maybe_execute(self, signal: Signal, size_multiplier: float = 1.0,
+                       decision_cost_usd: float = 0.0) -> Optional[Trade]:
         """Execute trade if signal is actionable.
 
         Halt policy (PR-A / exit guarantees):
@@ -1963,6 +1988,24 @@ class HydraEngine:
         if not math.isfinite(current_price) or current_price <= 0:
             return None
         effective_mult = self._apply_size_multiplier(size_multiplier)
+        # BUY only. The $50/day budget is the cap; this haircut is the cost
+        # of the decision in front of us versus the dollars the trade can make.
+        # SELLs are not scaled — an exit does not have to earn the analysis back.
+        if signal.action == SignalAction.BUY and decision_cost_usd:
+            expected = self._expected_move_pct(signal, current_price)
+            notional = (
+                self.balance * self.sizer.max_position_pct
+                * min(max(effective_mult, 0.0), 1.0)
+            )
+            profit = None if expected is None else notional * (expected / 100.0)
+            factor = self.ai_cost_size_factor(profit, decision_cost_usd)
+            if factor < 1.0:
+                self._last_ai_cost_scale = {
+                    "expected_profit_usd": profit,
+                    "decision_cost_usd": float(decision_cost_usd),
+                    "factor": factor,
+                }
+            effective_mult *= factor
 
         # Friction expectancy gate (v2.27, entries only): a BUY whose
         # strategy-implied expected move cannot clear a multiple of the
@@ -2148,7 +2191,8 @@ class HydraEngine:
 
     def execute_signal(self, action: str, confidence: float, reason: str = "",
                         strategy: str = "MOMENTUM",
-                        size_multiplier: float = 1.0) -> Optional[Trade]:
+                        size_multiplier: float = 1.0,
+                        decision_cost_usd: float = 0.0) -> Optional[Trade]:
         """Execute a trade based on an externally-provided signal.
 
         Use after tick(generate_only=True) to execute with a (possibly modified)
@@ -2199,7 +2243,10 @@ class HydraEngine:
                 # v2.27.6: fail-closed on BUY when history insufficient for rails.
                 # SELL with open inventory still proceeds via _maybe_execute.
                 return None
-        return self._maybe_execute(signal, size_multiplier=size_multiplier)
+        return self._maybe_execute(
+            signal, size_multiplier=size_multiplier,
+            decision_cost_usd=decision_cost_usd,
+        )
 
     def snapshot_params(self) -> Dict[str, float]:
         """Return a snapshot of the current tunable parameters."""
