@@ -1466,7 +1466,11 @@ class HydraEngine:
 
     def ingest_candle(self, raw: Dict[str, Any]) -> None:
         """Add a candle from kraken ohlc JSON output. Deduplicates by timestamp."""
-        has_timestamp = "timestamp" in raw
+        # Timestamp 0 is a real epoch, not a missing field. `or time.time()`
+        # turned that first bar into "now", and every later historical bar
+        # then looked older and was dropped.
+        ts_raw = raw.get("timestamp") if isinstance(raw, dict) else None
+        has_timestamp = ts_raw is not None and ts_raw != ""
         try:
             candle = Candle(
                 open=float(raw.get("open") or 0),
@@ -1474,7 +1478,7 @@ class HydraEngine:
                 low=float(raw.get("low") or 0),
                 close=float(raw.get("close") or 0),
                 volume=float(raw.get("volume") or 0),
-                timestamp=float(raw.get("timestamp") or time.time()),
+                timestamp=float(ts_raw) if has_timestamp else time.time(),
             )
         except (TypeError, ValueError):
             return  # Malformed candle data — skip silently
