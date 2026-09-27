@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Asset-agnostic order-flow posterior P(up) from trade tape — confirmation classifier, no order path."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "HYDRA / eternal-roman" }]
 keywords = ["order-flow", "posterior", "crypto", "equities", "indicator"]
 classifiers = [
@@ -16,7 +16,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Office/Business :: Financial :: Investment",
@@ -28,17 +27,17 @@ classifiers = [
 dependencies = [
     "PyYAML>=6",
     "requests>=2.31",
-    "websockets>=12",
+    "websockets>=17.1",
     "pyarrow>=14",
 ]
 
 [project.optional-dependencies]
 # Live Kraken feed (also in core for monorepo compat today)
-kraken = ["requests>=2.31", "websockets>=12"]
+kraken = ["requests>=2.31", "websockets>=17.1"]
 # Parquet tape store (also in core for monorepo compat today)
 parquet = ["pyarrow>=14"]
 dev = ["pytest>=8"]
-all = ["requests>=2.31", "websockets>=12", "pyarrow>=14"]
+all = ["requests>=2.31", "websockets>=17.1", "pyarrow>=14"]
 
 [project.urls]
 Homepage = "https://github.com/eternal-roman/Hydra/tree/main/heartbeat"

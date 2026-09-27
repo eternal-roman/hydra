@@ -62,10 +62,10 @@ PYTHONPATH=src python -m heartbeat.cli run-dataset tests/fixtures/sample_trades.
 
 | Component | Python | Required deps | Optional extras |
 |---|---|---|---|
-| Core indicator (`run_dataset`, dataset IO) | ≥3.10 | **PyYAML** | — |
-| Parquet tape store | ≥3.10 | pyarrow (core today) | `[parquet]` |
-| Live Kraken feed (`backfill` / `run`) | ≥3.10 | requests, websockets (core today) | `[kraken]` |
-| Tests | ≥3.10 | pytest | `[dev]` |
+| Core indicator (`run_dataset`, dataset IO) | ≥3.11 | **PyYAML** | — |
+| Parquet tape store | ≥3.11 | pyarrow (core today) | `[parquet]` |
+| Live Kraken feed (`backfill` / `run`) | ≥3.11 | requests, websockets (core today) | `[kraken]` |
+| Tests | ≥3.11 | pytest | `[dev]` |
 
 Core currently pins PyYAML + requests + websockets + pyarrow so the full CLI
 and Hydra monorepo workflows work out of the box. Extras document the
