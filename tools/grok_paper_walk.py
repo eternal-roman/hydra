@@ -226,6 +226,7 @@ def walk_book(
     fill_model: str = "realistic",
     hold_through: Optional[bool] = None,
     brain: Optional[HydraBrain] = None,
+    on_opinion: Optional[Callable[[float, Dict[str, dict], Dict[str, dict]], None]] = None,
 ) -> dict:
     """Walk scored hours. Missing Grok seats stop the walk before that order.
 
@@ -356,6 +357,8 @@ def walk_book(
             raw[pair] = state
             view[pair] = _packet(eng, state, n, len(decision_ts))
         chosen = opinions(ts, raw, view)
+        if chosen is not None and on_opinion is not None:
+            on_opinion(ts, view, chosen)
         if chosen is None:
             return {
                 "status": "need_decision",
@@ -378,6 +381,7 @@ def walk_book(
                 })
                 continue
             snap = eng.snapshot_position()
+            eng._last_friction_skip = None
             trade = eng.execute_signal(
                 action,
                 float(order.get("confidence") or 0.0),
@@ -387,10 +391,17 @@ def walk_book(
                 decision_cost_usd=0.0,
             )
             if trade is None:
+                skip = getattr(eng, "_last_friction_skip", None) or {}
+                if skip:
+                    why = (
+                        f"friction expected {skip.get('expected_move_pct')}% "
+                        f"< hurdle {skip.get('hurdle_pct')}%"
+                    )
+                else:
+                    why = "execute_signal returned None (rails, confidence, or size)"
                 intents.append({
                     "pair": pair, "decision_ts": ts, "action": action,
-                    "status": "blocked",
-                    "why": "execute_signal returned None (rails, confidence, or size)",
+                    "status": "blocked", "why": why,
                 })
                 continue
             if index[ts] + 1 >= len(stamps):

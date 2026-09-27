@@ -955,6 +955,68 @@ def apply_cycle(out_dir: Path, decisions_path: Path) -> dict:
     return out
 
 
+def ledger_cmd(out_dir: Path, history_path: Path, warmup_bars: int, skip_last: int) -> None:
+    """Record one opinion per pair per scored hour and the resulting book."""
+    from tools.grok_paper_ledger import ledger_opinion, summarize, write_history
+    from tools.grok_paper_walk import common_timestamps, walk_book
+
+    market = _load(out_dir / "market.json")
+    bars = {}
+    daily = {}
+    now = float(market["asof_unix"])
+    for pair in market["pairs_order"]:
+        done, _forming = completed_bars(market["pairs"][pair]["hourly"], now, HOURLY_S)
+        bars[pair] = done
+        daily[pair] = market["pairs"][pair]["daily"]
+    stamps = common_timestamps(bars)
+    if len(stamps) <= warmup_bars + skip_last + 2:
+        raise SystemExit(
+            f"need more than {warmup_bars + skip_last + 2} aligned hours, have {len(stamps)}"
+        )
+    score_start = stamps[warmup_bars]
+    score_end = stamps[-skip_last] if skip_last else stamps[-1] + HOURLY_S
+    opinions: List[dict] = []
+
+    def on_opinion(ts: float, view: dict, chosen: dict) -> None:
+        for pair, opinion in chosen.items():
+            opinions.append({
+                "ts": ts, "pair": pair, "view": view[pair], "opinion": opinion,
+            })
+
+    result = walk_book(
+        bars, daily, {}, float(market["nav"]), score_start, score_end,
+        decider=ledger_opinion, fill_model="realistic", on_opinion=on_opinion,
+    )
+    if result.get("status") != "complete":
+        raise SystemExit(f"ledger walk did not finish: {result.get('status')}")
+    outcomes = {
+        (float(item["decision_ts"]), item["pair"]): item
+        for item in result["intents"]
+    }
+    count = write_history(history_path, opinions, outcomes)
+    summary = summarize(result, opinions)
+    summary["history"] = str(history_path)
+    summary["warmup_bars"] = warmup_bars
+    summary["skip_last_bars"] = skip_last
+    summary_path = history_path.with_suffix(".summary.json")
+    _dump(summary_path, summary)
+    print(
+        f"opinions {count}  before {summary['before_usd']:.2f}  "
+        f"after {summary['after_usd']:.2f}  net {summary['net_usd']:+.2f}  "
+        f"roi {summary['accumulated_roi'] * 100:.3f}%"
+    )
+    print(f"actions {summary['actions']}")
+    print(f"outcomes {summary['outcomes']}")
+    print(f"closed {len(summary['closed_trades'])}  open {len(summary['open_marks'])}")
+    for trade in summary["closed_trades"]:
+        print(
+            f"  {trade['pair']} net {trade['net_usd']:+.2f}  "
+            f"roi {trade['roi_on_notional'] * 100:.3f}%"
+        )
+    print(f"wrote {history_path}")
+    print(f"wrote {summary_path}")
+
+
 def walk_cmd(out_dir: Path, decisions_path: Path, score_hours: int, skip_last_hours: int) -> None:
     """One causal pass. Stops when the next scored hour has no Grok seats."""
     from tools.grok_paper_walk import common_timestamps, score_window, walk_book
@@ -1018,6 +1080,14 @@ def main(argv: Sequence[str]) -> None:
     walk.add_argument("--decisions", default="")
     walk.add_argument("--score-hours", type=int, default=24)
     walk.add_argument("--skip-last-hours", type=int, default=6)
+    ledger = sub.add_parser("ledger")
+    ledger.add_argument("--out", default=str(DEFAULT_OUT))
+    ledger.add_argument(
+        "--history",
+        default=str(ROOT / "research" / "grok_paper_opinions" / "60m_ledger.jsonl"),
+    )
+    ledger.add_argument("--warmup-bars", type=int, default=240)
+    ledger.add_argument("--skip-last", type=int, default=6)
     args = parser.parse_args(list(argv))
     if args.cmd == "self-check":
         self_check()
@@ -1025,6 +1095,11 @@ def main(argv: Sequence[str]) -> None:
     out_dir = Path(args.out)
     if args.cmd == "prepare":
         prepare(out_dir, float(args.nav))
+        return
+    if args.cmd == "ledger":
+        ledger_cmd(
+            out_dir, Path(args.history), int(args.warmup_bars), int(args.skip_last),
+        )
         return
     if args.cmd == "walk":
         decisions = Path(args.decisions) if args.decisions else out_dir / "walk_decisions.json"
