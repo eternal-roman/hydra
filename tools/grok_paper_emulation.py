@@ -186,8 +186,8 @@ def _ticker_row(ticker: dict) -> dict:
     """Accept KrakenCLI's flat bid/ask row or the v0.4.1 pair envelope.
 
     `kraken ticker` currently returns ``{PAIR: {bid_price, ask_price,
-    last_price}}``. KrakenCLI.ticker() only unwraps the legacy ``c``/``a``/``b``
-    shape, so the emulation reads the envelope itself.
+    last_price}}``. KrakenCLI.ticker() flattens that to ``bid``/``ask``; the
+    envelope branch still reads a raw payload directly.
     """
     if not isinstance(ticker, dict) or "error" in ticker:
         return {}
