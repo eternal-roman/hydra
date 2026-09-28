@@ -79,7 +79,7 @@ regression bug, not a style issue.
   (BTC/USD snap → BTC/USDC engine) even when `triangle` is None;
   mixed leftover quotes (ZEC/USD) stay exact — never a global
   quote flip that would invent ZEC/USDC.
-- **Version pin:** v2.34.3
+- **Version pin:** v2.34.4
 
 ## Defaults (inherited)
 

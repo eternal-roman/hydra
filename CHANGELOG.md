@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.34.4] — 2026-09-27
+
+### Fixed
+
+- **`KrakenCLI.ticker()` reads the pinned CLI's ticker.** kraken-cli v0.4.1 returns named fields per pair (`last_price`, `bid_price`, `ask_price`, ...), not the legacy `c`/`b`/`a` arrays, so `ticker()` returned the raw envelope with no bid or ask. It now returns the same flat row for both shapes and still passes errors and unknown payloads through. The live harness L1/L2 scenarios can read a price again. The live order path is unchanged: it prices from `TickerStream` only.
+
+---
+
 ## [2.34.3] — 2026-09-26
 
 ### Fixed
