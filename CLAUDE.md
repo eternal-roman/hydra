@@ -92,7 +92,9 @@ regression bug, not a style issue.
   (`order amend`/`batch`, `workspace`/`tape`/`lab`/`mcp`, …) live in the
   `KrakenCLI` docstring. v0.4.1 `ohlc` emits `{candles:[{time,open,...}],last,pair}`
   (object array, not the legacy pair-keyed list-of-lists) — `ohlc_paged`
-  accepts both. v0.4.1 WS **does not print** `{"channel":"heartbeat"}` on
+  accepts both. v0.4.1 `ticker` emits named fields per pair (`last_price`,
+  `bid_price`, `ask_price`, ...), not `c`/`b`/`a` arrays — `ticker()` flattens
+  both. v0.4.1 WS **does not print** `{"channel":"heartbeat"}` on
   stdout (swallowed at the JSON sink; `--monitor` health is stderr).
   ExecutionStream / BalanceStream therefore treat process+reader+snapshot
   as healthy; a 30s stdout-heartbeat timeout is public-stream only.

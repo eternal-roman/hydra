@@ -717,3 +717,56 @@ def run_tests():
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
+
+
+class TestTickerParsing:
+    """kraken-cli v0.4.1 emits named ticker fields (`last_price`, `bid_price`,
+    `ask_price`, ...) where the pre-v0.4 REST envelope used `c`/`b`/`a` arrays.
+    `ticker()` only unwrapped the arrays, so on the pinned CLI it returned the
+    raw pair envelope: no `bid`/`ask`, and the live harness L1/L2 scenarios
+    could not read a price."""
+
+    _NAMED = {
+        "XXBTZUSD": {
+            "ask_lot_volume": 1.0, "ask_price": 84394.8, "ask_whole_lot_volume": 1.0,
+            "bid_lot_volume": 1.0, "bid_price": 84394.7, "bid_whole_lot_volume": 1.0,
+            "high_24h": 85142.8, "high_today": 85142.8, "last_price": 84395.8,
+            "last_volume": 0.0001, "low_24h": 84230.8, "low_today": 84235.6,
+            "open": 84426.8, "trades_24h": 77901, "trades_today": 72903,
+            "volume_24h": 1289.92777481, "volume_today": 1217.38135966,
+            "vwap_24h": 84603.62524, "vwap_today": 84619.33543,
+        }
+    }
+
+    _LEGACY = {
+        "XXBTZUSD": {
+            "a": ["84394.8", "1", "1.000"], "b": ["84394.7", "1", "1.000"],
+            "c": ["84395.8", "0.0001"], "h": ["85142.8", "85142.8"],
+            "l": ["84235.6", "84230.8"], "v": ["1217.38", "1289.93"],
+            "o": "84426.8",
+        }
+    }
+
+    def test_v041_named_fields_parse_to_a_flat_row(self):
+        t, stub = _with_stub(self._NAMED, lambda: KrakenCLI.ticker("BTC/USD"))
+        assert stub.calls and stub.calls[0][0] == "ticker"
+        assert t["pair"] == "BTC/USD"
+        assert (t["price"], t["bid"], t["ask"]) == (84395.8, 84394.7, 84394.8)
+        assert (t["high_24h"], t["low_24h"], t["open"]) == (85142.8, 84230.8, 84426.8)
+        assert t["volume_24h"] == 1289.92777481
+
+    def test_legacy_arrays_still_parse(self):
+        t, _ = _with_stub(self._LEGACY, lambda: KrakenCLI.ticker("BTC/USD"))
+        assert (t["price"], t["bid"], t["ask"]) == (84395.8, 84394.7, 84394.8)
+        assert (t["high_24h"], t["low_24h"], t["volume_24h"]) == (85142.8, 84230.8, 1289.93)
+
+    def test_both_shapes_give_the_same_row_keys(self):
+        named, _ = _with_stub(self._NAMED, lambda: KrakenCLI.ticker("BTC/USD"))
+        legacy, _ = _with_stub(self._LEGACY, lambda: KrakenCLI.ticker("BTC/USD"))
+        assert set(named) == set(legacy)
+
+    def test_error_and_unknown_payloads_pass_through(self):
+        err = {"error": "api", "message": "EService:Unavailable"}
+        assert _with_stub(err, lambda: KrakenCLI.ticker("BTC/USD"))[0] == err
+        odd = {"XXBTZUSD": {"something": 1}}
+        assert _with_stub(odd, lambda: KrakenCLI.ticker("BTC/USD"))[0] == odd

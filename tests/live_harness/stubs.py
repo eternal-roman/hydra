@@ -122,7 +122,8 @@ def kraken_ticker(pair: str, bid: float, ask: float, price: float = None) -> dic
     raw Kraken shape: a top-level dict keyed by the resolved pair name,
     containing a sub-dict with keys 'a' (ask), 'b' (bid), 'c' (last close),
     'h', 'l', 'v', 'o'. The real KrakenCLI.ticker iterates top-level keys
-    looking for one with a 'c' sub-key.
+    looking for a 'last_price' (kraken-cli v0.4.1) or 'c' (legacy) sub-key;
+    this builder emits the legacy shape, which ticker() still accepts.
     """
     if price is None:
         price = (bid + ask) / 2
@@ -149,7 +150,7 @@ def kraken_ticker_missing_fields() -> dict:
     """Response that parses as a dict but lacks 'bid'/'ask' keys after reshape.
 
     This is what KrakenCLI.ticker() returns when the raw response has no
-    sub-dict with a 'c' key — it just passes through the raw data. The
+    sub-dict with a 'last_price' or 'c' key — it passes the raw data through. The
     _execute_trade check `"bid" not in ticker` triggers on this.
     """
     return {"WEIRD_PAIR": {"unexpected": "shape"}}

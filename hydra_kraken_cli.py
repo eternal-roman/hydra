@@ -140,6 +140,9 @@ class KrakenCLI:
         all present.
       - `--asset-class` is canonical (`--aclass` is a hidden alias);
         Hydra never passed `--aclass`.
+      - `ticker` emits named fields per pair (`last_price`, `bid_price`,
+        `ask_price`, `high_24h`, ...), not the legacy `c`/`b`/`a` arrays;
+        `ticker()` flattens both (re-verified 2026-09-27).
       - `kraken futures tickers` is still the read-only public endpoint
         Hydra reads, still emitting `fundingRate` (absolute,
         USD/contract/period), converted to relative bps by
@@ -566,12 +569,31 @@ class KrakenCLI:
 
     @classmethod
     def ticker(cls, pair: str) -> dict:
-        """Get current ticker data."""
+        """Get current ticker data as a flat row: pair, price, ask, bid, 24h
+        high / low / volume, and today's open.
+
+        Accepts both shapes kraken-cli has emitted for `{PAIR: {...}}`:
+          - v0.4.1 named fields: last_price, ask_price, bid_price, high_24h,
+            low_24h, volume_24h, open
+          - legacy REST arrays: c, a, b, h, l, v (index 1 = last 24h), o
+        Any other payload is returned unchanged.
+        """
         p = cls._resolve_pair(pair)
         data = cls._run(["ticker", p])
         if "error" in data:
             return data
         for key, val in data.items():
+            if isinstance(val, dict) and "last_price" in val:
+                return {
+                    "pair": pair,
+                    "price": float(val.get("last_price") or 0),
+                    "ask": float(val.get("ask_price") or 0),
+                    "bid": float(val.get("bid_price") or 0),
+                    "high_24h": float(val.get("high_24h") or 0),
+                    "low_24h": float(val.get("low_24h") or 0),
+                    "volume_24h": float(val.get("volume_24h") or 0),
+                    "open": float(val.get("open") or 0),
+                }
             if isinstance(val, dict) and "c" in val:
                 return {
                     "pair": pair,
