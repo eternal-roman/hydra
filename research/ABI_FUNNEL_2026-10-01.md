@@ -56,9 +56,14 @@ to it.
 | F-Q | quantum information: ZZ feature map + fidelity kernel (exact statevector emulation) | quantum-kernel SVM out-of-sample AUC beats the best classical kernel by ≥ 0.03, CI excluding 0 | `tools/abi_quantum_kernel_killtest.py` (registration + amendment A1, bandwidth-steelmanned) | **KILLED** on all 3 datasets: next-day AUC 0.502–0.507; next-hour 0.504–0.512; S3 second stage quantum 0.457/0.490 vs poly2 0.704 |
 | F8 | auctions / winner's curse: a resting post-only order is a free option written to the market | SELL fill rate < 0.80 within 1 bar in downtrends, and unfilled SELLs precede losses | `tools/abi_trend_killtests.py --k2` | **KILLED**: SELL p_fill(1 bar) 0.94, BUY 0.966; unfilled SELLs fwd24 +0.093% |
 | F14/F1 | options: trend following as a synthetic long straddle | trend timing beats B&H Sharpe on an independent source; the inverse loses | `tools/abi_trend_killtests.py --k3` (monthly BTCUSD 2013–2024, `backtesting` package) | **KILLED on Sharpe** (SMA10 0.832 vs B&H 0.823; TSMOM12 0.781). **Drawdown control holds** (69.5% vs 79.2%; 40.6% vs 72.7% in 2019–24); the inverse arm loses (−49.7%) |
+| K3b | the same independent series, now against the control K3 lacked: vol-targeted buy-and-hold | SMA10 timing × vol target beats vol-targeted B&H on all five sleeve-gate criteria | `tools/abi_trend_killtests.py --k3b` (registered in git before the runner existed) | **SURVIVES, not significant**: Sharpe 1.052 vs 0.979 (B&H 0.822), maxDD 33.0% vs 50.1%, 3/3 thirds, inverse 0.018. Paired bootstrap range [−0.13, +0.37]. Vol targeting is the larger effect (+0.16 Sharpe); timing adds +0.07 and the drawdown cut |
 
 Each verdict reproduces byte-for-byte from the committed runners. The
 quantum JSON matches except for its timestamp.
+
+The vendor series K3/K3b use was checked against well-known month-end
+BTC closes. For example: 13,808 (Dec 2017), 3,751 (Dec 2018), 46,649
+(Dec 2021), 16,567 (Dec 2022) and 93,381 (Dec 2024).
 
 ## 4. Survivor → pre-registered gate
 
@@ -105,13 +110,31 @@ years after warmup, and the gate correctly reports INSUFFICIENT_DATA.
 - The sleeve lost 1.37%; vol-targeted B&H lost 13.28%.
 - The sleeve was in the market 11% of the time.
 
-**A known design risk, reported by the gate.** The sleeve sizes once and
-never trims, so a rally grows its exposure. An ordinary pullback can then
-trip the sticky 15% breaker and end the sleeve until an operator reset
-(`engine_breaker_diagnostic`). On ZEC's +900% window the fixture smoke
-shows a 35.9% sleeve drawdown. If the engine arm shows the breaker
-ending the sleeve, the sizing or breaker policy for the sleeve is a
-decision for the operator. It is not a parameter to sweep.
+**Evidence changed the candidate (registration amendment A1).** K3b's
+post-hoc readout at Hydra's 0.40 cap ran on monthly data the gate never
+uses:
+
+| construction | Sharpe | maxDD | sticky 15% breaker |
+|---|---|---|---|
+| sized once at entry, never trimmed (as first built) | 0.58 | 58.0% | trips June 2013, CAGR 3.4% |
+| re-set to cap × vm each month | 1.05 | 14.3% | never trips, CAGR 20.1% |
+
+The engine sleeve now re-sizes every 30 days (10% band), with a
+protected partial-sell trim. Inside the breaker the cap is the
+risk-budget dial. At monthly marking, caps of 0.2 / 0.3 / 0.4 give
+CAGR 10 / 15 / 20% with maxDD 7 / 11 / 14% and never trip. From 0.5
+up the breaker trips in 2015 or earlier, because Sharpe (~1.05) does
+not change with the cap. Daily marking will be harsher. The engine arm
+of the real-data gate measures that.
+
+**The remaining design risk, reported by the gate.** Re-sizing caps the
+drift, but the sticky 15% breaker still ends the sleeve until an operator
+reset if a daily-marked drawdown reaches it (`engine_breaker_diagnostic`
+covers D, D0 and B). The first-built entry-only sleeve showed this on
+ZEC's +900% fixture window: a 35.9% drawdown. If the engine arm shows
+the breaker ending the re-sized sleeve, the cap or the breaker policy
+for the sleeve is the operator's decision. It is not a parameter to
+sweep.
 
 ## 5. Proposed, untested (next cycle; each needs its own registration)
 
@@ -131,3 +154,17 @@ decision for the operator. It is not a parameter to sweep.
 - Trend timing claimed as Sharpe alpha (K3). Only the drawdown-control
   property is supported.
 - Earlier kills stand (2026-07-19 funnel).
+
+
+## 7. Claims audit (2026-10-01, after "don't take the written record as gospel")
+
+| claim | status | evidence |
+|---|---|---|
+| BTC fell ~44.5% over the engine's last year | **verified** | real Kraken daily bars: 119,855 (2025-07-14) → 62,254–64,709 (mid-July 2026), −46% to −48% by endpoint |
+| S3 ledger returns are real | **verified where data overlaps** | 6 trades overlap the real daily fixtures. Every forward return equals the real price change minus exactly 0.52% (26 bps/side round trip) |
+| K3/K3b vendor data is sound | **verified** | month-end closes match widely reported values (above) |
+| "Kraken's entry maker tier is 25 bps" | **corrected** | the repo's captured fee responses and paper model use 16 bps maker / 26 bps taker; the gate's 25 bps is conservative |
+| "the LLM layer costs ~$125–1,200/yr" | **retracted** | no derivation exists. Since the no-inventory fix, trade deliberations in the September ledger fall from 187 to 5 in 20 days. The recurring cost is a Grok portfolio review every 3 hourly candles. The brain reports real spend as `cost_today_usd` |
+| "the engine is cash" | **consistent across three records, older code** | 11 round trips in 3y; 0 BUY fills in 365d; 0 trades in the 20-day September 2026 ledger. Not re-run on the current code here |
+| "funding settles hourly" | **unverified here** | consistent with the repo's carry tooling and its hourly funding history; confirm on the first live run |
+| "the trend sleeve makes ~20%/yr" | **not claimed** | that is a monthly BTC 2013–2024 analogue at the 0.40 cap. The sleeve has no real-data result yet |

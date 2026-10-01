@@ -162,3 +162,19 @@ Funnel: `research/ABI_FUNNEL_2026-10-01.md`.
    - trend timing as Sharpe alpha.
 
    Evidence: `research/data/abi/`.
+6. **K3b: vol targeting is most of the trend edge.** Independent monthly
+   BTC, registered in git before the runner existed
+   (`research/data/abi/trend_voltarget_monthly_killtest.json`):
+
+   | arm | Sharpe | maxDD |
+   |---|---|---|
+   | SMA10 timing × vol target | 1.052 | 33.0% |
+   | vol-targeted buy-and-hold | 0.979 | 50.1% |
+   | buy-and-hold | 0.822 | 79.2% |
+
+   It SURVIVES all five sleeve-gate criteria but is not significant
+   (bootstrap range [−0.13, +0.37]). The daily sleeve's real-data gate is
+   still unrun.
+7. **The S3 ledger matches real prices where they overlap.** That covers
+   6 trades on the committed Kraken daily fixtures. Every forward return
+   equals the real price change minus exactly 0.52% (26 bps/side).
