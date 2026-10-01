@@ -58,6 +58,10 @@ signal + regime + position
   global defaults.
 - **Not deregulation.** Turning rails off (`=0`) is for research / base-path
   unit tests — not a live “unlock alpha” switch.
+- **Not active under the trend sleeve.** `HYDRA_TREND_SLEEVE=1` (default
+  OFF, evidence-gated) replaces the 1h signal and these rails with a daily
+  decision on completed closes; see CLAUDE.md and
+  `research/data/trend_sleeve_REGISTRATION.md`.
 
 ## Ops
 

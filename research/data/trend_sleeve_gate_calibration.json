@@ -1,0 +1,28 @@
+{
+  "registration": "research/data/trend_sleeve_REGISTRATION.md",
+  "git_sha": "4df4879bb9e909176be696d7e537e38f663abfdb",
+  "calibration": {
+    "n_days": 2800,
+    "seeds": 40,
+    "families": {
+      "null_random_walk_bull_drift": {
+        "pass": 1,
+        "runs": 40,
+        "per_asset_pass_rate": 0.025,
+        "two_of_three_rate_approx": 0.0018
+      },
+      "null_random_walk_zero_drift": {
+        "pass": 1,
+        "runs": 40,
+        "per_asset_pass_rate": 0.025,
+        "two_of_three_rate_approx": 0.0018
+      },
+      "alt_180d_trend_regimes": {
+        "pass": 26,
+        "runs": 40,
+        "per_asset_pass_rate": 0.65,
+        "two_of_three_rate_approx": 0.7183
+      }
+    }
+  }
+}

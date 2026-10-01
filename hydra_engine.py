@@ -45,6 +45,9 @@ class Strategy(str, Enum):
     MEAN_REVERSION = "MEAN_REVERSION"
     GRID = "GRID"
     DEFENSIVE = "DEFENSIVE"
+    # Daily trend sleeve (HYDRA_TREND_SLEEVE=1): entries and exits on
+    # completed daily closes only, never on 1h signals or 1h rails.
+    TREND = "TREND"
 
 class SignalAction(str, Enum):
     BUY = "BUY"
@@ -387,6 +390,12 @@ def _env_default_on(name: str) -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+def _env_flag_on(name: str) -> bool:
+    """A default-OFF switch is on only for an explicit on value."""
+    raw = os.environ.get(name)
+    return raw is not None and raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def is_rules_force_hold_reason(reason: str) -> bool:
     """Quant-rules HOLD. Hold-through must not turn it back into a sell."""
     return str(reason or "").startswith("[QUANT RULES FORCE_HOLD]")
@@ -400,6 +409,7 @@ def is_protected_flatten_reason(reason: str) -> bool:
         text.upper().startswith("HALT FLATTEN")
         or "hold_through:force_flatten" in low
         or "hold_through:daily_trend_exit" in low
+        or "trend_sleeve:exit" in low
     )
 
 
@@ -1493,7 +1503,8 @@ class HydraEngine:
                  mean_reversion_rsi_buy: float = 35.0,
                  mean_reversion_rsi_sell: float = 65.0,
                  tradable: bool = True,
-                 hold_through: Optional[bool] = None):
+                 hold_through: Optional[bool] = None,
+                 trend_sleeve: Optional[bool] = None):
         self.asset = asset
         self.initial_balance = initial_balance
         self.balance = initial_balance
@@ -1532,6 +1543,17 @@ class HydraEngine:
         # closes the score is None and behavior is identical to pre-overlay.
         # Kill: HYDRA_TREND_OVERLAY=0 (or trend_overlay=False).
         self.trend_overlay = _env_default_on("HYDRA_TREND_OVERLAY")
+        # Daily trend sleeve (default OFF; HYDRA_TREND_SLEEVE=1). The engine
+        # cited the daily ensemble as its only validated edge but traded it
+        # only as a filter on rare 1h entries and exited on 1h noise: 11
+        # trades and +1.0% in 3 years. The sleeve holds the ensemble itself:
+        # long while the score on COMPLETED daily closes is >= 0.6, flat
+        # otherwise, vol-targeted at entry. It never consults the 1h signal
+        # generator or the 1h hold-through rails (daily entry with 1h exits
+        # was tested and rejected: trend_entry_gate.json). Evidence gate:
+        # tools/trend_sleeve_gate.py, research/data/trend_sleeve_REGISTRATION.md.
+        self.trend_sleeve = (_env_flag_on("HYDRA_TREND_SLEEVE")
+                             if trend_sleeve is None else bool(trend_sleeve))
         self._daily_closes: List[Tuple[int, float]] = []  # (utc_day, close)
         self._don_state = 0  # 1 = long regime per Donchian channel state
         try:
@@ -1758,6 +1780,78 @@ class HydraEngine:
             return 1.0
         return max(0.2, min(1.0, self.trend_target_vol / vol))
 
+    # ── daily trend sleeve ──────────────────────────────────────────────
+
+    def _completed_daily_closes(self) -> List[float]:
+        """Closes of finished UTC days only; the forming day is excluded.
+
+        The overlay's daily_trend_score() reads the running intraday close,
+        so a dip below SMA200 that recovers by the close could flip it and
+        force an exit the daily system it cites would never take. The
+        sleeve decides on completed days only: it can change state once per
+        day, at the first tick after 00:00 UTC.
+        """
+        if not self._daily_closes:
+            return []
+        if not self.candles:
+            # No bar says what day it is; the last seeded day may be forming.
+            return [c for _, c in self._daily_closes[:-1]]
+        today = int(self.candles[-1].timestamp // 86400)
+        return [c for d, c in self._daily_closes if d < today]
+
+    def sleeve_trend_score(self) -> Optional[float]:
+        """The overlay's ensemble on completed daily closes; None warming."""
+        closes = self._completed_daily_closes()
+        if len(closes) < self.TREND_SMA_DAYS + 10:
+            return None
+        sma = sum(closes[-self.TREND_SMA_DAYS:]) / float(self.TREND_SMA_DAYS)
+        score = 0.0
+        if closes[-1] > sma:
+            score += 0.4
+        if (Indicators.ema(closes, self.TREND_EMA_FAST_DAYS)
+                > Indicators.ema(closes, self.TREND_EMA_SLOW_DAYS)):
+            score += 0.4
+        if self._don_state == 1:  # advanced on completed days only
+            score += 0.2
+        return round(score, 2)
+
+    def sleeve_wants_long(self) -> Optional[bool]:
+        score = self.sleeve_trend_score()
+        return None if score is None else score >= self.TREND_SCORE_LONG
+
+    def _sleeve_vol_multiplier(self) -> float:
+        """target / realized annualized vol on completed closes, in [0.2, 1]."""
+        closes = self._completed_daily_closes()
+        if len(closes) < self.TREND_VOL_LOOKBACK_DAYS + 1 or self.trend_target_vol <= 0:
+            return 1.0
+        window = closes[-(self.TREND_VOL_LOOKBACK_DAYS + 1):]
+        rets = [math.log(b / a) for a, b in zip(window, window[1:]) if a > 0 and b > 0]
+        if len(rets) < 2:
+            return 1.0
+        vol = statistics.pstdev(rets) * math.sqrt(365.0) * 100.0
+        if vol <= 0:
+            return 1.0
+        return max(0.2, min(1.0, self.trend_target_vol / vol))
+
+    def _trend_sleeve_signal(self) -> Signal:
+        score = self.sleeve_trend_score()
+        indicators = {"trend_sleeve_score": score}
+        if score is None:
+            return Signal(SignalAction.HOLD, 0.0,
+                          f"TREND_SLEEVE:warming (needs {self.TREND_SMA_DAYS + 10} "
+                          f"completed daily closes)",
+                          Strategy.TREND, indicators)
+        want = score >= self.TREND_SCORE_LONG
+        if want and self.position.size <= 0:
+            return Signal(SignalAction.BUY, 1.0, f"TREND_SLEEVE:enter|score={score:.1f}",
+                          Strategy.TREND, indicators)
+        if not want and self.position.size > 0:
+            return Signal(SignalAction.SELL, 1.0, f"TREND_SLEEVE:exit|score={score:.1f}",
+                          Strategy.TREND, indicators)
+        state = "hold_long" if want else "flat"
+        return Signal(SignalAction.HOLD, 0.5, f"TREND_SLEEVE:{state}|score={score:.1f}",
+                      Strategy.TREND, indicators)
+
     def cvd_divergence_sigma(self) -> Optional[float]:
         """v2.14 Quant signal: z-score of (cvd_slope − price_slope) measured
         over the most recent 1h window (4 candles at 15-min) against its
@@ -1873,17 +1967,22 @@ class HydraEngine:
             self.candles, self.prices,
             self.volatile_atr_mult, self.volatile_bb_mult, self.trend_ema_ratio,
         )
-        strategy = REGIME_STRATEGY_MAP[regime]
+        if self.trend_sleeve:
+            # Daily bandwidth only: no 1h signal, no 1h rails.
+            strategy = Strategy.TREND
+            signal = self._trend_sleeve_signal()
+        else:
+            strategy = REGIME_STRATEGY_MAP[regime]
 
-        # Generate signal
-        signal = SignalGenerator.generate(
-            strategy, self.prices, self.candles,
-            momentum_rsi_lower=self.momentum_rsi_lower,
-            momentum_rsi_upper=self.momentum_rsi_upper,
-            mean_reversion_rsi_buy=self.mean_reversion_rsi_buy,
-            mean_reversion_rsi_sell=self.mean_reversion_rsi_sell,
-        )
-        signal = self._apply_hold_through(regime, signal)
+            # Generate signal
+            signal = SignalGenerator.generate(
+                strategy, self.prices, self.candles,
+                momentum_rsi_lower=self.momentum_rsi_lower,
+                momentum_rsi_upper=self.momentum_rsi_upper,
+                mean_reversion_rsi_buy=self.mean_reversion_rsi_buy,
+                mean_reversion_rsi_sell=self.mean_reversion_rsi_sell,
+            )
+            signal = self._apply_hold_through(regime, signal)
 
         # Arm before the fill. An open book defers the entry and is flattened
         # after the commit below; a flat book is not sold, but halted is set
@@ -2214,6 +2313,15 @@ class HydraEngine:
         price = ind.get("price") or current_price
         if not price or price <= 0:
             return None
+        if signal.strategy == Strategy.TREND:
+            # A daily sleeve holds for weeks; its move proxy is two daily
+            # standard deviations of completed closes, not 2x a 1h ATR.
+            closes = self._completed_daily_closes()
+            window = closes[-(self.TREND_VOL_LOOKBACK_DAYS + 1):]
+            rets = [math.log(b / a) for a, b in zip(window, window[1:]) if a > 0 and b > 0]
+            if len(rets) < 2:
+                return None
+            return 2.0 * statistics.pstdev(rets) * 100.0
         if signal.strategy in (Strategy.MEAN_REVERSION, Strategy.GRID):
             mid = ind.get("bb_middle")
             if (not mid or mid <= 0) and len(self.prices) >= 20:
@@ -2313,12 +2421,20 @@ class HydraEngine:
                 return None
 
         if signal.action == SignalAction.BUY and signal.confidence >= self.sizer.min_confidence:
-            size = self.sizer.calculate(signal.confidence, self.balance, current_price, self.asset)
-            size = size * effective_mult
-            # v2.28 trend overlay: vol-target entries (target/realized daily
-            # vol, capped 1.0) — the de-risking that cut the validated
-            # ensemble's maxDD from 84% to ~30% at equal-or-better Sharpe.
-            size = size * self._trend_vol_multiplier()
+            if signal.strategy == Strategy.TREND:
+                # Daily sleeve: deterministic vol-targeted share of the
+                # position cap (the validated systems' sizing shape), scaled
+                # by every de-risking multiplier; the PR-B caps below bind.
+                size = (self.balance * self.sizer.max_position_pct
+                        * self._sleeve_vol_multiplier() * effective_mult) / current_price
+            else:
+                size = self.sizer.calculate(signal.confidence, self.balance, current_price, self.asset)
+                size = size * effective_mult
+                # v2.28 trend overlay: vol-target entries (target/realized
+                # daily vol, capped 1.0) — the de-risking that cut the
+                # validated ensemble's maxDD from 84% to ~30% at
+                # equal-or-better Sharpe.
+                size = size * self._trend_vol_multiplier()
             # Conviction sizing: when the daily ensemble confirms the long
             # regime, allocate the vol-targeted fraction of the position cap
             # (the validated trend systems' sizing shape) instead of the
@@ -2327,6 +2443,7 @@ class HydraEngine:
             # right. Kelly remains the floor; the gross-inventory cap below
             # still binds. Kill: HYDRA_TREND_CONVICTION_SIZING=0.
             if (effective_mult > 0
+                    and signal.strategy != Strategy.TREND
                     and self.daily_trend_long() is True
                     and os.environ.get("HYDRA_TREND_CONVICTION_SIZING") != "0"):
                 # `effective_mult` MUST scale the floor too. A hard veto
@@ -2530,7 +2647,26 @@ class HydraEngine:
         # circuit-breaker HALT FLATTEN SELL into HOLD — a halted engine in a
         # local TREND_UP would trap inventory on the brain path because
         # tick()'s flatten signal gets re-railed here.
-        if self.hold_through and not self.halted:
+        if self.trend_sleeve:
+            # The sleeve is its own rail and the 1h hold-through rails never
+            # apply. An external BUY (brain, cached replay, coordinator)
+            # enters only while the completed-day ensemble is long. An
+            # external SELL is refused only while the ensemble positively
+            # wants long: a 1h exit (coordinator) would re-couple the sleeve
+            # to the 1h exits trend_entry_gate.json rejected. The halt
+            # flatten and the sleeve's own exit always pass, and a warming
+            # sleeve fails open for exits.
+            want = self.sleeve_wants_long()
+            if signal.action == SignalAction.BUY:
+                # One entry per trend, sized by the sleeve; no top-ups.
+                if want is not True or self.position.size > 0:
+                    return None
+                signal.strategy = Strategy.TREND
+            elif (signal.action == SignalAction.SELL and want is True
+                    and not self.halted
+                    and not is_protected_flatten_reason(signal.reason)):
+                return None
+        elif self.hold_through and not self.halted:
             if self.candles and self.prices:
                 regime = RegimeDetector.detect(
                     self.candles, self.prices,
@@ -3188,6 +3324,10 @@ class HydraEngine:
             "trend": {
                 "ema20": round(ema20, 8),
                 "ema50": round(ema50, 8),
+            },
+            "trend_sleeve": {
+                "enabled": bool(getattr(self, "trend_sleeve", False)),
+                "score": self.sleeve_trend_score() if getattr(self, "trend_sleeve", False) else None,
             },
             "volatility": {
                 "atr": round(atr_val, 8),
