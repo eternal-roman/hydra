@@ -3,6 +3,9 @@
   --k3  Independent trend replication on a different BTC price source
         (monthly BTCUSD 2012-2024 bundled with the `backtesting` PyPI
         package). Registration: research/data/abi/trend_independent_REGISTRATION.md
+  --k3b Same source: SMA10 timing x vol target vs vol-targeted buy-and-hold,
+        the sleeve gate's criteria. Registration:
+        research/data/abi/trend_voltarget_monthly_REGISTRATION.md
   --k2  Post-only fill / adverse-selection measurement on the real 1h OHLC
         in the s3bounce parity fixtures. Registration:
         research/data/abi/postonly_fill_REGISTRATION.md
@@ -22,7 +25,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "s3bounce" / "tests" / "fixtures"
@@ -154,6 +157,133 @@ def k3() -> dict:
     }
 
 
+# ── K3b: timing vs vol-targeted buy-and-hold (monthly, independent) ────
+
+K3B_TARGET_VOL = 0.30
+K3B_BASE_COST = (25.0 + 10.0) / 10_000.0
+K3B_STRESS_COST = (40.0 + 10.0) / 10_000.0
+K3B_ARMS = ("bh", "bh_vt", "sma10", "sma10_vt", "tsmom12_vt", "inverse_vt")
+
+
+def _k3b_targets(closes: List[float], t: int) -> Dict[str, float]:
+    """Exposure for month t+1, decided on the close of month t."""
+    rets = [closes[k] / closes[k - 1] - 1.0 for k in range(t - 5, t + 1)]
+    mean = sum(rets) / len(rets)
+    vol = math.sqrt(sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)) * math.sqrt(12.0)
+    vm = 1.0 if vol <= 0 else max(0.2, min(1.0, K3B_TARGET_VOL / vol))
+    above = closes[t] > sum(closes[t - 9: t + 1]) / 10.0
+    return {"bh": 1.0, "bh_vt": vm, "sma10": 1.0 if above else 0.0,
+            "sma10_vt": vm if above else 0.0,
+            "tsmom12_vt": vm if closes[t] > closes[t - 12] else 0.0,
+            "inverse_vt": 0.0 if above else vm}
+
+
+def _k3b_run(closes: List[float], warm: int, arm: str, cost: float,
+             cap: float = 1.0, breaker_pct: Optional[float] = None) -> List[float]:
+    """Monthly returns of one arm. `cap` scales every target (Hydra's
+    max_position_pct); `breaker_pct` sells and stays flat once equity is
+    that far below its peak at a month-end (Hydra's sticky breaker)."""
+    equity, drifted, out = 1.0, 0.0, []
+    peak, halted = 1.0, False
+    for t in range(warm, len(closes) - 1):
+        target = 0.0 if halted else cap * _k3b_targets(closes, t)[arm]
+        start = equity
+        equity -= abs(target - drifted) * equity * cost
+        r = closes[t + 1] / closes[t] - 1.0
+        growth = 1.0 + target * r
+        equity *= growth
+        drifted = target * (1.0 + r) / growth if growth > 0 else 0.0
+        peak = max(peak, equity)
+        if (breaker_pct is not None and not halted
+                and (peak - equity) / peak * 100.0 >= breaker_pct):
+            halted = True
+        out.append(equity / start - 1.0)
+    return out
+
+
+def _sharpe_m(rets: List[float]) -> float:
+    n = len(rets)
+    mean = sum(rets) / n
+    var = sum((r - mean) ** 2 for r in rets) / max(1, n - 1)
+    return (mean / math.sqrt(var)) * math.sqrt(12.0) if var > 0 else 0.0
+
+
+def _paired_boot(a: List[float], b: List[float], n_boot: int = 2000,
+                 seed: int = 7) -> Dict[str, float]:
+    import random
+    n = len(a)
+    block = max(1, int(round(n ** (1.0 / 3.0))))
+    rng = random.Random(seed)
+    diffs = []
+    for _ in range(n_boot):
+        idx: List[int] = []
+        while len(idx) < n:
+            s = rng.randrange(n)
+            idx.extend((s + k) % n for k in range(block))
+        del idx[n:]
+        diffs.append(_sharpe_m([a[j] for j in idx]) - _sharpe_m([b[j] for j in idx]))
+    diffs.sort()
+    return {"p05": round(diffs[int(round(0.05 * (n_boot - 1)))], 4),
+            "p95": round(diffs[int(round(0.95 * (n_boot - 1)))], 4),
+            "block": block, "n_boot": n_boot}
+
+
+def k3b() -> dict:
+    series = _load_monthly_btc()
+    dates = [d for d, _ in series]
+    closes = [c for _, c in series]
+    warm = 12
+    base = {a: _k3b_run(closes, warm, a, K3B_BASE_COST) for a in K3B_ARMS}
+    stress = {a: _k3b_run(closes, warm, a, K3B_STRESS_COST) for a in ("bh_vt", "sma10_vt")}
+    stats = {a: _stats(r, 12.0) for a, r in base.items()}
+    k = len(base["bh"]) // 3
+    cuts = (slice(0, k), slice(k, 2 * k), slice(2 * k, None))
+    thirds = {a: [_stats(base[a][c], 12.0) for c in cuts] for a in K3B_ARMS}
+    d, b = stats["sma10_vt"], stats["bh_vt"]
+    wins = sum(1 for td, tb in zip(thirds["sma10_vt"], thirds["bh_vt"])
+               if td["sharpe"] > tb["sharpe"])
+    crit = {
+        "C1_sharpe_gt_voltarget_bh": _sharpe_m(base["sma10_vt"]) > _sharpe_m(base["bh_vt"]),
+        "C2_wins_2_of_3_thirds": wins >= 2,
+        "C3_maxdd_le_0.75x_voltarget_bh": d["max_dd_pct"] <= 0.75 * b["max_dd_pct"],
+        "C4_inverse_sharpe_lt_voltarget_bh": _sharpe_m(base["inverse_vt"]) < _sharpe_m(base["bh_vt"]),
+        "C5_sharpe_gt_voltarget_bh_at_stress":
+            _sharpe_m(stress["sma10_vt"]) > _sharpe_m(stress["bh_vt"]),
+    }
+    boot = _paired_boot(base["sma10_vt"], base["bh_vt"])
+    verdict = "SURVIVES" if all(crit.values()) else "KILLED"
+    # Not registered, not gated: what the arms look like inside Hydra's
+    # risk frame (competition cap 0.40; sticky 15% breaker at month-ends,
+    # which understates intra-month trips).
+    post_hoc = {}
+    for arm in ("bh_vt", "sma10_vt"):
+        for label, kw in (("cap40", {"cap": 0.40}),
+                          ("cap40_breaker15", {"cap": 0.40, "breaker_pct": 15.0})):
+            post_hoc[f"{arm}_{label}"] = _stats(
+                _k3b_run(closes, warm, arm, K3B_BASE_COST, **kw), 12.0)
+    return {
+        "registration": "research/data/abi/trend_voltarget_monthly_REGISTRATION.md",
+        "source": "backtesting==0.6.6 test/BTCUSD.csv (monthly)",
+        "window": [dates[warm + 1], dates[-1]],
+        "months": len(base["bh"]),
+        "costs_per_side": {"base": K3B_BASE_COST, "stress": K3B_STRESS_COST},
+        "stats": stats,
+        "thirds": thirds,
+        "stress": {a: _stats(r, 12.0) for a, r in stress.items()},
+        "time_in_market": {a: round(sum(1 for t in range(warm, len(closes) - 1)
+                                        if _k3b_targets(closes, t)[a] > 0) / len(base[a]), 3)
+                           for a in ("sma10_vt", "tsmom12_vt", "inverse_vt")},
+        "avg_exposure": {a: round(sum(_k3b_targets(closes, t)[a]
+                                      for t in range(warm, len(closes) - 1)) / len(base[a]), 3)
+                         for a in K3B_ARMS},
+        "bootstrap_sharpe_diff_sma10vt_minus_bhvt": boot,
+        "criteria": crit,
+        "verdict": verdict,
+        "significant": verdict == "SURVIVES" and boot["p05"] > 0,
+        "post_hoc_readouts_not_gated": post_hoc,
+    }
+
+
 # ── K2: post-only fill / adverse selection ─────────────────────────────
 
 def _hourly(pair: str) -> List[dict]:
@@ -227,14 +357,21 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="ABI 2026-10-01 trend/execution kill-tests")
     ap.add_argument("--k2", action="store_true")
     ap.add_argument("--k3", action="store_true")
+    ap.add_argument("--k3b", action="store_true")
     args = ap.parse_args()
-    if not (args.k2 or args.k3):
-        ap.error("pick --k2 and/or --k3")
+    if not (args.k2 or args.k3 or args.k3b):
+        ap.error("pick --k2, --k3 and/or --k3b")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     if args.k3:
         r = k3()
         (OUT_DIR / "trend_independent_killtest.json").write_text(json.dumps(r, indent=2) + "\n")
         print("K3", r["verdict"], json.dumps(r["stats"]), json.dumps(r["criteria"]))
+    if args.k3b:
+        r = k3b()
+        (OUT_DIR / "trend_voltarget_monthly_killtest.json").write_text(
+            json.dumps(r, indent=2) + "\n")
+        print("K3b", r["verdict"], json.dumps({k: v["sharpe"] for k, v in r["stats"].items()}),
+              json.dumps(r["criteria"]), json.dumps(r["bootstrap_sharpe_diff_sma10vt_minus_bhvt"]))
     if args.k2:
         r = k2()
         (OUT_DIR / "postonly_fill_killtest.json").write_text(json.dumps(r, indent=2) + "\n")
