@@ -269,6 +269,10 @@ class CandleSource(ABC):
         ...
 
 
+# 2024-01-01T00:00:00Z. Synthetic bars start here regardless of wall clock.
+SYNTHETIC_EPOCH_S = 1_704_067_200
+
+
 class SyntheticSource(CandleSource):
     """Generates deterministic synthetic price series. No external I/O.
 
@@ -302,7 +306,12 @@ class SyntheticSource(CandleSource):
         pair_seed = self.seed ^ (zlib.adler32(pair.encode("utf-8")) & 0xFFFF)
         rng = random.Random(pair_seed)
         price = self.start_price
-        ts = int(time.time()) - self.n_candles * 60 * 15
+        # Fixed, hour-aligned anchor (I12). `time.time()` made the UTC-hour
+        # session weight — and so the result — depend on when the run
+        # happened (same seed: +1.60% at noon, -4.77% at 22:00), and read the
+        # clock once per pair, so multi-pair runs could land a second apart
+        # and never share a timestamp.
+        ts = SYNTHETIC_EPOCH_S
         for i in range(self.n_candles):
             if self.kind == "gbm":
                 # d(ln P) = drift - 0.5*vol^2 + vol*N(0,1)
@@ -540,6 +549,12 @@ class SimulatedFiller:
         if not all(math.isfinite(v) for v in (c.open, c.high, c.low, c.close)):
             return SimulatedFill(False, reason="malformed_candle: non-finite OHLC")
 
+        # A flat bar with no volume is "no trades this interval" (Kraken
+        # repeats the last close). Nothing traded, so nothing could fill —
+        # it used to fill BUY and SELL at the limit under every model.
+        if c.high == c.low and not (c.volume > 0):
+            return SimulatedFill(False, reason="no_trades: flat zero-volume bar")
+
         # Quick reject: price range didn't touch limit at all
         if side == "BUY" and c.low > px:
             return SimulatedFill(False, reason="no_touch: next.low > limit")
@@ -570,7 +585,10 @@ def _body_penetrates(candle: Candle, side: str, limit: float, threshold: float) 
     body_high = max(candle.open, candle.close)
     body_span = body_high - body_low
     if body_span <= 0:
-        return True  # doji; treat as touched
+        # Doji: the body is one price. It lingered past the limit only if
+        # that price is strictly through it; a wick-only touch is not a fill
+        # (a doji at 105 used to fill a 100 BUY).
+        return body_low < limit if side == "BUY" else body_high > limit
     if side == "BUY":
         # Body needs to be at or below the limit for `threshold` of its span
         if body_high <= limit:

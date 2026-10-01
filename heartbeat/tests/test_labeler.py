@@ -40,7 +40,15 @@ def test_reversal_labeled():
     assert len(events) >= 1
     ev = events[-1]
     assert ev.label == "reversal"
-    assert ev.p_at["bounce+3"] == 0.5
+    # A checkpoint is scorable only while the label is still undecided at
+    # its close; at or after resolve_idx its features contain the outcome.
+    for k in (1, 2, 3):
+        cp = f"bounce+{k}"
+        if ev.bounce_idx + k < ev.resolve_idx:
+            assert ev.p_at[cp] == 0.5
+        else:
+            assert ev.p_at[cp] is None
+    assert any(ev.p_at[f"bounce+{k}"] is not None for k in (1, 2, 3))
 
 
 def test_fake_labeled():

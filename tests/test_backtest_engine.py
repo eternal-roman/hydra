@@ -774,3 +774,37 @@ class TestParamHash(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_synthetic_bars_do_not_depend_on_the_wall_clock():
+    """I12: timestamps came from time.time(), so the UTC-hour session weight
+    (and the result) depended on when the run happened, and two pairs could
+    land a second apart and never align."""
+    from unittest import mock
+    from hydra_backtest import SyntheticSource
+    src = SyntheticSource(kind="gbm", n_candles=50, seed=3)
+    with mock.patch("time.time", return_value=1_800_000_000.0):
+        a = [c.timestamp for c in src.iter_candles("BTC/USD")]
+    with mock.patch("time.time", return_value=1_800_043_200.0):
+        b = [c.timestamp for c in src.iter_candles("BTC/USD")]
+        c = [x.timestamp for x in src.iter_candles("ETH/USD")]
+    assert a == b == c
+
+
+def test_realistic_fill_rejects_a_wick_only_doji_and_a_no_trade_bar():
+    from hydra_backtest import Candle, PendingOrder, SimulatedFiller
+    filler = SimulatedFiller("realistic")
+
+    def order(side, px):
+        return PendingOrder(pair="BTC/USD", side=side, limit_price=px, size=1.0,
+                            placed_tick=0, pre_trade_snapshot={})
+
+    doji_above = Candle(open=105, high=105.5, low=99.5, close=105, volume=10, timestamp=0)
+    assert not filler.try_fill(order("BUY", 100.0), doji_above).filled
+    doji_through = Candle(open=99.8, high=100.4, low=99.5, close=99.8, volume=10, timestamp=0)
+    assert filler.try_fill(order("BUY", 100.0), doji_through).filled
+    flat_dead = Candle(open=100, high=100, low=100, close=100, volume=0.0, timestamp=0)
+    for model in ("optimistic", "realistic", "pessimistic"):
+        f = SimulatedFiller(model)
+        assert not f.try_fill(order("BUY", 100.0), flat_dead).filled
+        assert not f.try_fill(order("SELL", 100.0), flat_dead).filled

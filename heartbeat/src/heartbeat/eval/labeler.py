@@ -136,15 +136,23 @@ def extract_events(pair: str, tf: str,
         if label is None:
             continue  # unresolved within horizon: ambiguous, discard
         # -- posterior checkpoints (candle closes; strictly causal series)
+        # A checkpoint at or after the resolving candle is not a decision:
+        # its features already contain the undercut or the target hit that
+        # decided the label. Scoring it leaked the outcome (zero-information
+        # tapes reached AUC ~0.60 at bounce+3; ~0.50 on unresolved events
+        # only). None = not scorable, and every metric already skips None.
         p_at: dict[str, Optional[float]] = {}
         for k in (1, 2, 3):
             idx = bounce_idx + k
-            p_at[f"bounce+{k}"] = p_up[idx] if idx < len(candles) else None
+            p_at[f"bounce+{k}"] = (p_up[idx]
+                                   if idx < len(candles) and idx < resolve_idx
+                                   else None)
         prog_idx = next((j for j in range(bounce_idx, min(len(candles),
                                                           i + 1 + horizon))
                          if candles[j].high >= low_px + 2.0 * atr), None)
         p_at["progress_2atr"] = (p_up[prog_idx]
                                  if prog_idx is not None and prog_idx < len(p_up)
+                                 and prog_idx < resolve_idx
                                  else None)
         tainted = any(c.tainted for c in candles[i:min(len(candles),
                                                        bounce_idx + 4)])

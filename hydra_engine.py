@@ -344,6 +344,20 @@ class RegimeDetector:
 
         return Regime.RANGING
 
+    @staticmethod
+    def trend_down(prices: List[float], trend_ema_ratio: float = 1.005) -> bool:
+        """The TREND_DOWN condition alone, whatever the volatility test says.
+
+        detect() checks VOLATILE first, so a dump — exactly when ATR and BB
+        width spike — is labelled VOLATILE and never TREND_DOWN. The
+        hold-through flatten keyed off the label and rode those dumps.
+        """
+        if len(prices) < 50:
+            return False
+        ema20 = Indicators.ema(prices, 20)
+        ema50 = Indicators.ema(prices, 50)
+        return ema20 < ema50 * (1.0 / trend_ema_ratio) and prices[-1] < ema20
+
 
 # ═══════════════════════════════════════════════════════════════
 # STRATEGY SELECTOR
@@ -360,6 +374,18 @@ REGIME_STRATEGY_MAP = {
 # ═══════════════════════════════════════════════════════════════
 # SIGNAL GENERATOR
 # ═══════════════════════════════════════════════════════════════
+
+def _env_default_on(name: str) -> bool:
+    """A default-ON switch is off only for an explicit off value.
+
+    Accepting only "1/true/yes/on" meant an empty or unexpected value
+    (HYDRA_HOLD_THROUGH="" or "enabled") silently turned the rails off.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
 
 def is_rules_force_hold_reason(reason: str) -> bool:
     """Quant-rules HOLD. Hold-through must not turn it back into a sell."""
@@ -813,9 +839,13 @@ class PositionSizer:
     # value for SOL regardless of which pair loaded it), and hydra_agent.py
     # + tests access these as a shared registry. Multi-engine "isolation"
     # does not apply to exchange constants.
+    # Fallbacks must equal hydra_pair_registry's (the source of truth); live
+    # boot overlays both with `kraken pairs`. BTC said 0.00005 here and
+    # 0.0001 there, so paper sizing and dust write-off disagreed with the
+    # registry whenever live constants were unavailable.
     MIN_ORDER_SIZE = {
         "SOL": 0.02,
-        "BTC": 0.00005,
+        "BTC": 0.0001,
         "ETH": 0.001,
         "ZEC": 0.01,
     }
@@ -1486,13 +1516,7 @@ class HydraEngine:
         # persisted; the agent re-derives it every boot.
         self.exit_only = False
         if hold_through is None:
-            raw_ht = os.environ.get("HYDRA_HOLD_THROUGH")
-            if raw_ht is None:
-                self.hold_through = True  # product default
-            else:
-                self.hold_through = raw_ht.strip().lower() in (
-                    "1", "true", "yes", "on",
-                )
+            self.hold_through = _env_default_on("HYDRA_HOLD_THROUGH")
         else:
             self.hold_through = bool(hold_through)
 
@@ -1507,10 +1531,7 @@ class HydraEngine:
         # targeting. Fails OPEN end to end: with < TREND_SMA_DAYS+10 daily
         # closes the score is None and behavior is identical to pre-overlay.
         # Kill: HYDRA_TREND_OVERLAY=0 (or trend_overlay=False).
-        raw_to = os.environ.get("HYDRA_TREND_OVERLAY")
-        self.trend_overlay = (
-            raw_to is None or raw_to.strip().lower() in ("1", "true", "yes", "on")
-        )
+        self.trend_overlay = _env_default_on("HYDRA_TREND_OVERLAY")
         self._daily_closes: List[Tuple[int, float]] = []  # (utc_day, close)
         self._don_state = 0  # 1 = long regime per Donchian channel state
         try:
@@ -1726,6 +1747,12 @@ class HydraEngine:
         overlay is off or vol is unavailable (fail open)."""
         if not self.trend_overlay:
             return 1.0
+        # Fail open with the overlay itself. Vol needs 22 closes, the score
+        # 210; in between this cut BUYs to 0.2-1.0x while every doc and the
+        # backtest promised pre-overlay behaviour (new satellites, failed
+        # daily seeds, every CSV/synthetic backtest after day 22).
+        if self.daily_trend_score() is None:
+            return 1.0
         vol = self.daily_realized_vol_pct()
         if vol is None or vol <= 0 or self.trend_target_vol <= 0:
             return 1.0
@@ -1748,21 +1775,38 @@ class HydraEngine:
         if len(self.signed_volumes) < samples_1h * 8:  # ~8 windows to estimate variance
             return None
 
-        cvd_series = [sum(self.signed_volumes[: i + 1]) for i in range(len(self.signed_volumes))]
+        # The CVD slope used to be divided by |mean cumulative CVD| — a level
+        # whose zero is wherever the 250-bar buffer happens to start. Changing
+        # one candle 250 bars back flipped sigma from +0.07 to -3.97, so R7
+        # and the QFE squeeze veto fired at random. The slope of cumulative
+        # CVD is net signed volume per bar; dividing by the window's mean
+        # volume makes it the net-buy share, independent of the start point.
+        # History is the last 24h of windows, as documented, not the buffer.
+        lookback = max(8, int(24 * 60 / max(1, self.candle_interval)))
+        n = min(len(self.signed_volumes), len(self.prices), len(self.candles))
+        start = max(0, n - (lookback + samples_1h))
+        signed = self.signed_volumes[start:n]
+        prices = self.prices[start:n]
+        volumes = [c.volume for c in self.candles[start:n]]
+        cvd_series: List[float] = []
+        running = 0.0
+        for sv in signed:
+            running += sv
+            cvd_series.append(running)
         window = samples_1h
         diffs: List[float] = []
         for end in range(window, len(cvd_series) + 1):
             cvd_seg = cvd_series[end - window : end]
-            px_seg = self.prices[end - window : end]
+            px_seg = prices[end - window : end]
             cvd_slope = _linear_slope(cvd_seg)
             px_slope = _linear_slope(px_seg)
             if cvd_slope is None or px_slope is None:
                 continue
-            # Normalize each slope by its series mean magnitude so unit
-            # difference between CVD (signed volume) and price is removed.
-            cvd_norm = abs(sum(cvd_seg) / len(cvd_seg)) or 1.0
+            vol_seg = volumes[end - window : end]
+            vol_norm = (sum(vol_seg) / len(vol_seg)) if vol_seg else 0.0
+            vol_norm = vol_norm if vol_norm > 0 else 1.0
             px_norm = abs(sum(px_seg) / len(px_seg)) or 1.0
-            diffs.append((cvd_slope / cvd_norm) - (px_slope / px_norm))
+            diffs.append((cvd_slope / vol_norm) - (px_slope / px_norm))
 
         # v2.14.1: require at least 8 diff windows (so history has >=7
         # samples for pstdev). Below that the z-score is unstable and
@@ -1872,7 +1916,17 @@ class HydraEngine:
         current_price = self.prices[-1] if self.prices else 0
         self.position.update_pnl(current_price)
         equity = self.balance + (self.position.size * current_price)
-        self.equity_history.append(equity)
+        # One equity point per candle. Live ticks ~12x per 60m bar, and
+        # _calc_sharpe annualises by candle spacing, so appending every tick
+        # understated live Sharpe by sqrt(12) (dashboard, brain prompt,
+        # competition export). An intra-candle tick updates the bar's point.
+        candle_ts = self.candles[-1].timestamp if self.candles else None
+        if (candle_ts is not None and self.equity_history
+                and getattr(self, "_equity_candle_ts", None) == candle_ts):
+            self.equity_history[-1] = equity
+        else:
+            self.equity_history.append(equity)
+        self._equity_candle_ts = candle_ts
 
         # Track drawdown
         if equity > self.peak_equity:
@@ -2016,9 +2070,10 @@ class HydraEngine:
         if remaining >= self.position.size - 1e-12:
             return
         if remaining <= 0:
-            self.position.size = 0.0
-            self.position.avg_entry = 0.0
-            self.position.params_at_entry = None
+            # Book the accumulated close P&L like any full close. Zeroing the
+            # size alone left realized_pnl on a flat book, and the next round
+            # trip inherited it (a real -5 trip was booked as a +4 win).
+            self._book_write_off(self.position.size)
             return
         self.position.size = remaining
 
@@ -2051,11 +2106,15 @@ class HydraEngine:
         # Daily trend overlay: None = warming up / disabled → fail open
         # (rails behave exactly as pre-overlay).
         daily_long = self.daily_trend_long()
-        if self.position.size > 0 and (
-            regime == Regime.TREND_DOWN or daily_long is False
-        ):
-            tag = ("force_flatten" if regime == Regime.TREND_DOWN
-                   else "daily_trend_exit")
+        # A dump is usually labelled VOLATILE (ATR/BB spike checked first), so
+        # the downtrend underneath it has to be tested directly or the
+        # "bag-holding dumps" rail never fires in one (docs/HOLD_THROUGH.md).
+        downtrend = regime == Regime.TREND_DOWN or (
+            regime == Regime.VOLATILE
+            and RegimeDetector.trend_down(self.prices, self.trend_ema_ratio)
+        )
+        if self.position.size > 0 and (downtrend or daily_long is False):
+            tag = "force_flatten" if downtrend else "daily_trend_exit"
             return Signal(
                 action=SignalAction.SELL,
                 confidence=max(

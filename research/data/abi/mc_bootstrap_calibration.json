@@ -1,0 +1,32 @@
+{
+  "target_rate": 0.025,
+  "statistic": "sum of resampled trade profits",
+  "null": "iid N(0,1) trade profits",
+  "trials": 400,
+  "by_n": {
+    "25": {
+      "old_noncircular_L20": 0.2625,
+      "circular_L20": 0.135,
+      "current_sampler_block_len20": 0.035,
+      "iid": 0.025
+    },
+    "40": {
+      "old_noncircular_L20": 0.21,
+      "circular_L20": 0.1525,
+      "current_sampler_block_len20": 0.035,
+      "iid": 0.025
+    },
+    "60": {
+      "old_noncircular_L20": 0.1125,
+      "circular_L20": 0.0825,
+      "current_sampler_block_len20": 0.0325,
+      "iid": 0.035
+    },
+    "100": {
+      "old_noncircular_L20": 0.0775,
+      "circular_L20": 0.0675,
+      "current_sampler_block_len20": 0.035,
+      "iid": 0.0325
+    }
+  }
+}
