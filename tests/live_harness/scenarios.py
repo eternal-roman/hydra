@@ -351,18 +351,37 @@ def scenario_F5_execution_fails_after_validation(h: Harness):
     )
 
 
+def _ambiguous_placement_scenario(h: Harness, code: str, order_response: dict):
+    """The CLI failed AFTER the order may have reached Kraken. The row must
+    stay PLACED (unconfirmed, blocking the pair), the engine keeps its
+    optimistic book, and the stream tracks the userref. Rolling back here
+    let the next tick place a duplicate live order."""
+    agent = h.new_agent(pairs=["SOL/USDC"], paper=False, initial_balance=200.0)
+    h.seed_candles(agent, "SOL/USDC", base_price=100.0)
+    stub = StubRun(build_dispatcher({
+        "ticker": kraken_ticker("SOL/USDC", bid=100.0, ask=100.1),
+        "order_validate": kraken_validate_success(),
+        "order": order_response,
+    })).install()
+    try:
+        report = harness_execute(agent, "SOL/USDC", "BUY", 0.75, f"{code} ambiguous")
+    finally:
+        stub.restore()
+    assert report["outcome"] == "success", f"{code}: {report['outcome']}"
+    entry = report["last_journal_entry"]
+    validate_journal_entry(entry, expected_state="PLACED")
+    assert entry["lifecycle"].get("unconfirmed") is True, f"{code}: not flagged unconfirmed"
+    assert entry["order_ref"]["order_id"] is None
+    userref = entry["order_ref"]["order_userref"]
+    known = list(agent.execution_stream._known_orders.keys())
+    assert known == [f"userref:{userref}"], f"{code}: stream tracks {known}"
+    assert agent._resting_entry("SOL/USDC") is entry, f"{code}: pair not held"
+    assert agent.engines["SOL/USDC"].position.size > 0, f"{code}: engine rolled back"
+
+
 def scenario_F6_execution_timeout(h: Harness):
-    """Order subprocess times out -> PLACEMENT_FAILED(placement_error:...)."""
-    _run_with_rollback_check(
-        h, "F6",
-        setup_stub=lambda: StubRun(build_dispatcher({
-            "ticker": kraken_ticker("SOL/USDC", bid=100.0, ask=100.1),
-            "order_validate": kraken_validate_success(),
-            "order": kraken_order_timeout(),
-        })),
-        action="BUY", confidence=0.75,
-        expected_reason_prefix="placement_error",
-    )
+    """Order subprocess times out after the send -> outcome unknown, held."""
+    _ambiguous_placement_scenario(h, "F6", kraken_order_timeout())
 
 
 def scenario_F7_paper_failure(h: Harness):
@@ -396,8 +415,8 @@ def _live_success_scenario(h: Harness, code: str, order_response: dict,
                             expected_order_id_registered: str | None):
     """Generic live-success scenario with a configurable order response shape.
 
-    If expected_order_id_registered is None, asserts the execution stream
-    did NOT register the order (because order_id came back as 'unknown').
+    If expected_order_id_registered is None (Kraken accepted the order but
+    returned no txid), asserts the stream tracks the row's userref instead.
     Otherwise asserts the order_id is tracked under _known_orders."""
     agent = h.new_agent(pairs=["SOL/USDC"], paper=False, initial_balance=200.0)
     h.seed_candles(agent, "SOL/USDC", base_price=100.0)
@@ -418,9 +437,16 @@ def _live_success_scenario(h: Harness, code: str, order_response: dict,
 
     known = agent.execution_stream._known_orders
     if expected_order_id_registered is None:
-        # When order_id is 'unknown', register() is a no-op by design.
-        assert not known, \
-            f"{code}: stream should be empty, got {list(known.keys())}"
+        # Accepted without a txid: the row cannot be addressed by id, so the
+        # stream tracks its userref until the first execution entry names it
+        # (a skipped registration froze the pair — exits included — forever).
+        userref = (entry.get("order_ref") or {}).get("order_userref")
+        assert entry["order_ref"]["order_id"] is None, \
+            f"{code}: txid-less row should carry order_id None, got {entry['order_ref']}"
+        assert entry["lifecycle"].get("accepted_without_txid") is True, \
+            f"{code}: row should be flagged accepted_without_txid"
+        assert list(known.keys()) == [f"userref:{userref}"], \
+            f"{code}: expected one userref placeholder, got {list(known.keys())}"
     else:
         assert expected_order_id_registered in known, \
             f"{code}: missing order_id {expected_order_id_registered!r}; have {list(known.keys())}"
@@ -445,7 +471,7 @@ def scenario_E2_txid_nested_result(h: Harness):
 
 
 def scenario_E3_txid_missing(h: Harness):
-    """Txid missing entirely -> becomes 'unknown', stream skips registration."""
+    """Txid missing entirely -> row unconfirmed, stream tracks the userref."""
     _live_success_scenario(
         h, "E3",
         order_response=kraken_order_success_missing_txid(),
@@ -454,7 +480,7 @@ def scenario_E3_txid_missing(h: Harness):
 
 
 def scenario_E4_txid_empty_list(h: Harness):
-    """Txid is an empty list -> becomes 'unknown', stream skips registration."""
+    """Txid is an empty list -> row unconfirmed, stream tracks the userref."""
     _live_success_scenario(
         h, "E4",
         order_response=kraken_order_success_empty_list(),
@@ -512,17 +538,8 @@ def scenario_E6_ordermin_partial_sell_forces_full_close(h: Harness):
 
 
 def scenario_E7_unparseable_kraken_response(h: Harness):
-    """Kraken returns a JSON parse error dict -> PLACEMENT_FAILED, rollback."""
-    _run_with_rollback_check(
-        h, "E7",
-        setup_stub=lambda: StubRun(build_dispatcher({
-            "ticker": kraken_ticker("SOL/USDC", bid=100.0, ask=100.1),
-            "order_validate": kraken_validate_success(),
-            "order": kraken_order_json_error(),
-        })),
-        action="BUY", confidence=0.75,
-        expected_reason_prefix="placement_error",
-    )
+    """CLI stdout unparseable after the send -> outcome unknown, held."""
+    _ambiguous_placement_scenario(h, "E7", kraken_order_json_error())
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -1272,17 +1289,17 @@ ALL_SCENARIOS: list[Scenario] = [
     Scenario("F3", "Validation post-only crossing -> PLACEMENT_FAILED + rollback", "F", MOCK, scenario_F3_validation_post_only_crossed),
     Scenario("F4", "Validation insufficient funds -> PLACEMENT_FAILED + rollback", "F", MOCK, scenario_F4_validation_insufficient_funds),
     Scenario("F5", "Execution fails after validation -> PLACEMENT_FAILED + rollback", "F", MOCK, scenario_F5_execution_fails_after_validation),
-    Scenario("F6", "Order timeout -> PLACEMENT_FAILED + rollback", "F", MOCK, scenario_F6_execution_timeout),
+    Scenario("F6", "Order timeout -> held as unconfirmed", "F", MOCK, scenario_F6_execution_timeout),
     Scenario("F7", "Paper failure -> PLACEMENT_FAILED (paper)", "F", MOCK, scenario_F7_paper_failure),
 
     # Category E — edge cases
     Scenario("E1", "Txid list unwrap", "E", MOCK, scenario_E1_txid_list_unwrap),
     Scenario("E2", "Txid nested in result", "E", MOCK, scenario_E2_txid_nested_result),
-    Scenario("E3", "Txid missing -> 'unknown'", "E", MOCK, scenario_E3_txid_missing),
-    Scenario("E4", "Txid empty list -> 'unknown'", "E", MOCK, scenario_E4_txid_empty_list),
+    Scenario("E3", "Txid missing -> tracked by userref", "E", MOCK, scenario_E3_txid_missing),
+    Scenario("E4", "Txid empty list -> tracked by userref", "E", MOCK, scenario_E4_txid_empty_list),
     Scenario("E5", "Halted engine produces no journal entries", "E", MOCK, scenario_E5_halted_engine),
     Scenario("E6", "Ordermin partial sell forces full close", "E", MOCK, scenario_E6_ordermin_partial_sell_forces_full_close),
-    Scenario("E7", "Unparseable Kraken response -> PLACEMENT_FAILED + rollback", "E", MOCK, scenario_E7_unparseable_kraken_response),
+    Scenario("E7", "Unparseable CLI response -> held as unconfirmed", "E", MOCK, scenario_E7_unparseable_kraken_response),
 
     # Category S — schema meta
     Scenario("S0", "Schema validator rejects malformed entries", "S", MOCK, scenario_S_meta_validator_rejects_garbage),

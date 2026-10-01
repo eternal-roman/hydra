@@ -70,6 +70,8 @@ hydra_backtest_errors.log
 # downloaded funding history)
 .hydra-flywheel/
 .hydra-s3/
+# paper/demo session state (snapshot, rolling journal, params) — never live
+.hydra-paper/
 
 # Brain audit log (v2.14.0+; JSONL of every deliberate() and fallback)
 hydra_brain.jsonl

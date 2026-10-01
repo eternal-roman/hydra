@@ -214,13 +214,18 @@ def kraken_order_error(msg: str) -> dict:
 
 
 def kraken_order_timeout() -> dict:
-    """Matches KrakenCLI._run timeout return shape at hydra_agent.py:111."""
-    return {"error": "Command timed out", "retryable": True}
+    """Matches KrakenCLI._run_once on subprocess.TimeoutExpired (the wrapper
+    always attaches error_category via _normalize_error)."""
+    return {"error": "Command timed out", "error_category": "transport_timeout",
+            "error_message": "kraken CLI exceeded 20s", "retryable": True}
 
 
 def kraken_order_json_error() -> dict:
-    """Matches KrakenCLI._run JSONDecodeError return shape at hydra_agent.py:113."""
-    return {"error": "JSON parse error: unexpected token", "raw": "garbage"}
+    """Matches KrakenCLI._run_once on JSONDecodeError of the CLI's stdout."""
+    return {"error": "JSON parse error: unexpected token",
+            "error_category": "transport_parse",
+            "error_message": "unparseable CLI stdout: unexpected token",
+            "retryable": False, "raw": "garbage"}
 
 
 def kraken_paper_success() -> dict:
