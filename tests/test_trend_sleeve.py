@@ -102,7 +102,8 @@ def test_enters_long_sized_by_vol_target_and_cap():
     assert state["strategy"] == "TREND"
     expected_value = 1000.0 * eng.sizer.max_position_pct * vm
     assert trade.value == pytest.approx(expected_value, rel=1e-9)
-    assert state["trend_sleeve"] == {"enabled": True, "score": 1.0}
+    assert state["trend_sleeve"]["enabled"] is True
+    assert state["trend_sleeve"]["score"] == 1.0
 
 
 def test_holds_through_intraday_noise_without_1h_rails():
@@ -151,8 +152,10 @@ def test_exits_when_the_completed_day_score_drops():
 def test_sleeve_exit_is_a_protected_flatten():
     assert is_protected_flatten_reason("TREND_SLEEVE:exit|score=0.4")
     assert is_protected_flatten_reason("[QFE PROFIT EXIT] TREND_SLEEVE:exit|score=0.2")
+    assert is_protected_flatten_reason("TREND_SLEEVE:trim|score=1.0")
     assert not is_protected_flatten_reason("TREND_SLEEVE:hold_long|score=1.0")
     assert not is_protected_flatten_reason("TREND_SLEEVE:enter|score=1.0")
+    assert not is_protected_flatten_reason("TREND_SLEEVE:topup|score=1.0")
 
 
 def test_external_buy_needs_the_sleeve_long():
@@ -322,3 +325,168 @@ def test_backtest_runner_trades_the_sleeve_end_to_end(tmp_path, monkeypatch):
     assert buys[0]["signal_reason"].startswith("TREND_SLEEVE:enter")
     assert buys[0]["confidence"] > 0.0
     assert runner.engines["BTC/USD"].trades[0].strategy == "TREND"
+
+
+def _continue(closes, n, drift, amp=0.03):
+    """Extend a series with the same oscillation shape and a new drift."""
+    k0, base = len(closes), closes[-1]
+    return [base * math.exp(drift * (j + 1)
+                            + amp * (math.sin(2.0 * (k0 + j + 1)) - math.sin(2.0 * k0)))
+            for j in range(n)]
+
+
+def _run_days(eng, first_day, closes):
+    states = []
+    for j, close in enumerate(closes):
+        _bar(eng, first_day + j, 0, close)
+        states.append(eng.tick())
+    return states
+
+
+def _exposure(eng):
+    px = eng.prices[-1]
+    return eng.position.size * px / (eng.balance + eng.position.size * px)
+
+
+def test_resize_trims_a_grown_position_after_30_days():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    entered = eng.position.size
+    assert eng._sleeve_sized_day == START_DAY + len(daily)
+    rally = _continue(daily + [daily[-1]], 30, drift=0.012)
+    states = _run_days(eng, len(daily) + 1, rally)
+    trims = [t for t in eng.trades if t.action == "SELL"]
+    assert len(trims) == 1 and trims[0].reason.startswith("TREND_SLEEVE:trim")
+    assert 0 < eng.position.size < entered          # partial, still long
+    target = eng._sleeve_target_notional(eng.prices[-1]) / (
+        eng.balance + eng.position.size * eng.prices[-1])
+    assert _exposure(eng) == pytest.approx(target, rel=1e-6)
+    assert eng.total_trades == 0                     # a trim is not a closed trade
+    assert eng._sleeve_sized_day == START_DAY + len(daily) + 30
+    assert all(s["signal"]["action"] == "HOLD" for s in states[:29])
+
+
+def test_resize_tops_up_when_volatility_falls():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    first = eng.position.size
+    calm = _continue(daily + [daily[-1]], 30, drift=0.002, amp=0.002)
+    _run_days(eng, len(daily) + 1, calm)
+    assert eng._sleeve_vol_multiplier() == 1.0
+    buys = [t for t in eng.trades if t.action == "BUY"]
+    assert len(buys) == 2 and buys[1].reason.startswith("TREND_SLEEVE:topup")
+    assert eng.position.size > first
+    assert _exposure(eng) == pytest.approx(eng.sizer.max_position_pct, rel=1e-6)
+
+
+def test_a_due_resize_inside_the_band_restarts_the_clock():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    sideways = _continue(daily + [daily[-1]], 30, drift=0.0)  # same volatility
+    _run_days(eng, len(daily) + 1, sideways)
+    assert [t.action for t in eng.trades] == ["BUY"]
+    assert eng._sleeve_sized_day == START_DAY + len(daily) + 30
+
+
+def test_a_cancelled_trim_restores_the_resize_clock():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    rally = _continue(daily + [daily[-1]], 30, drift=0.012)
+    _run_days(eng, len(daily) + 1, rally[:-1])
+    _bar(eng, len(daily) + 30, 0, rally[-1])
+    before_clock = eng._sleeve_sized_day
+    snap = eng.snapshot_position()
+    state = eng.tick(generate_only=True)
+    assert state["signal"]["reason"].startswith("TREND_SLEEVE:trim")
+    trade = eng.execute_signal("SELL", 1.0, state["signal"]["reason"], "TREND")
+    assert trade is not None and eng._sleeve_sized_day != before_clock
+    eng.restore_position(snap)                       # post-only miss / cancel
+    assert eng._sleeve_sized_day == before_clock
+    assert eng._sleeve_rebalance(eng.prices[-1])[0] == "trim"
+
+
+def test_a_filled_trim_true_up_keeps_the_new_clock():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    rally = _continue(daily + [daily[-1]], 30, drift=0.012)
+    _run_days(eng, len(daily) + 1, rally[:-1])
+    _bar(eng, len(daily) + 30, 0, rally[-1])
+    snap = eng.snapshot_position()
+    state = eng.tick(generate_only=True)
+    trade = eng.execute_signal("SELL", 1.0, state["signal"]["reason"], "TREND")
+    held = eng.position.size
+    assert eng.true_up_fill("SELL", trade.amount, trade.price * 1.001, snap)
+    assert eng.position.size == pytest.approx(held)
+    assert eng._sleeve_sized_day == START_DAY + len(daily) + 30
+
+
+def test_trim_reason_is_refused_when_no_resize_is_due():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    held = eng.position.size
+    assert eng.execute_signal("SELL", 1.0, "TREND_SLEEVE:trim|score=1.0", "TREND") is None
+    assert eng.position.size == held
+
+
+def test_runtime_snapshot_round_trips_the_resize_clock():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    snap = eng.snapshot_runtime()
+    fresh = HydraEngine(initial_balance=1000.0, asset="BTC/USD", trend_sleeve=True)
+    fresh.restore_runtime(snap)
+    assert fresh._sleeve_sized_day == eng._sleeve_sized_day
+    snap["sleeve_sized_day"] = "garbage"
+    fresh.restore_runtime(snap)
+    assert fresh._sleeve_sized_day is None
+
+
+def test_state_reports_exposure_and_the_next_resize():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    state = eng.tick()
+    sleeve = state["trend_sleeve"]
+    assert sleeve["enabled"] is True and sleeve["score"] == 1.0
+    assert sleeve["exposure"] == pytest.approx(sleeve["target_exposure"], rel=1e-3)
+    assert sleeve["next_resize_day"] == START_DAY + len(daily) + 30
+
+
+def test_a_due_topup_in_a_calm_market_is_not_friction_gated(monkeypatch):
+    monkeypatch.delenv("HYDRA_FRICTION_GATE_DISABLED", raising=False)
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    _run_days(eng, len(daily) + 1, [daily[-1]] * 30)  # volatility -> 0
+    assert eng._expected_move_pct(eng._trend_sleeve_signal(), daily[-1]) in (None, 0.0)
+    assert [t.action for t in eng.trades] == ["BUY", "BUY"]
+    assert eng.friction_skips == 0
+
+
+def test_the_llm_cannot_veto_a_trim_but_can_veto_a_topup(monkeypatch):
+    """Sleeve SELLs reduce risk and are kept; sleeve BUYs add it and may be vetoed."""
+    monkeypatch.delenv("HYDRA_QUANT_INDICATORS_DISABLED", raising=False)
+    from test_llm_verdict_merge import _agent, _decision, _state
+    agent = _agent(_decision("OVERRIDE", "HOLD", size=0.0))
+    trim = _state("SELL", reason="TREND_SLEEVE:trim|score=1.0", size=1.0,
+                  avg=100.0, price=95.0, ts=4000.0)        # a trim at a loss
+    agent._apply_brain("BTC/USD", trim, {})
+    assert trim["signal"]["action"] == "SELL"
+    assert trim["signal"]["reason"].startswith("TREND_SLEEVE:trim")
+    topup = _state("BUY", reason="TREND_SLEEVE:topup|score=1.0", size=1.0, ts=4000.0)
+    agent._apply_brain("BTC/USD", topup, {})
+    assert topup["signal"]["action"] == "HOLD"

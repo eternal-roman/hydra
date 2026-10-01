@@ -90,7 +90,13 @@ Idle cash earns 0% in every arm. A 4% sensitivity is reported, applied to
 ## Costs
 
 - **Base:** 25 bps fee + 10 bps slippage per side, on traded notional.
-  25 bps is Kraken's entry maker tier.
+  *Erratum (2026-10-01):* this line first said "25 bps is Kraken's
+  entry maker tier". That was written from memory, not evidence. The
+  repo's captured `kraken volume` responses (`tests/test_kraken_cli.py`)
+  and its paper-fill model both show 16 bps maker / 26 bps taker for
+  this account, and the dashboard's `Fee M/T` pill shows the live tier.
+  The cost is unchanged. 25 bps is a conservative base, not a quote of
+  the account's tier.
 - **Stress:** 40 bps + 10 bps.
 - **Engine arms:** `maker_fee_bps=25` with the realistic post-only fill
   model.
@@ -120,15 +126,21 @@ Idle cash earns 0% in every arm. A 4% sensitivity is reported, applied to
 Command: `python tools/trend_sleeve_gate.py --calibrate 40`. Output:
 `research/data/trend_sleeve_gate_calibration.json`. Each run is 2800 days.
 
-| family | per-asset PASS |
-|---|---|
-| random walk with bull drift (no timing edge by construction) | 1/40 |
-| random walk with zero drift | 1/40 |
-| 180-day ±0.4%/day trend regimes | 26/40 |
+| family | per-asset PASS (original D) | per-asset PASS (D after A1) |
+|---|---|---|
+| random walk with bull drift (no timing edge by construction) | 1/40 | 4/40 |
+| random walk with zero drift | 1/40 | 3/40 |
+| 180-day ±0.4%/day trend regimes | 26/40 | 35/40 |
 
-Under independence, the 2-of-3 rule gives a global false-positive rate of
-about 0.2%. On the trending alternative the gate passes about 72% of the
-time.
+Under independence, the 2-of-3 rule gives this for the amended D:
+
+- **Global false-positive rate:** about 1.6–2.8%.
+- **Power on the trending alternative:** about 96%.
+
+Re-sizing made D a cleaner vol-targeted strategy. A pure random walk
+therefore lands closer to a coin flip against B than the drifting
+entry-only D did. The criteria were not tightened to win back the old
+rate.
 
 ## Criteria — per asset, all must hold
 
@@ -169,3 +181,38 @@ time.
 **What a PASS is not:** it is not alpha. The sleeve is long crypto beta
 with drawdown control, so it makes money when crypto trends up and holds
 cash otherwise.
+
+## Amendment A1 (2026-10-01, before any real-data run of the gate)
+
+**What changed.** D is now the **re-sized** sleeve.
+
+- Every `SLEEVE_RESIZE_DAYS` (30) after its last sizing, a held sleeve is
+  re-set to `equity × cap × vm`. No trade happens if it is already within
+  `SLEEVE_RESIZE_TOL` (10%) of that target.
+- A trim is a partial SELL and a top-up is a BUY. The trim is protected
+  like the exit, so the rules, the LLM and the coordinator cannot veto it.
+- The original construction (sized once, never re-sized) is kept as the
+  reported arm `sleeve_entry_only` (D0).
+- C (`sleeve_novt`) and E (`inverse`) use the same re-size rule as D.
+- The criteria are unchanged.
+
+**Why: evidence from data the gate does not use.** On the independent
+monthly BTC series (K3b,
+`research/data/abi/trend_voltarget_monthly_killtest.json`, post-hoc), at
+the 0.40 cap:
+
+| construction | Sharpe | maxDD | max exposure | sticky 15% breaker |
+|---|---|---|---|---|
+| entry-only | 0.58 | 58.0% | 0.92 | trips June 2013, CAGR 3.4% |
+| re-sized monthly | 1.05 | 14.3% | 0.46 | never trips, CAGR 20.1% |
+
+- **Mechanism:** without trims, a rally drifts the position toward all of
+  equity. The sleeve becomes unhedged buy-and-hold just before the
+  pullback.
+- **No tuning:** the 30-day period matches the B control's re-size
+  cadence and K3b's monthly reset. The 10% band is an a-priori
+  churn/dust guard. Neither was swept on any data.
+- **Not data-snooping:** the operator's Kraken store, the gate's data,
+  has not been touched by this amendment.
+- **Calibration:** the null calibration was re-run for the amended D
+  (`research/data/trend_sleeve_gate_calibration.json`).

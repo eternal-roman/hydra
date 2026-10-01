@@ -64,7 +64,9 @@ BOOT_SEED = 7
 ENGINE_BALANCE = 10_000.0
 ENGINE_FEE_BPS = 25.0
 
-ARMS = ("bh_cap", "bh_voltarget", "sleeve_novt", "sleeve", "inverse")
+ARMS = ("bh_cap", "bh_voltarget", "sleeve_novt", "sleeve", "sleeve_entry_only", "inverse")
+RESIZE_DAYS = HydraEngine.SLEEVE_RESIZE_DAYS
+RESIZE_TOL = HydraEngine.SLEEVE_RESIZE_TOL
 
 
 # ── data ────────────────────────────────────────────────────────────────
@@ -170,12 +172,19 @@ def sleeve_path(days: Sequence[int], closes: Sequence[float]
 
 def simulate(closes: Sequence[float], path: Sequence[Tuple[Optional[float], float]],
              start: int, arm: str, cost: float, cash_apy: float = 0.0,
-             cap: float = CAP, breaker_pct: Optional[float] = None) -> dict:
+             cap: float = CAP, breaker_pct: Optional[float] = None,
+             days: Optional[Sequence[int]] = None) -> dict:
     """Daily equity returns of one arm over days [start, n).
 
     Decide on the close of day i-1, trade at that close plus `cost` per
     side on the traded notional, hold over day i. Idle cash earns
     `cash_apy` in every arm alike.
+
+    The sleeve-shaped arms (sleeve, sleeve_novt, inverse) follow the
+    engine's re-size rule: SLEEVE_RESIZE_DAYS after the last sizing the
+    position is re-set to its target unless already within
+    SLEEVE_RESIZE_TOL of it. `sleeve_entry_only` is the original
+    registration's construction: sized at entry, never re-sized.
 
     `breaker_pct` models the engine's sticky circuit breaker: once equity
     is that far below its peak at a close, the arm sells at that close and
@@ -183,14 +192,17 @@ def simulate(closes: Sequence[float], path: Sequence[Tuple[Optional[float], floa
     """
     if arm not in ARMS:
         raise ValueError(arm)
+    day_of = (lambda i: days[i]) if days is not None else (lambda i: i)
     cash, units = 1.0, 0.0
     cash_daily = (1.0 + cash_apy) ** (1.0 / 365.0) - 1.0
     rets: List[float] = []
     exposure: List[float] = []
     entries = 0
+    resizes = 0
     prev_equity = 1.0
     peak = 1.0
     halted_at: Optional[int] = None
+    sized_day: Optional[int] = None
     for i in range(start, len(closes)):
         score, vm = path[i]
         px = closes[i - 1]
@@ -208,14 +220,25 @@ def simulate(closes: Sequence[float], path: Sequence[Tuple[Optional[float], floa
         else:
             warm = score is not None
             want = warm and (score < LONG_AT if arm == "inverse" else score >= LONG_AT)
+            frac = cap * (1.0 if arm == "sleeve_novt" else vm)
             if want and units == 0.0:
-                frac = cap * (1.0 if arm == "sleeve_novt" else vm)
                 units = cash * frac / px
                 cash -= units * px * (1.0 + cost)
                 entries += 1
+                sized_day = day_of(i)
             elif not want and units > 0.0:
                 cash += units * px * (1.0 - cost)
                 units = 0.0
+            elif (want and units > 0.0 and arm != "sleeve_entry_only"
+                  and (sized_day is None or day_of(i) - sized_day >= RESIZE_DAYS)):
+                target_notional = (cash + units * px) * frac
+                current = units * px
+                if abs(current - target_notional) > RESIZE_TOL * target_notional:
+                    delta = target_notional / px - units
+                    cash -= delta * px + abs(delta) * px * cost
+                    units += delta
+                    resizes += 1
+                sized_day = day_of(i)
         if cash > 0:
             cash *= 1.0 + cash_daily
         equity = cash + units * closes[i]
@@ -230,12 +253,13 @@ def simulate(closes: Sequence[float], path: Sequence[Tuple[Optional[float], floa
                 equity = cash
         rets.append(equity / prev_equity - 1.0 if prev_equity > 0 else 0.0)
         prev_equity = equity
-    days = len(rets)
+    n_days = len(rets)
     return {
         "rets": rets,
         "entries": entries,
-        "time_in_market": (sum(1 for e in exposure if e > 0) / days) if days else 0.0,
-        "avg_exposure": (sum(exposure) / days) if days else 0.0,
+        "resizes": resizes,
+        "time_in_market": (sum(1 for e in exposure if e > 0) / n_days) if n_days else 0.0,
+        "avg_exposure": (sum(exposure) / n_days) if n_days else 0.0,
         "max_exposure": max(exposure) if exposure else 0.0,
         "breaker_day_index": halted_at,
     }
@@ -321,20 +345,21 @@ def evaluate_asset(days: Sequence[int], closes: Sequence[float],
     if start is None:
         return {"verdict": "INSUFFICIENT_DATA", "reason": "the sleeve never warmed up",
                 "days": len(closes)}
-    runs = {arm: simulate(closes, path, start, arm, BASE_COST) for arm in ARMS}
+    runs = {arm: simulate(closes, path, start, arm, BASE_COST, days=days) for arm in ARMS}
     base = {arm: stats(r["rets"]) for arm, r in runs.items()}
     third_stats = {arm: [stats(t) for t in thirds(r["rets"])] for arm, r in runs.items()}
-    stress = {arm: stats(simulate(closes, path, start, arm, STRESS_COST)["rets"])
+    stress = {arm: stats(simulate(closes, path, start, arm, STRESS_COST, days=days)["rets"])
               for arm in ("sleeve", "bh_voltarget")}
     apy = {arm: stats(simulate(closes, path, start, arm, BASE_COST,
-                               cash_apy=SENSITIVITY_CASH_APY)["rets"])
+                               cash_apy=SENSITIVITY_CASH_APY, days=days)["rets"])
            for arm in ARMS}
     # Reported, not gated: the same arms under the engine's sticky 15%
     # breaker. The sleeve sizes once and never trims, so a rally grows its
     # exposure and an ordinary pullback can trip the breaker for good.
     breaker = HydraEngine.CIRCUIT_BREAKER_PCT
-    with_cb = {arm: simulate(closes, path, start, arm, BASE_COST, breaker_pct=breaker)
-               for arm in ("sleeve", "bh_voltarget")}
+    with_cb = {arm: simulate(closes, path, start, arm, BASE_COST, breaker_pct=breaker,
+                             days=days)
+               for arm in ("sleeve", "sleeve_entry_only", "bh_voltarget")}
     crit = criteria(base, third_stats, stress)
     years = (len(closes) - start) / 365.0
     if years < MIN_EVAL_YEARS:
@@ -349,6 +374,8 @@ def evaluate_asset(days: Sequence[int], closes: Sequence[float],
                    "start_ts": days[start] * DAY, "end_ts": days[-1] * DAY + 23 * 3600,
                    "years_evaluated": round(years, 2), "warmup_days": start},
         "arms": {arm: {**_rounded(base[arm]), "entries": runs[arm]["entries"],
+                       "resizes": runs[arm]["resizes"],
+                       "max_exposure": round(runs[arm]["max_exposure"], 4),
                        "entries_per_year": round(runs[arm]["entries"] / years, 2) if years else 0.0,
                        "time_in_market": round(runs[arm]["time_in_market"], 4),
                        "avg_exposure": round(runs[arm]["avg_exposure"], 4)}
@@ -361,7 +388,6 @@ def evaluate_asset(days: Sequence[int], closes: Sequence[float],
                   "breaker_tripped_on": (_iso(days[r["breaker_day_index"]])
                                          if r["breaker_day_index"] is not None else None)}
             for arm, r in with_cb.items()},
-        "sleeve_max_exposure": round(runs["sleeve"]["max_exposure"], 4),
         "bootstrap_sharpe_diff_sleeve_minus_voltarget_bh": _rounded(boot),
         "criteria": crit,
     }
@@ -586,6 +612,7 @@ def main(argv: Optional[List[str]] = None) -> dict:
         "params": {"cap": CAP, "long_at": LONG_AT, "base_cost_per_side": BASE_COST,
                    "stress_cost_per_side": STRESS_COST, "rebalance_days": REBALANCE_DAYS,
                    "min_eval_years": MIN_EVAL_YEARS, "dd_ratio": DD_RATIO,
+                   "resize_days": RESIZE_DAYS, "resize_tol": RESIZE_TOL,
                    "boot_n": args.boot, "boot_seed": BOOT_SEED,
                    "engine_balance": ENGINE_BALANCE, "engine_fee_bps": ENGINE_FEE_BPS},
         "assets": assets,

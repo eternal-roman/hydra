@@ -252,9 +252,9 @@ def test_report_carries_the_breaker_diagnostic():
     days = [START_DAY + i for i in range(len(closes))]
     out = gate.evaluate_asset(days, closes, boot_n=20)
     diag = out["engine_breaker_diagnostic"]
-    assert set(diag) == {"sleeve", "bh_voltarget"}
+    assert set(diag) == {"sleeve", "sleeve_entry_only", "bh_voltarget"}
     assert "breaker_tripped_on" in diag["sleeve"]
-    assert 0.0 <= out["sleeve_max_exposure"] <= 1.0
+    assert 0.0 <= out["arms"]["sleeve"]["max_exposure"] <= 1.0
 
 
 def test_calibration_reports_each_family():
@@ -285,3 +285,35 @@ def test_a_foreign_sqlite_is_refused_clearly(tmp_path):
     with pytest.raises(SystemExit, match="not a Hydra history store"):
         gate.load_daily_sqlite(str(db), "BTC/USD")
     assert gate.has_hourly(str(db), "BTC/USD") is False
+
+
+def _rally_then_flat(n_up=60, n_flat=40):
+    """Daily closes: +1%/day for n_up days, then flat."""
+    closes = [100.0 * (1.01 ** i) for i in range(n_up)]
+    closes += [closes[-1]] * n_flat
+    return closes
+
+
+def test_resized_sleeve_trims_a_rally_back_to_target():
+    closes = _rally_then_flat()
+    path = [(None, 1.0)] + [(1.0, 0.5)] * (len(closes) - 1)
+    resized = gate.simulate(closes, path, 1, "sleeve", cost=0.0, cap=0.4)
+    entry_only = gate.simulate(closes, path, 1, "sleeve_entry_only", cost=0.0, cap=0.4)
+    assert resized["resizes"] >= 1 and entry_only["resizes"] == 0
+    assert entry_only["max_exposure"] > 0.3          # 0.2 at entry, drifted up
+    assert resized["max_exposure"] < entry_only["max_exposure"]
+
+
+def test_resize_waits_for_the_period_and_the_band():
+    closes = [100.0] * 80
+    path = [(None, 1.0)] + [(1.0, 0.5)] * 79
+    run = gate.simulate(closes, path, 1, "sleeve", cost=0.0, cap=0.4)
+    assert run["resizes"] == 0  # flat price: always within tolerance
+    vm_shift = [(None, 1.0)] + [(1.0, 0.5)] * 20 + [(1.0, 1.0)] * 59
+    early = gate.simulate(closes, vm_shift, 1, "sleeve", cost=0.0, cap=0.4)
+    assert early["resizes"] == 1  # once, at day 30 (vm doubled on day 21)
+
+
+def test_gate_resize_mirrors_the_engine_constants():
+    assert gate.RESIZE_DAYS == HydraEngine.SLEEVE_RESIZE_DAYS == 30
+    assert gate.RESIZE_TOL == HydraEngine.SLEEVE_RESIZE_TOL == 0.10
