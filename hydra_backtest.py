@@ -44,6 +44,7 @@ from hydra_engine import (
     Candle,
     CrossPairCoordinator,
     HydraEngine,
+    is_protected_flatten_reason,
     SIZING_COMPETITION,
     SIZING_CONSERVATIVE,  # noqa: F401 — re-exported for callers
     session_confidence_delta,
@@ -509,6 +510,11 @@ class PendingOrder:
     size: float
     placed_tick: int
     pre_trade_snapshot: Dict[str, Any]  # for rollback if fill model rejects
+    # The decision's labels. The fill used to be booked as MOMENTUM with
+    # confidence 0 whatever placed it, so per-strategy reads were fiction.
+    strategy: str = "MOMENTUM"
+    confidence: float = 0.0
+    signal_reason: str = ""
 
 
 @dataclass
@@ -936,8 +942,8 @@ class BacktestRunner:
                         fill_price=float(fill.fill_price),
                         pre_trade_snapshot=order.pre_trade_snapshot,
                         reason=f"backtest_fill:{fill.reason}",
-                        strategy="MOMENTUM",
-                        confidence=0.0,
+                        strategy=order.strategy,
+                        confidence=order.confidence,
                     )
                     if not applied:
                         # Fallback if snapshot missing: keep optimistic books.
@@ -986,8 +992,9 @@ class BacktestRunner:
                         "amount": float(order.size),
                         "value": float(fill.fill_price) * float(order.size),
                         "reason": f"backtest_fill:{fill.reason}",
-                        "confidence": 0.0,
-                        "strategy": "MOMENTUM",
+                        "signal_reason": order.signal_reason,
+                        "confidence": order.confidence,
+                        "strategy": order.strategy,
                         "profit": realized_profit,
                         "timestamp": getattr(current_candles[pair], "timestamp", None),
                         "fee_paid": float(fill.fee_paid),
@@ -1034,8 +1041,12 @@ class BacktestRunner:
                     if not state or "signal" not in state:
                         continue
                     sig = state["signal"]
+                    # Live parity (HydraAgent._apply_cross_pair_overrides):
+                    # the breaker, hold-through and sleeve flattens are
+                    # already the decision; relabelling one dropped the
+                    # marker that keeps the rails from re-holding it.
                     if (str(sig.get("action") or "") == "SELL"
-                            and str(sig.get("reason") or "").startswith("HALT FLATTEN")):
+                            and is_protected_flatten_reason(sig.get("reason"))):
                         continue
                     sig["action"] = override.get("signal", sig["action"])
                     sig["confidence"] = override.get("confidence_adj", sig["confidence"])
@@ -1111,6 +1122,9 @@ class BacktestRunner:
                     size=trade.amount,
                     placed_tick=tick,
                     pre_trade_snapshot=pre_snap,
+                    strategy=trade.strategy,
+                    confidence=float(trade.confidence),
+                    signal_reason=trade.reason,
                 )
                 # Intent is pending only — confirmed fills append to trade_log
                 # on next-bar fill (v2.27.6; avoids reject skew on holding stats).
@@ -1145,12 +1159,16 @@ class BacktestRunner:
                 self._pending[sell_pair] = PendingOrder(
                     pair=sell_pair, side="SELL", limit_price=sell_trade.price,
                     size=sell_trade.amount, placed_tick=tick,
-                    pre_trade_snapshot=sell_snap,
+                    pre_trade_snapshot=sell_snap, strategy=sell_trade.strategy,
+                    confidence=float(sell_trade.confidence),
+                    signal_reason=sell_trade.reason,
                 )
                 self._pending[buy_pair] = PendingOrder(
                     pair=buy_pair, side="BUY", limit_price=buy_trade.price,
                     size=buy_trade.amount, placed_tick=tick,
-                    pre_trade_snapshot=buy_snap,
+                    pre_trade_snapshot=buy_snap, strategy=buy_trade.strategy,
+                    confidence=float(buy_trade.confidence),
+                    signal_reason=buy_trade.reason,
                 )
 
             # 6) Record per-tick series for result + UI streaming.

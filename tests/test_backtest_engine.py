@@ -808,3 +808,40 @@ def test_realistic_fill_rejects_a_wick_only_doji_and_a_no_trade_bar():
         f = SimulatedFiller(model)
         assert not f.try_fill(order("BUY", 100.0), flat_dead).filled
         assert not f.try_fill(order("SELL", 100.0), flat_dead).filled
+
+
+def test_coordinator_override_skips_a_protected_flatten_like_live():
+    """Live (_apply_cross_pair_overrides) keeps every protected flatten; the
+    backtest skipped only HALT FLATTEN, so a coordinator BUY relabelled a
+    hold-through or sleeve exit and the replay diverged from production."""
+    cfg = make_quick_config(name="coord-parity", n_candles=40)
+    runner = BacktestRunner(cfg)
+    engine = runner.engines["BTC/USD"]
+    real_tick = engine.tick
+    calls = []
+
+    def tick(generate_only=False):
+        state = real_tick(generate_only=generate_only)
+        state["signal"] = {"action": "SELL", "confidence": 0.9,
+                           "reason": "HOLD_THROUGH:force_flatten|Defensive"}
+        return state
+
+    def execute_signal(action, confidence, reason="", strategy="MOMENTUM", **kw):
+        calls.append((action, reason))
+        return None
+
+    class _Coord:
+        def update(self, pair, regime):
+            pass
+
+        def get_overrides(self, states, price_series=None):
+            return {"BTC/USD": {"action": "ADJUST", "signal": "BUY",
+                                "confidence_adj": 0.9, "reason": "confluence"}}
+
+    engine.tick = tick
+    engine.execute_signal = execute_signal
+    runner.coordinator = _Coord()
+    result = runner.run()
+    assert result.status == "complete", result.errors
+    assert calls
+    assert all(a == "SELL" and r.startswith("HOLD_THROUGH:force_flatten") for a, r in calls)
