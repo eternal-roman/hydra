@@ -1,0 +1,61 @@
+{
+  "registration": "research/data/abi/postonly_fill_REGISTRATION.md",
+  "fill_rule": "through-trade only (BUY low<c_t, SELL high>c_t)",
+  "per_pair": {
+    "BTC_USD": {
+      "SELL_down": {
+        "n": 298,
+        "p_fill_1bar": 0.963
+      },
+      "BUY_up": {
+        "n": 368,
+        "p_fill_1bar": 0.981
+      }
+    },
+    "ETH_USD": {
+      "SELL_down": {
+        "n": 296,
+        "p_fill_1bar": 0.953
+      },
+      "BUY_up": {
+        "n": 370,
+        "p_fill_1bar": 0.976
+      }
+    },
+    "ZEC_USD": {
+      "SELL_down": {
+        "n": 304,
+        "p_fill_1bar": 0.905
+      },
+      "BUY_up": {
+        "n": 362,
+        "p_fill_1bar": 0.942
+      }
+    }
+  },
+  "pooled": {
+    "SELL_in_downtrend": {
+      "n": 898,
+      "p_fill_1bar": 0.94,
+      "p_fill_4bars": 0.976,
+      "p_fill_24bars": 0.99,
+      "fwd24_mean_pct_if_filled_1bar": 0.434,
+      "fwd24_mean_pct_if_unfilled_1bar": 0.093,
+      "n_unfilled_1bar": 54
+    },
+    "BUY_in_uptrend": {
+      "n": 1100,
+      "p_fill_1bar": 0.966,
+      "p_fill_4bars": 0.982,
+      "p_fill_24bars": 0.995,
+      "fwd24_mean_pct_if_filled_1bar": 0.351,
+      "fwd24_mean_pct_if_unfilled_1bar": 1.098,
+      "n_unfilled_1bar": 37
+    }
+  },
+  "criteria": {
+    "c1_sell_fill_1bar_lt_0.80": false,
+    "c2_unfilled_sell_fwd24_negative": false
+  },
+  "verdict": "KILLED"
+}

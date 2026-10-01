@@ -1,0 +1,116 @@
+{
+  "registration": "research/data/abi/trend_independent_REGISTRATION.md",
+  "source": "backtesting==0.6.6 test/BTCUSD.csv (monthly)",
+  "window": [
+    "2013-01-31",
+    "2024-12-31"
+  ],
+  "fee_per_side": 0.0026,
+  "stats": {
+    "buy_and_hold": {
+      "total_pct": 448348.5,
+      "cagr_pct": 102.51,
+      "sharpe": 0.823,
+      "max_dd_pct": 79.2,
+      "months": 143
+    },
+    "sma10": {
+      "total_pct": 819423.7,
+      "cagr_pct": 113.02,
+      "sharpe": 0.832,
+      "max_dd_pct": 69.5,
+      "months": 143
+    },
+    "tsmom12": {
+      "total_pct": 313508.7,
+      "cagr_pct": 96.52,
+      "sharpe": 0.781,
+      "max_dd_pct": 70.6,
+      "months": 143
+    },
+    "inverse_sma10": {
+      "total_pct": -49.7,
+      "cagr_pct": -5.6,
+      "sharpe": 0.043,
+      "max_dd_pct": 74.0,
+      "months": 143
+    }
+  },
+  "subperiods": {
+    "first_half": {
+      "buy_and_hold": {
+        "total_pct": 16229.5,
+        "cagr_pct": 133.79,
+        "sharpe": 0.844,
+        "max_dd_pct": 79.2,
+        "months": 72
+      },
+      "sma10": {
+        "total_pct": 29315.3,
+        "cagr_pct": 157.89,
+        "sharpe": 0.872,
+        "max_dd_pct": 69.5,
+        "months": 72
+      },
+      "tsmom12": {
+        "total_pct": 26112.3,
+        "cagr_pct": 152.98,
+        "sharpe": 0.869,
+        "max_dd_pct": 70.6,
+        "months": 72
+      },
+      "inverse_sma10": {
+        "total_pct": -47.0,
+        "cagr_pct": -10.05,
+        "sharpe": -0.098,
+        "max_dd_pct": 61.8,
+        "months": 72
+      }
+    },
+    "second_half": {
+      "buy_and_hold": {
+        "total_pct": 2646.2,
+        "cagr_pct": 75.05,
+        "sharpe": 1.133,
+        "max_dd_pct": 72.7,
+        "months": 71
+      },
+      "sma10": {
+        "total_pct": 2686.0,
+        "cagr_pct": 75.48,
+        "sharpe": 1.223,
+        "max_dd_pct": 40.6,
+        "months": 71
+      },
+      "tsmom12": {
+        "total_pct": 1096.4,
+        "cagr_pct": 52.12,
+        "sharpe": 0.992,
+        "max_dd_pct": 42.4,
+        "months": 71
+      },
+      "inverse_sma10": {
+        "total_pct": -5.0,
+        "cagr_pct": -0.86,
+        "sharpe": 0.176,
+        "max_dd_pct": 64.7,
+        "months": 71
+      }
+    }
+  },
+  "time_in_market": {
+    "sma10": 0.692,
+    "tsmom12": 0.741
+  },
+  "convexity_ols_sma10_on_underlying": {
+    "b0": 0.01101,
+    "b1": 0.7742,
+    "b2": 0.0526
+  },
+  "criteria": {
+    "c1_trend_sharpe_gt_bh": false,
+    "c2_trend_maxdd_lt_bh": true,
+    "c3_inverse_sharpe_lt_bh": true
+  },
+  "verdict": "KILLED"
+}
