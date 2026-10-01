@@ -43,12 +43,18 @@ regression bug, not a style issue.
   **capital preservation** (hold-through + daily trend overlay + friction
   + 15% BUY-only CB) — not a proven growth alpha claim. The only
   after-fee *selection* edge in the ledger is **S3 daily bounce X1 on
-  BTC/ETH**, still **shadow-only** (`HYDRA_S3_STRATEGY`, no order path).
+  BTC/ETH**, still **shadow-only** (`HYDRA_S3_STRATEGY`, no order path)
+  and not statistically established (BTC t=0.74, ETH t=1.59).
   **Heartbeat** is a BTC/ETH order-flow confirmer for display + shadow
   co-log (dashboard P(up); brain advisory); **never** a live BUY/SELL
-  gate until a powered bakeoff clears. SOL/ZEC flow FAIL; ZEC S3
-  untradable. Ledger: `heartbeat/HONEST_FINDINGS.md` · funnel:
-  `heartbeat/evidence/ABI_FUNNEL_2026-07-19.md`.
+  gate until a powered bakeoff clears, and its committed AUCs predate
+  the 2026-10 labeler leak fix (re-run before use). SOL/ZEC flow FAIL;
+  ZEC S3 untradable. The one candidate with a risk rationale is the
+  default-OFF daily trend sleeve (`HYDRA_TREND_SLEEVE`), pending its
+  pre-registered real-data gate. Ledger: `heartbeat/HONEST_FINDINGS.md`
+  (2026-10 corrections) · funnels:
+  `heartbeat/evidence/ABI_FUNNEL_2026-07-19.md`,
+  `research/ABI_FUNNEL_2026-10-01.md`.
 - **Pairs (default v2.29+):** BTC/USD, ETH/USD, ZEC/USD — three
   independent stable-quoted cores, NO triangle/coordinator (both
   `_derive_triangle`s return None; coordinator is a no-op). The SOL
