@@ -106,6 +106,25 @@ STALE_PLACED_REQUERY_S = 1800.0
 REQUERY_EVERY_TICKS = 6
 
 
+def merge_llm_verdict(engine_action: Any, final_signal: Any) -> str:
+    """Action to execute after the LLM's final verdict on an engine signal.
+
+    One rule for the fresh deliberation and the same-candle cached replay
+    (they used to disagree, so a BUY was placed on one tick and cancelled by
+    the cache on the next). The verdict may veto (HOLD) or turn an entry
+    into an exit; it may never open a position the engine did not signal —
+    an OVERRIDE of an engine SELL to BUY executed a long sized on the
+    bearish signal's confidence. An unparseable verdict changes nothing.
+    """
+    engine = str(engine_action or "HOLD").upper()
+    final = str(final_signal or "").upper()
+    if engine not in ("BUY", "SELL") or final not in ("BUY", "SELL", "HOLD"):
+        return engine
+    if engine == "SELL" and final == "BUY":
+        return "HOLD"
+    return final
+
+
 def placement_outcome_unknown(result: Any) -> bool:
     """True when a placement error leaves it unknown whether Kraken took it."""
     if not isinstance(result, dict) or "error" not in result:
@@ -1188,6 +1207,35 @@ class HydraAgent:
             out.append(entry)
         return out
 
+    def _trim_journal(self) -> None:
+        """Bound the in-memory journal at ORDER_JOURNAL_CAP, oldest first.
+
+        Session-only PLACEMENT_FAILED diagnostics go first, and a PLACED row
+        is never dropped. A plain tail slice let a failure loop (one row per
+        pair per tick) evict real fills — the next rolling write then deleted
+        them from disk — and could evict a working order, after which its
+        fill or cancel was dropped as "journal entry not found" and the
+        engine kept a phantom position.
+        """
+        cap = int(getattr(self, "ORDER_JOURNAL_CAP", 2000))
+        journal = self.order_journal
+        excess = len(journal) - cap
+        if excess <= 0:
+            return
+        for drop_state in ("PLACEMENT_FAILED", None):
+            if excess <= 0:
+                break
+            kept = []
+            for entry in journal:
+                state = (entry.get("lifecycle") or {}).get("state") if isinstance(entry, dict) else None
+                droppable = (state == "PLACEMENT_FAILED") if drop_state else (state != "PLACED")
+                if excess > 0 and droppable:
+                    excess -= 1
+                    continue
+                kept.append(entry)
+            journal = kept
+        self.order_journal = journal
+
     def _persist_rolling_journal(self) -> None:
         """Atomic write of the rolling journal. Demo never touches the operator file."""
         if getattr(self, "demo", False):
@@ -1669,9 +1717,8 @@ class HydraAgent:
                 backfill_consumed = True
 
         merged = sorted(seen.values(), key=lambda e: e.get("placed_at", ""))
-        if len(merged) > self.ORDER_JOURNAL_CAP:
-            merged = merged[-self.ORDER_JOURNAL_CAP:]
         self.order_journal = merged
+        self._trim_journal()
         self._normalize_journal_pairs(self.order_journal)
 
         if backfill_consumed:
@@ -1964,23 +2011,9 @@ class HydraAgent:
                 cross_overrides = self.coordinator.get_overrides(
                     engine_states, price_series=price_series,
                 )
-                pending_swaps = []
-                for pair, override in cross_overrides.items():
-                    state = engine_states.get(pair)
-                    if not state:
-                        continue
-                    if _is_halt_flatten(state):
-                        print(f"  [CROSS] {pair}: halt flatten kept — override skipped")
-                        continue
-                    print(f"  [CROSS] {pair}: {override['action']} → {override['signal']} "
-                          f"(conf {override['confidence_adj']:.2f}) — {override['reason']}")
-                    state["signal"]["action"] = override["signal"]
-                    state["signal"]["confidence"] = override["confidence_adj"]
-                    state["signal"]["reason"] = f"[CROSS-PAIR] {override['reason']}"
-                    state["cross_pair_override"] = override
-                    # Collect swap opportunities for execution after trades
-                    if override.get("swap"):
-                        pending_swaps.append(override["swap"])
+                pending_swaps = self._apply_cross_pair_overrides(
+                    engine_states, cross_overrides,
+                )
 
                 # If coordinator changed signal direction, reset baseline for cap
                 for pair in self.pairs:
@@ -2417,8 +2450,7 @@ class HydraAgent:
                     self._apply_execution_event(term)
 
                 # Cap order journal to prevent unbounded memory growth
-                if len(self.order_journal) > self.ORDER_JOURNAL_CAP:
-                    self.order_journal = self.order_journal[-self.ORDER_JOURNAL_CAP:]
+                self._trim_journal()
 
 
             except Exception as e:
@@ -2482,6 +2514,39 @@ class HydraAgent:
 
         # Final report
         self._print_final_report()
+
+    @staticmethod
+    def _apply_cross_pair_overrides(engine_states: Dict[str, Any],
+                                    cross_overrides: Dict[str, Any]) -> List[dict]:
+        """Phase 1.5: write coordinator overrides onto the tick states.
+
+        A protected flatten (circuit-breaker HALT FLATTEN, hold-through trend
+        exit) is never rewritten: relabelling its reason to [CROSS-PAIR]
+        stripped the marker that keeps R10 and the brain from turning it into
+        HOLD, and the position rode the downtrend. Returns pending swaps.
+        """
+        pending_swaps: List[dict] = []
+        for pair, override in cross_overrides.items():
+            state = engine_states.get(pair)
+            if not state:
+                continue
+            sig = state.get("signal") or {}
+            if _is_halt_flatten(state) or (
+                sig.get("action") == "SELL"
+                and is_protected_flatten_reason(sig.get("reason"))
+            ):
+                print(f"  [CROSS] {pair}: protected flatten kept — override skipped")
+                continue
+            print(f"  [CROSS] {pair}: {override['action']} → {override['signal']} "
+                  f"(conf {override['confidence_adj']:.2f}) — {override['reason']}")
+            state["signal"]["action"] = override["signal"]
+            state["signal"]["confidence"] = override["confidence_adj"]
+            state["signal"]["reason"] = f"[CROSS-PAIR] {override['reason']}"
+            state["cross_pair_override"] = override
+            # Collect swap opportunities for execution after trades
+            if override.get("swap"):
+                pending_swaps.append(override["swap"])
+        return pending_swaps
 
     def _demo_seed_price(self, pair: str) -> float:
         """Return a reasonable starting mid for offline synthetic series."""
@@ -2717,7 +2782,11 @@ class HydraAgent:
         same documented degradation as the fallback path) and there is no
         brain size multiplier, so the final multiplier is the rule stack alone.
         """
-        if os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1":
+        # The kill switch removes the indicator rules (R1-R11, QFE), not the
+        # LLM's cached same-candle verdict — returning early here used to let
+        # a BUY the brain had vetoed through on the next tick.
+        rules_disabled = os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1"
+        if rules_disabled and not keep_brain:
             return state
 
         cached = state.get("ai_decision") if keep_brain else None
@@ -2748,24 +2817,25 @@ class HydraAgent:
         rules_force_hold_reason = ""
         rules_size_mult = 1.0
 
-        try:
-            from hydra_quant_rules import apply_rules as _apply_quant_rules
-            rule_result = _apply_quant_rules(
-                engine_action=engine_action,
-                quant_output={"positioning_bias": "", "force_hold": False},
-                quant_indicators=state.get("quant_indicators") or None,
-            )
-            rules_triggered = [
-                {"rule_id": f.rule_id, "name": f.name, "effect": f.effect,
-                 "size_mult": f.size_mult, "reason": f.reason}
-                for f in rule_result.triggered
-            ]
-            rules_force_hold = rule_result.force_hold
-            rules_force_hold_reason = rule_result.force_hold_reason
-            rules_size_mult = rule_result.size_multiplier
-        except Exception as re:
-            print(f"  [QUANT RULES] apply_rules error ({type(re).__name__}: {re})")
-            return state
+        if not rules_disabled:
+            try:
+                from hydra_quant_rules import apply_rules as _apply_quant_rules
+                rule_result = _apply_quant_rules(
+                    engine_action=engine_action,
+                    quant_output={"positioning_bias": "", "force_hold": False},
+                    quant_indicators=state.get("quant_indicators") or None,
+                )
+                rules_triggered = [
+                    {"rule_id": f.rule_id, "name": f.name, "effect": f.effect,
+                     "size_mult": f.size_mult, "reason": f.reason}
+                    for f in rule_result.triggered
+                ]
+                rules_force_hold = rule_result.force_hold
+                rules_force_hold_reason = rule_result.force_hold_reason
+                rules_size_mult = rule_result.size_multiplier
+            except Exception as re:
+                print(f"  [QUANT RULES] apply_rules error ({type(re).__name__}: {re})")
+                return state
 
         final_size_multiplier = max(0.0, min(1.5, rules_size_mult * (brain_size if keep_brain else 1.0)))
         if rules_force_hold and not (
@@ -2783,13 +2853,37 @@ class HydraAgent:
             print(f"  [QUANT RULES] {pair}: {rules_force_hold_reason} "
                   f"— HALT FLATTEN still sells")
 
-        # R11/QFE — rescue a profitable exit that the rules just blocked.
-        # Same contract as the brain path: exit-only, profit-only,
-        # squeeze-filtered, and it can only ever rewrite an existing SELL.
+        # Same-candle replay of the LLM verdict, by the same rule as the fresh
+        # deliberation (merge_llm_verdict): it may veto or turn an entry into
+        # an exit, never open a position. Before QFE, so QFE can still rescue
+        # a profitable exit the cached verdict vetoed. Never on a protected
+        # flatten — the breaker and trend exits are already the decision.
+        protected = _is_halt_flatten(state) or is_protected_flatten_reason(
+            (state.get("signal") or {}).get("reason"))
+        if keep_brain and cached is not None and not protected:
+            current = str(state["signal"]["action"] or "HOLD").upper()
+            merged_action = merge_llm_verdict(current, cached.get("final_signal"))
+            if merged_action != current:
+                state["signal"]["action"] = merged_action
+                state["signal"]["reason"] = (
+                    f"[BRAIN CACHE] {cached.get('combined_summary') or cached.get('summary') or 'cached verdict'}"
+                )
+                if merged_action == "HOLD":
+                    final_size_multiplier = 0.0
+            elif (current == "SELL" and brain_size <= 0.0):
+                state["signal"]["action"] = "HOLD"
+                state["signal"]["reason"] = "[BRAIN CACHE] exit sized 0"
+                final_size_multiplier = 0.0
+
+        # R11/QFE — rescue a profitable exit that the rules or the cached
+        # verdict just blocked. Same contract as the brain path: exit-only,
+        # profit-only, squeeze-filtered, and it can only ever rewrite an
+        # existing SELL.
         qfe_active = False
         qfe_reason = ""
         qfe_trigger_values: dict = {}
-        if engine_action == "SELL" and state["signal"]["action"] == "HOLD":
+        if (engine_action == "SELL" and state["signal"]["action"] == "HOLD"
+                and not rules_disabled):
             pos = state.get("position", {}) or {}
             pos_size = pos.get("size", 0)
             avg_entry = pos.get("avg_entry", 0)
@@ -2815,17 +2909,6 @@ class HydraAgent:
                               f"P&L {pnl_pct:+.2f}%, no squeeze catalyst")
                 except Exception as qe:
                     print(f"  [QFE] evaluate_qfe error ({type(qe).__name__}: {qe})")
-
-        if keep_brain and cached is not None and not qfe_active:
-            cached_act = str(cached.get("action") or "").upper()
-            cached_final = str(cached.get("final_signal") or "").upper()
-            if cached_act == "OVERRIDE" or cached_final == "HOLD":
-                if state["signal"]["action"] == "BUY":
-                    state["signal"]["action"] = "HOLD"
-                    state["signal"]["reason"] = (
-                        f"[BRAIN CACHE] {cached.get('combined_summary') or 'OVERRIDE HOLD'}"
-                    )
-                    final_size_multiplier = 0.0
 
         if keep_brain and cached is not None:
             merged = dict(cached)
@@ -2872,6 +2955,22 @@ class HydraAgent:
                 state["ai_decision"] = cached
             return state
 
+        # A SELL with no inventory cannot execute (_maybe_execute needs a
+        # position), so an LLM call on it buys nothing — 182 of 187 actionable
+        # rows in the Sept 2026 paper ledger — and its only possible effect
+        # was an OVERRIDE into an unsignalled BUY.
+        if state["signal"]["action"] == "SELL":
+            try:
+                held = float((state.get("position") or {}).get("size") or 0.0)
+            except (TypeError, ValueError):
+                held = 0.0
+            if held <= 0.0:
+                cached = self._last_ai_decision.get(pair)
+                if cached:
+                    state["ai_decision"] = cached
+                return state
+
+        engine_action_original = state["signal"]["action"]
         replay_candle = None
         brain_finished = False
         # Pre-brain filter: skip brain for BUY signals that can't produce tradeable order size
@@ -2893,13 +2992,19 @@ class HydraAgent:
         candles = state.get("candles", [])
         current_candle_ts = candles[-1]["t"] if candles else 0.0
         last_ts = self._last_brain_candle_ts.get(pair, 0.0)
-        if current_candle_ts > 0 and current_candle_ts == last_ts:
-            cached = self._last_ai_decision.get(pair)
+        cached = self._last_ai_decision.get(pair)
+        same_question = (
+            isinstance(cached, dict)
+            and cached.get("engine_action", engine_action_original) == engine_action_original
+        )
+        if current_candle_ts > 0 and current_candle_ts == last_ts and (same_question or not cached):
             if cached:
                 state["ai_decision"] = cached
             # Intra-candle: skip the LLM, not R1–R11. Funding/OI/CVD can
             # print mid-bar; a cached OVERRIDE must not let a SELL through
             # a later R10 blackout, and must not skip a new force_hold.
+            # Keyed by the engine action too: a BUY that appears after a SELL
+            # deliberation on the same candle is a new question, not a replay.
             return self._apply_quant_guardrails(pair, state, keep_brain=True)
 
         # Inject cross-pair triangle context and portfolio-level awareness
@@ -3034,6 +3139,7 @@ class HydraAgent:
             state["ai_decision"] = {
                 "action": decision.action,
                 "final_signal": decision.final_signal,
+                "engine_action": engine_action_original,
                 "confidence_adj": decision.confidence_adj,
                 # v2.14: three-layer size disclosure for auditability.
                 "size_multiplier": final_size_multiplier,
@@ -3094,18 +3200,19 @@ class HydraAgent:
                 # HOLD and surface which rule, so audit is unambiguous.
                 state["signal"]["action"] = "HOLD"
                 state["signal"]["reason"] = f"[QUANT RULES FORCE_HOLD] {rules_force_hold_reason}"
-            elif decision.action == "OVERRIDE":
-                state["signal"]["action"] = decision.final_signal
+            elif merge_llm_verdict(engine_action_for_rules, decision.final_signal) != engine_action_for_rules:
+                merged_action = merge_llm_verdict(engine_action_for_rules, decision.final_signal)
+                state["signal"]["action"] = merged_action
                 state["signal"]["reason"] = f"[AI OVERRIDE] {decision.combined_summary}"
-                # PR-E / E2: re-run rules on FINAL action so SELL→BUY cannot
-                # skip R1 (or any direction-sensitive rule).
+                # PR-E / E2: re-run rules on FINAL action so a direction
+                # change cannot skip R1 (or any direction-sensitive rule).
                 if (not _quant_rules_disabled
-                        and decision.final_signal
-                        and decision.final_signal != engine_action_for_rules):
+                        and merged_action in ("BUY", "SELL")
+                        and merged_action != engine_action_for_rules):
                     try:
                         from hydra_quant_rules import apply_rules as _apply_quant_rules
                         rr2 = _apply_quant_rules(
-                            engine_action=decision.final_signal,
+                            engine_action=merged_action,
                             quant_output=quant_out_for_rules,
                             quant_indicators=state.get("quant_indicators") or None,
                         )
@@ -3148,8 +3255,27 @@ class HydraAgent:
                         print(f"  [QUANT RULES] post-OVERRIDE re-apply error "
                               f"({type(re2).__name__}: {re2})")
             elif decision.action == "ADJUST":
-                state["signal"]["reason"] = f"[AI ADJUSTED] {decision.combined_summary}"
+                # Keep the engine reason: the hold-through rail re-reads it in
+                # execute_signal, and replacing it erased the "extreme
+                # overbought" marker that lets a mid-TREND_UP exit through —
+                # the risk manager's ordinary resize verdict cancelled the exit.
+                state["signal"]["reason"] = (
+                    f"[AI ADJUSTED] {decision.combined_summary}|{state['signal'].get('reason', '')}"
+                )
             # CONFIRM leaves signal unchanged, just adds reasoning
+
+            # A zero size on a non-protected exit is a veto, not an order.
+            # Make it an explicit HOLD so QFE below can still rescue a
+            # profitable exit (it only looks at HOLDs); left as SELL x0 the
+            # engine silently refused it and QFE never saw it.
+            if (state["signal"]["action"] == "SELL"
+                    and final_size_multiplier <= 0.0
+                    and not _is_halt_flatten(state)
+                    and not is_protected_flatten_reason(state["signal"].get("reason"))):
+                state["signal"]["action"] = "HOLD"
+                state["signal"]["reason"] = (
+                    f"[AI OVERRIDE] exit sized 0 — {decision.combined_summary}"
+                )
 
             # R11/QFE — Quant Force Exit: rescue profitable exits from
             # force_hold.  Runs AFTER signal rewriting — if the engine
@@ -3754,6 +3880,9 @@ class HydraAgent:
             lifecycle["accepted_without_txid"] = True
         self.order_journal.append(entry)
         journal_index = len(self.order_journal) - 1
+        # A new working order changes the book; at the journal cap the length
+        # no longer grows, so mark it rather than rely on the length test.
+        self._books_dirty = True
 
         # Register with the execution stream so WS events can finalize this
         # order's lifecycle on subsequent ticks. With no txid the stream
@@ -3813,6 +3942,7 @@ class HydraAgent:
         entry["order_ref"] = {"order_userref": paper_userref, "order_id": paper_order_id}
         self.order_journal.append(entry)
         journal_index = len(self.order_journal) - 1
+        self._books_dirty = True
         self.execution_stream.register(
             order_id=paper_order_id, userref=paper_userref, journal_index=journal_index,
             pair=pair, side=action_upper, placed_amount=amount,
@@ -4297,6 +4427,8 @@ class HydraAgent:
                                 note = ("" if snap is not None else
                                         " (arithmetic fallback; avg_entry may drift "
                                         "slightly if original was an average-in)")
+                                if str(side).upper() == "BUY":
+                                    engine.release_unfilled_buy_halt()
                                 print(f"  [HYDRA] {pair} {side} engine adjusted{note}")
                             except Exception as e:
                                 print(f"  [WARN] {pair} {side} partial-fill reconcile "
@@ -4305,6 +4437,8 @@ class HydraAgent:
                         if engine and snap is not None:
                             try:
                                 engine.restore_position(snap)
+                                if str(side).upper() == "BUY":
+                                    engine.release_unfilled_buy_halt()
                                 print(f"  [HYDRA] {pair} {side} was never filled — "
                                       f"engine rolled back to pre-order book")
                             except Exception as e:
@@ -4509,6 +4643,11 @@ class HydraAgent:
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                           f"filled {vol_exec:.8f}/{placed_amount:.8f} ({ratio:.1%}) — "
                           f"engine reconciled to actual fill")
+                    if str(side or "").upper() == "BUY":
+                        # The unfilled remainder was optimistic inventory too.
+                        # Only the full-cancel path released a halt it armed,
+                        # so a 1% fill left a phantom-armed breaker sticky.
+                        engine.release_unfilled_buy_halt()
                 except Exception as e:
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                           f"reconcile failed ({e}); engine may be over-committed")

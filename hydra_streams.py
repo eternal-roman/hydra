@@ -593,6 +593,15 @@ class BalanceStream(BaseStream):
                     self._free_seen = True
                     self._free_complete = True
             return
+        # A snapshot is a complete read: rows absent from it are gone (an
+        # asset sold to zero while the stream was down). Merging it into the
+        # old maps kept that stale balance, which inflated gross equity and
+        # the sticky portfolio peak, and showed the SELL preflight phantom
+        # base. Rows are parsed first and swapped in under one lock, so a
+        # reader never sees a half-built map (a transiently low gross equity
+        # could arm the portfolio breaker).
+        is_snapshot = msg.get("type") == "snapshot"
+        parsed: List[Tuple[str, float, float]] = []
         for entry in data:
             if not isinstance(entry, dict):
                 continue
@@ -626,17 +635,23 @@ class BalanceStream(BaseStream):
                     except (TypeError, ValueError):
                         free = bal
                     break
-            with self._lock:
-                self._free_seen = True
+            parsed.append((normalized, bal, free))
+        with self._lock:
+            balances = {} if is_snapshot else dict(self._balances)
+            free_map = {} if is_snapshot else dict(self._free)
+            for normalized, bal, free in parsed:
                 if bal > 0:
-                    self._balances[normalized] = bal
-                    self._free[normalized] = free
+                    balances[normalized] = bal
+                    free_map[normalized] = free
                 else:
-                    self._balances.pop(normalized, None)
-                    self._free.pop(normalized, None)
-        if msg.get("type") == "snapshot":
-            with self._lock:
+                    balances.pop(normalized, None)
+                    free_map.pop(normalized, None)
+            self._balances = balances
+            self._free = free_map
+            # An update carrying no currency rows is not a free-balance read.
+            if parsed or is_snapshot:
                 self._free_seen = True
+            if is_snapshot:
                 self._free_complete = True
 
     def latest_balances(self) -> Dict[str, float]:

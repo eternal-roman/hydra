@@ -307,3 +307,28 @@ def run_tests():
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
+
+
+def test_reconnect_snapshot_drops_assets_absent_from_it():
+    """An asset sold to zero while the stream was down is absent from the
+    reconnect snapshot. Merging kept its stale balance (inflated equity and
+    the sticky portfolio peak, phantom base for the SELL preflight)."""
+    from hydra_streams import BalanceStream
+    s = BalanceStream(paper=True)
+    s._on_message({"channel": "balances", "type": "snapshot", "data": [
+        {"asset": "USD", "balance": 1000.0}, {"asset": "BTC", "balance": 0.05}]})
+    assert s.latest_balances() == {"USD": 1000.0, "BTC": 0.05}
+    s._on_message({"channel": "balances", "type": "snapshot", "data": [
+        {"asset": "USD", "balance": 3100.0}]})
+    assert s.latest_balances() == {"USD": 3100.0}
+    assert s.latest_free_balances() == {"USD": 3100.0}
+
+
+def test_update_still_merges_into_the_last_snapshot():
+    from hydra_streams import BalanceStream
+    s = BalanceStream(paper=True)
+    s._on_message({"channel": "balances", "type": "snapshot", "data": [
+        {"asset": "USD", "balance": 1000.0}, {"asset": "BTC", "balance": 0.05}]})
+    s._on_message({"channel": "balances", "type": "update", "data": [
+        {"asset": "BTC", "balance": 0.07}]})
+    assert s.latest_balances() == {"USD": 1000.0, "BTC": 0.07}

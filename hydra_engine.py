@@ -3114,6 +3114,9 @@ class HydraEngine:
                 "equity": round(equity, value_decimals),
                 "pnl_pct": round(pnl_pct, 4),
                 "max_drawdown_pct": round(self.max_drawdown, 4),
+                # Drawdown NOW (equity vs peak). Every risk mandate keys off
+                # this; max_drawdown_pct is a monotone record nothing lowers.
+                "current_drawdown_pct": round(self.current_drawdown_pct(), 4),
                 "peak_equity": round(self.peak_equity, value_decimals),
             },
             "performance": {

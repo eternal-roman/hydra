@@ -770,3 +770,12 @@ class TestTickerParsing:
         assert _with_stub(err, lambda: KrakenCLI.ticker("BTC/USD"))[0] == err
         odd = {"XXBTZUSD": {"something": 1}}
         assert _with_stub(odd, lambda: KrakenCLI.ticker("BTC/USD"))[0] == odd
+
+
+def test_order_volume_is_floored_never_rounded_up():
+    """A SELL clamped to a 10-decimal free balance used to round UP at 8
+    decimals, exceed the holding, and be rejected every tick."""
+    from hydra_kraken_cli import KrakenCLI
+    assert KrakenCLI._format_volume("BTC/USD", 0.0123456789) == "0.01234567"
+    assert KrakenCLI._format_volume("BTC/USD", 0.1) == "0.10000000"
+    assert float(KrakenCLI._format_volume("BTC/USD", 2.999999999)) <= 2.999999999

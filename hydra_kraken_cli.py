@@ -1,6 +1,7 @@
 """Hydra Kraken CLI Wrapper."""
 import subprocess
 import json
+import math
 import os
 import shlex
 import threading
@@ -421,6 +422,29 @@ class KrakenCLI:
         """
         p = cls.registry.get(pair)
         return p.ws_format if p else pair
+
+    @classmethod
+    def _format_volume(cls, pair: str, volume: float) -> str:
+        """Volume floored to the pair's lot decimals (default 8).
+
+        `f"{volume:.8f}"` rounds to nearest, so it could send MORE than
+        intended: a SELL clamped to the free balance (reported to 10
+        decimals) went out a hair above the holding, was rejected, and the
+        identical exit repeated every tick. Flooring never oversells and
+        never overspends.
+        """
+        decimals = 8
+        p = cls.registry.get(pair)
+        if p is not None:
+            try:
+                decimals = max(0, min(12, int(p.lot_decimals)))
+            except (TypeError, ValueError):
+                decimals = 8
+        scale = 10 ** decimals
+        # round() first strips float representation noise (0.1 * 1e8 is
+        # 9999999.999999998), then floor drops any real excess precision.
+        floored = math.floor(round(float(volume) * scale, 6)) / scale
+        return f"{floored:.{decimals}f}"
 
     @classmethod
     def _format_price(cls, pair: str, price: float) -> str:
@@ -914,7 +938,7 @@ class KrakenCLI:
         if denied is not None:
             return denied
         p = cls._resolve_pair(pair)
-        args = ["order", "buy", p, f"{volume:.8f}", "--type", "limit", "--yes"]
+        args = ["order", "buy", p, cls._format_volume(pair, volume), "--type", "limit", "--yes"]
         if price is not None:
             args.extend(["--price", cls._format_price(pair, price)])
         args.extend(["--oflags", "post"])
@@ -940,7 +964,7 @@ class KrakenCLI:
         if denied is not None:
             return denied
         p = cls._resolve_pair(pair)
-        args = ["order", "sell", p, f"{volume:.8f}", "--type", "limit", "--yes"]
+        args = ["order", "sell", p, cls._format_volume(pair, volume), "--type", "limit", "--yes"]
         if price is not None:
             args.extend(["--price", cls._format_price(pair, price)])
         args.extend(["--oflags", "post"])

@@ -229,9 +229,12 @@ HARD MANDATES (non-negotiable — violation = bug)
 ────────────────────────────────────────────────────────────────────
   1. If the Quant set force_hold=true, you CANNOT unblock it.
      Return decision=OVERRIDE, final_action=HOLD, size_multiplier=0.0.
-  2. Drawdown > 10% of peak equity: new BUY entries forbidden.
-     Only HOLD or SELL decisions allowed.
-  3. Drawdown > 15% = engine circuit breaker territory. HOLD everything.
+  2. CURRENT drawdown > 10% of peak equity: new BUY entries forbidden.
+     Only HOLD or SELL decisions allowed. (Max DD is a historical record;
+     it never falls, so it is not a reason to block anything.)
+  3. CURRENT drawdown >= 15%, or the engine is halted = circuit breaker:
+     no BUY entries. Exits stay allowed — never block a SELL that closes
+     inventory.
   4. If the proposed trade pushes single-asset exposure > 30% of NAV,
      ADJUST downward enough to land at or below 30%.
   5. If cross_pair_corr_24h > 0.8 AND trade increases SOL/BTC cluster
@@ -302,7 +305,7 @@ DECISION DISCIPLINE
     CURRENT risk — hard mandate trigger or stress test failure.
     General caution is not a reason to OVERRIDE.
   * portfolio_health reflects aggregate state, NOT this trade:
-    HEALTHY when drawdown < 5%; CAUTION 5–10%; DANGER > 10%.
+    HEALTHY when current drawdown < 5%; CAUTION 5–10%; DANGER > 10%.
 
 Respond ONLY with this JSON (no prose outside the object):
 {
@@ -1116,11 +1119,22 @@ class HydraBrain:
         user_msg += (
             f"\n\nAI budget is ${self.max_daily_cost:.0f}/day. "
             f"${self._estimated_cost():.2f} is already spent today. "
-            "If this trade's expected dollar profit does not cover the cost "
-            "of this decision, set size_multiplier to 0. Otherwise scale "
-            "size_multiplier by the share of that profit left after the cost. "
-            "The engine applies the same rule to the order."
         )
+        if str((state.get("signal") or {}).get("action") or "").upper() == "BUY":
+            user_msg += (
+                "If this entry's expected dollar profit does not cover the cost "
+                "of this decision, set size_multiplier to 0. Otherwise scale "
+                "size_multiplier by the share of that profit left after the cost. "
+                "The engine applies the same rule to the order."
+            )
+        else:
+            # The decision is already paid for; refusing an exit to "save"
+            # it keeps risk on for a sunk cost. A 0 here vetoed real exits.
+            user_msg += (
+                "This is an exit: its decision cost is already spent and is "
+                "not a reason to keep the position. Do not set size_multiplier "
+                "to 0 on cost grounds."
+            )
         if self._tool_use_enabled:
             from hydra_backtest_tool import BACKTEST_TOOLS
             text, tok_in, tok_out, _tool_calls = self._call_llm_with_tools(
@@ -1496,7 +1510,7 @@ VOLUME: current={vol.get('current', '?')} | avg_20={vol.get('avg_20', '?')}
 RECENT CLOSES: {recent_closes}
 
 POSITION: {pos.get('size', 0):.6f} @ avg {pos.get('avg_entry', 0)} | Unrealized: {pos.get('unrealized_pnl', 0)}
-PORTFOLIO: Balance=${port.get('balance', 0):.2f} | Equity=${port.get('equity', 0):.2f} | P&L={port.get('pnl_pct', 0):.2f}% | Max DD={port.get('max_drawdown_pct', 0):.2f}%
+PORTFOLIO: Balance=${port.get('balance', 0):.2f} | Equity=${port.get('equity', 0):.2f} | P&L={port.get('pnl_pct', 0):.2f}% | Current DD={port.get('current_drawdown_pct', 0):.2f}% | Max DD (record)={port.get('max_drawdown_pct', 0):.2f}%
 RECENT AI DECISIONS: {recent or 'None yet'}{self._format_spread(state)}{self._format_quant_indicators(state)}{self._format_triangle_context(state)}{self._format_portfolio_summary(state)}{self._format_portfolio_guidance(state)}{self._format_tax_friction(state)}"""
 
     def _build_risk_prompt(self, state: Dict, analyst: Dict) -> str:
@@ -1537,7 +1551,7 @@ KEY RISK INDICATORS: RSI={ind.get('rsi', '?')} | ATR={volatility.get('atr_pct', 
 VOLUME: current={vol.get('current', '?')} | avg_20={vol.get('avg_20', '?')}
 
 POSITION: {pos.get('size', 0):.6f} @ avg {pos.get('avg_entry', 0)} | Unrealized P&L: {pos.get('unrealized_pnl', 0)}
-PORTFOLIO: Balance=${port.get('balance', 0):.2f} | Equity=${port.get('equity', 0):.2f} | Peak=${port.get('peak_equity', 0):.2f} | P&L={port.get('pnl_pct', 0):.2f}% | Max DD={port.get('max_drawdown_pct', 0):.2f}%
+PORTFOLIO: Balance=${port.get('balance', 0):.2f} | Equity=${port.get('equity', 0):.2f} | Peak=${port.get('peak_equity', 0):.2f} | P&L={port.get('pnl_pct', 0):.2f}% | Current DD={port.get('current_drawdown_pct', 0):.2f}% | Max DD (record)={port.get('max_drawdown_pct', 0):.2f}%
 PERFORMANCE: {perf.get('total_trades', 0)} trades | Win Rate: {perf.get('win_rate_pct', 0):.0f}% | Sharpe: {perf.get('sharpe_estimate', 0):.2f}{self._format_spread(state)}{self._format_rm_features(state)}{self._format_triangle_context(state)}{self._format_portfolio_summary(state)}{self._format_portfolio_guidance(state)}"""
 
     def _build_strategist_prompt(self, state: Dict, analyst: Dict, risk: Dict) -> str:
@@ -1577,7 +1591,7 @@ TREND: EMA20={trend.get('ema20', '?')} | EMA50={trend.get('ema50', '?')} | ATR={
 VOLUME: current={vol.get('current', '?')} | avg_20={vol.get('avg_20', '?')}
 RECENT CLOSES: {recent_closes}
 POSITION: {pos.get('size', 0):.6f} @ avg {pos.get('avg_entry', 0)} | Unrealized: {pos.get('unrealized_pnl', 0)}
-PORTFOLIO: Equity=${port.get('equity', 0):.2f} | P&L={port.get('pnl_pct', 0):.2f}% | Max DD={port.get('max_drawdown_pct', 0):.2f}%{self._format_spread(state)}{self._format_triangle_context(state)}{self._format_portfolio_summary(state)}{self._format_portfolio_guidance(state)}
+PORTFOLIO: Equity=${port.get('equity', 0):.2f} | P&L={port.get('pnl_pct', 0):.2f}% | Current DD={port.get('current_drawdown_pct', 0):.2f}% | Max DD (record)={port.get('max_drawdown_pct', 0):.2f}%{self._format_spread(state)}{self._format_triangle_context(state)}{self._format_portfolio_summary(state)}{self._format_portfolio_guidance(state)}
 
 Make the final call. Think carefully, then respond with JSON only."""
 
