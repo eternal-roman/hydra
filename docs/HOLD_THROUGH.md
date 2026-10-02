@@ -12,7 +12,7 @@ Replaces opt-in `HYDRA_REGIME_SELECTIVE` (weaker floor, no ride-through).
 |------|---------------|-----------------|
 | BUY only in `TREND_UP` | Chop / ranging / volatile entries | Momentum path when trend is real |
 | BUY conf ≥ **0.65** | Low-conf churn (0.55 re-opened losses) | Matches competition sizer floor |
-| Long + `TREND_DOWN` → force SELL | Bag-holding dumps | Defensive flatten (session CB still separate) |
+| Long + `TREND_DOWN` (or `VOLATILE` with the EMA downtrend underneath) → force SELL | Bag-holding dumps | Defensive flatten (session CB still separate) |
 | Mid-`TREND_UP` SELL → HOLD unless extreme overbought | Noise fade-outs that cut winners | Extreme-RSI / reason-tagged exits still fire |
 
 Friction gate, 15% drawdown breaker, limit post-only, Kelly sizing, AI brain,
@@ -25,6 +25,8 @@ coordinator cannot bypass.
 signal + regime + position
   │
   ├─ long + TREND_DOWN     → force SELL (flatten)
+  ├─ long + VOLATILE and EMA20<EMA50, px<EMA20 → force SELL (a dump spikes
+  │     ATR/BB first, so detect() labels it VOLATILE, never TREND_DOWN)
   ├─ BUY + not TREND_UP    → HOLD
   ├─ BUY + TREND_UP
   │     conf < 0.65        → HOLD
@@ -56,6 +58,10 @@ signal + regime + position
   global defaults.
 - **Not deregulation.** Turning rails off (`=0`) is for research / base-path
   unit tests — not a live “unlock alpha” switch.
+- **Not active under the trend sleeve.** `HYDRA_TREND_SLEEVE=1` (default
+  OFF, evidence-gated) replaces the 1h signal and these rails with a daily
+  decision on completed closes; see CLAUDE.md and
+  `research/data/trend_sleeve_REGISTRATION.md`.
 
 ## Ops
 

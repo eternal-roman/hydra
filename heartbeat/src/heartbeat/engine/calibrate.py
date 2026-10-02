@@ -52,7 +52,9 @@ def event_vectors(events: Sequence[BounceEvent],
         for cp in checkpoints:
             k = int(cp.split("+")[1])
             idx = e.bounce_idx + k
-            if idx >= len(rows):
+            # Resolved at or before this checkpoint's close: the S vector
+            # already contains the move that decided the label (leakage).
+            if idx >= len(rows) or idx >= e.resolve_idx:
                 continue
             feats = json.loads(rows[idx]["features_json"])
             vec = {}

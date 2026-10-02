@@ -14,6 +14,7 @@ import pytest
 from hydra_derivatives_stream import (
     DerivativesSnapshot,
     DerivativesStream,
+    FUNDING_PERIODS_PER_8H,
     _absolute_to_relative_bps,
     _delta_pct,
     _maybe_float,
@@ -166,8 +167,9 @@ def test_populate_from_ticker_updates_snapshot(stream):
     now = time.time()
     stream._populate_from_ticker(snap, tick, now)
     assert snap.mark_price == 95000.5
-    assert snap.funding_bps_8h == 0.5
-    assert snap.funding_predicted_bps == 0.4
+    # Per-period (hourly) bps scaled to the 8h basis the field is named for.
+    assert snap.funding_bps_8h == pytest.approx(0.5 * FUNDING_PERIODS_PER_8H)
+    assert snap.funding_predicted_bps == pytest.approx(0.4 * FUNDING_PERIODS_PER_8H)
     assert snap.open_interest == 12345.67
     assert snap.last_updated_ts == now
     assert snap.fetch_error_streak == 0
@@ -193,11 +195,11 @@ def test_synthetic_sol_btc_computes_from_usd_perps(stream):
     # Each leg's funding must be normalized by its own markPrice first.
     # sol: 0.015 / 150 = 1.0e-4 → 1.0 bps
     # btc: 3.0 / 60000 = 5.0e-5 → 0.5 bps
-    # diff: 1.0 - 0.5 = 0.5 bps
+    # diff: 1.0 - 0.5 = 0.5 bps per period, x8 to the 8h basis
     sol = {"fundingRate": "0.015", "markPrice": "150.0"}
     btc = {"fundingRate": "3.0", "markPrice": "60000.0"}
     s._populate_synthetic(snap, sol, btc, time.time())
-    assert snap.funding_bps_8h == 0.5
+    assert snap.funding_bps_8h == pytest.approx(0.5 * FUNDING_PERIODS_PER_8H)
     # Ratio: 150 / 60000 = 0.0025
     assert snap.mark_price == 0.0025
 
@@ -215,9 +217,9 @@ def test_funding_uses_relative_rate_not_absolute(stream):
     snap = DerivativesSnapshot(pair="BTC/USDC", perp_symbol="PF_XBTUSD")
     tick = {"fundingRate": -0.5, "markPrice": 50000.0, "indexPrice": 50000.0}
     s._populate_from_ticker(snap, tick, time.time())
-    # (-0.5 / 50000) * 10000 = -0.10 bps
-    assert snap.funding_bps_8h == -0.1, (
-        f"expected -0.1 bps from (fr/mp)*10000, got {snap.funding_bps_8h}"
+    # (-0.5 / 50000) * 10000 = -0.10 bps per hourly period -> -0.8 bps/8h
+    assert snap.funding_bps_8h == pytest.approx(-0.1 * FUNDING_PERIODS_PER_8H), (
+        f"expected -0.1 bps/period x8 from (fr/mp)*10000, got {snap.funding_bps_8h}"
     )
 
 
@@ -231,8 +233,8 @@ def test_funding_predicted_also_relative(stream):
         "indexPrice": 50000.0,
     }
     s._populate_from_ticker(snap, tick, time.time())
-    # (-1.0 / 50000) * 10000 = -0.2 bps
-    assert snap.funding_predicted_bps == -0.2
+    # (-1.0 / 50000) * 10000 = -0.2 bps per period -> -1.6 bps/8h
+    assert snap.funding_predicted_bps == pytest.approx(-0.2 * FUNDING_PERIODS_PER_8H)
 
 
 def test_funding_returns_none_when_markprice_missing(stream):
@@ -253,8 +255,8 @@ def test_synthetic_funding_uses_per_leg_relative_rates(stream):
     sol = {"fundingRate": -0.0036, "markPrice": 80.0}     # -0.45 bps relative
     btc = {"fundingRate": -1.0,    "markPrice": 50000.0}  # -0.20 bps relative
     s._populate_synthetic(snap, sol, btc, time.time())
-    # (-0.0036/80 - (-1.0/50000)) * 10000 = (-0.000045 + 0.00002) * 10000 = -0.25 bps
-    assert snap.funding_bps_8h == -0.25, (
+    # (-0.0036/80 - (-1.0/50000)) * 10000 = -0.25 bps per period -> -2.0 bps/8h
+    assert snap.funding_bps_8h == pytest.approx(-0.25 * FUNDING_PERIODS_PER_8H), (
         f"synthetic must normalize each leg by its markPrice first, "
         f"got {snap.funding_bps_8h}"
     )
@@ -285,10 +287,10 @@ def test_funding_normal_range_passes_through(stream):
     """Regression guard: typical funding stays intact."""
     s = stream
     snap = DerivativesSnapshot(pair="BTC/USDC", perp_symbol="PF_XBTUSD")
-    # markPrice=50000, fundingRate=2.5 → 0.5 bps (normal)
+    # markPrice=50000, fundingRate=2.5 → 0.5 bps/hour → 4.0 bps/8h (normal)
     tick = {"fundingRate": 2.5, "markPrice": 50000.0, "indexPrice": 50000.0}
     s._populate_from_ticker(snap, tick, time.time())
-    assert snap.funding_bps_8h == 0.5
+    assert snap.funding_bps_8h == pytest.approx(0.5 * FUNDING_PERIODS_PER_8H)
 
 
 # ─── Basis parsing ───────────────────────────────────────────
@@ -598,3 +600,23 @@ def test_restore_respects_history_window_prune_on_load(stream):
     timestamps = [t for t, _ in stream._oi_history[sym]]
     assert all(t >= now - stream.HISTORY_WINDOW_S for t in timestamps)
     assert very_old not in timestamps
+
+
+def test_hourly_funding_is_scaled_to_the_8h_basis_r1_r2_use(stream):
+    """Kraken PF funding settles hourly. An hourly 12 bps print is 96 bps/8h,
+    past R1/R2's 80 bps/8h extreme; unscaled it read as 12 and never fired."""
+    from hydra_quant_rules import FUNDING_EXTREME_BPS
+    snap = DerivativesSnapshot(pair="BTC/USDC", perp_symbol="PF_XBTUSD")
+    # 0.0012 relative per hour = 12 bps/hour
+    tick = {"fundingRate": 60.0, "markPrice": 50000.0, "indexPrice": 50000.0}
+    stream._populate_from_ticker(snap, tick, time.time())
+    assert snap.funding_bps_8h == pytest.approx(96.0)
+    assert snap.funding_bps_8h > FUNDING_EXTREME_BPS
+
+
+def test_8h_sanity_bound_applies_after_scaling(stream):
+    """±500 bps/8h is the documented sanity band; 70 bps/hour = 560 bps/8h."""
+    snap = DerivativesSnapshot(pair="BTC/USDC", perp_symbol="PF_XBTUSD")
+    tick = {"fundingRate": 350.0, "markPrice": 50000.0, "indexPrice": 50000.0}
+    stream._populate_from_ticker(snap, tick, time.time())
+    assert snap.funding_bps_8h is None

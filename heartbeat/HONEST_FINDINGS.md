@@ -111,3 +111,70 @@ Shipped (docs densify + surface, post-v2.30.1 branch):
    (`cascade_week_heartbeat_*`). **Rejected without new anomalies:**
    default-on shadow, live engine SKIP from HB, S3 live orders, trail
    basis flip, daily-entry/1h-exit, stripping rails.
+
+## Audit corrections (2026-10-01) — read before relying on the tables above
+
+Funnel: `research/ABI_FUNNEL_2026-10-01.md`.
+
+1. **The heartbeat AUC table above must be re-run.**
+   - **The leak:** it was scored with a labeler that also scored
+     checkpoints at or after the event resolved. With that leak, null
+     tapes reach AUC ~0.60.
+   - **The fix:** `labeler.p_at` and `calibrate.event_vectors` now stop
+     at `resolve_idx`, pinned by `heartbeat/tests/test_labeler.py`.
+   - **Until re-run:** the BTC/ETH PASS verdicts are unverified, and so is
+     the "confirmer" role built on them.
+2. **S3 X1 is positive but not statistically established.** Recomputed
+   from `research/data/s3/s3_trade_ledger_x1.json` (n=69, 5000-resample
+   bootstrap, seed 7):
+
+   | subset | mean per trade | t | 95% CI |
+   |---|---|---|---|
+   | BTC | +1.17% | 0.74 | [−1.99, +4.10] |
+   | ETH | +3.28% | 1.59 | [−0.70, +7.23] |
+   | ZEC | +1.22% | 0.42 | — |
+   | BTC+ETH pooled | +2.31% | 1.74 | [−0.21, +4.86] |
+
+   The shadow window stays the final authority. No live wiring follows
+   from these numbers.
+3. **The trend gate files predate the 2026-10 fixes and are underpowered.**
+   - **Files:** `trend_overlay_gate.json`, `trend_entry_gate.json`,
+     `conviction_sizing_gate.json`.
+   - **What changed since:** fill model, fees, walk-forward clock and
+     candle finalization.
+   - **Power:** they have ≤ 11 round trips per 3-year window.
+   - **Conviction sizing's "3/3":** it holds on return only. Over 3y it
+     has Sharpe 0.308 vs 0.366 and a 3.6× larger drawdown.
+4. **`trend_results.json` is not a clean trend-edge result.**
+   - It credits 4% APY to the trend arms' idle cash only.
+   - It has no vol-targeted buy-and-hold control.
+   - Its VT arms rebalance daily, unlike the engine.
+   - An independent monthly replication finds no Sharpe gain from timing,
+     only lower drawdown: SMA10 0.832 vs B&H 0.823, maxDD 69.5% vs 79.2%
+     (`research/data/abi/trend_independent_killtest.json`).
+   - It is superseded by the pre-registered, null-calibrated
+     `tools/trend_sleeve_gate.py`
+     (`research/data/trend_sleeve_REGISTRATION.md`). That gate has not yet
+     run on real data.
+5. **Killed this cycle:**
+   - quantum-kernel next-bar classifiers;
+   - post-only winner's curse at 1h (SELL fill within 1 bar: 0.94);
+   - trend timing as Sharpe alpha.
+
+   Evidence: `research/data/abi/`.
+6. **K3b: vol targeting is most of the trend edge.** Independent monthly
+   BTC, registered in git before the runner existed
+   (`research/data/abi/trend_voltarget_monthly_killtest.json`):
+
+   | arm | Sharpe | maxDD |
+   |---|---|---|
+   | SMA10 timing × vol target | 1.052 | 33.0% |
+   | vol-targeted buy-and-hold | 0.979 | 50.1% |
+   | buy-and-hold | 0.822 | 79.2% |
+
+   It SURVIVES all five sleeve-gate criteria but is not significant
+   (bootstrap range [−0.13, +0.37]). The daily sleeve's real-data gate is
+   still unrun.
+7. **The S3 ledger matches real prices where they overlap.** That covers
+   6 trades on the committed Kraken daily fixtures. Every forward return
+   equals the real price change minus exactly 0.52% (26 bps/side).

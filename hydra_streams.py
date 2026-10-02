@@ -5,6 +5,7 @@ import time
 import os
 import threading
 import queue
+from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 
 from hydra_kraken_cli import KrakenCLI, WSL_DISTRO
@@ -17,6 +18,22 @@ _KRAKEN_CLI_ACK_NOISE = (
     "cancel_reason is deprecated",
     "stop_price is deprecated",
 )
+
+
+def candle_open_epoch(entry: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Bar-open epoch of a WS ohlc entry (`interval_begin` ISO or numeric
+    `timestamp`), or None when the entry carries neither."""
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get("interval_begin") or entry.get("timestamp")
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str) and raw:
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
 
 
 def _is_kraken_cli_ack_noise(line: str) -> bool:
@@ -285,6 +302,12 @@ class CandleStream(BaseStream):
         self._pairs = list(pairs)
         self._interval = interval
         self._latest: Dict[str, dict] = {}
+        # Final push of the previous interval per pair. `_latest` is
+        # overwritten by the first push of a new bar, so a 300s tick only
+        # ever saw a finished bar as it stood up to 5 minutes before close:
+        # every engine bar and daily close carried a truncated close/high/low
+        # while the tape (and so the backtest) stored the true bar.
+        self._last_closed: Dict[str, dict] = {}
         # Build symbol → friendly pair reverse map.
         # WS v2 returns symbols like "SOL/BTC", "BTC/USD" (canonical names).
         self._symbol_map: Dict[str, str] = {}
@@ -342,7 +365,14 @@ class CandleStream(BaseStream):
             pair = self._symbol_map.get(symbol)
             if pair:
                 with self._lock:
-                    self._latest[pair] = entry
+                    prev = self._latest.get(pair)
+                    prev_ts = candle_open_epoch(prev)
+                    new_ts = candle_open_epoch(entry)
+                    if (prev is not None and prev_ts is not None
+                            and new_ts is not None and new_ts > prev_ts):
+                        self._last_closed[pair] = prev
+                    if prev is None or prev_ts is None or new_ts is None or new_ts >= prev_ts:
+                        self._latest[pair] = entry
                     cbs = list(self._candle_callbacks)
                 for cb in cbs:
                     try:
@@ -354,6 +384,11 @@ class CandleStream(BaseStream):
         """Return the most recent candle for the given pair, or None."""
         with self._lock:
             return self._latest.get(pair)
+
+    def latest_closed_candle(self, pair: str) -> Optional[Dict[str, Any]]:
+        """Final state of the bar before the forming one, or None."""
+        with self._lock:
+            return self._last_closed.get(pair)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -558,6 +593,15 @@ class BalanceStream(BaseStream):
                     self._free_seen = True
                     self._free_complete = True
             return
+        # A snapshot is a complete read: rows absent from it are gone (an
+        # asset sold to zero while the stream was down). Merging it into the
+        # old maps kept that stale balance, which inflated gross equity and
+        # the sticky portfolio peak, and showed the SELL preflight phantom
+        # base. Rows are parsed first and swapped in under one lock, so a
+        # reader never sees a half-built map (a transiently low gross equity
+        # could arm the portfolio breaker).
+        is_snapshot = msg.get("type") == "snapshot"
+        parsed: List[Tuple[str, float, float]] = []
         for entry in data:
             if not isinstance(entry, dict):
                 continue
@@ -591,17 +635,23 @@ class BalanceStream(BaseStream):
                     except (TypeError, ValueError):
                         free = bal
                     break
-            with self._lock:
-                self._free_seen = True
+            parsed.append((normalized, bal, free))
+        with self._lock:
+            balances = {} if is_snapshot else dict(self._balances)
+            free_map = {} if is_snapshot else dict(self._free)
+            for normalized, bal, free in parsed:
                 if bal > 0:
-                    self._balances[normalized] = bal
-                    self._free[normalized] = free
+                    balances[normalized] = bal
+                    free_map[normalized] = free
                 else:
-                    self._balances.pop(normalized, None)
-                    self._free.pop(normalized, None)
-        if msg.get("type") == "snapshot":
-            with self._lock:
+                    balances.pop(normalized, None)
+                    free_map.pop(normalized, None)
+            self._balances = balances
+            self._free = free_map
+            # An update carrying no currency rows is not a free-balance read.
+            if parsed or is_snapshot:
                 self._free_seen = True
+            if is_snapshot:
                 self._free_complete = True
 
     def latest_balances(self) -> Dict[str, float]:
@@ -771,11 +821,11 @@ class ExecutionStream(BaseStream):
                 if status not in ("closed", "canceled", "expired"):
                     continue
 
-                vol_exec = float(order_info.get("vol_exec", 0))
+                vol_exec = float(order_info.get("vol_exec") or 0)
                 placed = known["placed_amount"]
-                raw_price = float(order_info.get("price", 0))
+                raw_price = float(order_info.get("price") or 0)
                 avg_price = raw_price if raw_price > 0 else None
-                fee = float(order_info.get("fee", 0))
+                fee = float(order_info.get("fee") or 0)
 
                 if status == "closed":
                     state = (
@@ -814,17 +864,29 @@ class ExecutionStream(BaseStream):
 
     # ───────── registration ─────────
 
-    def register(self, *, order_id: str, userref: Optional[int],
+    # Key prefix for a placement whose txid we never received (CLI timeout
+    # after Kraken accepted it). Replaced by the real txid the first time an
+    # execution entry carrying our order_userref arrives.
+    PENDING_PREFIX = "userref:"
+
+    def register(self, *, order_id: Optional[str], userref: Optional[int],
                  journal_index: int, pair: str, side: str,
                  placed_amount: float, engine_ref: Any,
                  pre_trade_snapshot: Any) -> None:
         """Correlate an in-flight placement with its journal entry and
-        rollback handle. Skips registration when order_id is 'unknown'
-        (REST returned no txid) — such orders can't be tracked by id and
-        won't finalize via this stream; the placement helper should log
-        a warning in that case."""
-        if not order_id or order_id == "unknown":
+        rollback handle.
+
+        With no usable txid ('unknown' or None) the order is tracked by its
+        userref under a PENDING_PREFIX key until an execution entry names the
+        txid. Without a userref either, it cannot be correlated at all and
+        registration is skipped."""
+        if order_id and order_id != "unknown":
+            key = order_id
+        elif userref is not None:
+            key = f"{self.PENDING_PREFIX}{int(userref)}"
+        else:
             return
+        order_id = key
         with self._lock:
             self._known_orders[order_id] = {
                 "order_id": order_id,
@@ -843,6 +905,52 @@ class ExecutionStream(BaseStream):
             }
             if userref is not None:
                 self._userref_to_order_id[int(userref)] = order_id
+
+    def learned_order_id(self, userref: Optional[int]) -> Optional[str]:
+        """Real txid the stream has seen for `userref`, else None."""
+        if userref is None:
+            return None
+        try:
+            key = int(userref)
+        except (TypeError, ValueError):
+            return None
+        with self._lock:
+            oid = self._userref_to_order_id.get(key)
+        if not oid or oid.startswith(self.PENDING_PREFIX):
+            return None
+        return oid
+
+    def is_tracking(self, order_id: Optional[str] = None,
+                    userref: Optional[int] = None) -> bool:
+        """True when a terminal event for this order can still arrive here."""
+        with self._lock:
+            if order_id and order_id in self._known_orders:
+                return True
+            if userref is not None:
+                try:
+                    return int(userref) in self._userref_to_order_id
+                except (TypeError, ValueError):
+                    return False
+        return False
+
+    def forget(self, order_id: Optional[str] = None,
+               userref: Optional[int] = None) -> None:
+        """Stop tracking an order the agent finalized another way (a REST
+        re-query or an unconfirmed-placement timeout), so a late execution
+        entry cannot apply a second terminal event to the same journal row."""
+        with self._lock:
+            if userref is not None:
+                try:
+                    key = self._userref_to_order_id.pop(int(userref), None)
+                except (TypeError, ValueError):
+                    key = None
+                if key:
+                    self._known_orders.pop(key, None)
+            if order_id:
+                known = self._known_orders.pop(order_id, None)
+                uref = known.get("userref") if isinstance(known, dict) else None
+                if isinstance(uref, int):
+                    self._userref_to_order_id.pop(uref, None)
 
     def inject_event(self, entry: Dict[str, Any], *, kind: str = "update") -> None:
         """Test/paper hook: push an execution entry straight into the queue
@@ -911,7 +1019,17 @@ class ExecutionStream(BaseStream):
                 resolved_id = self._userref_to_order_id[userref]
                 known = self._known_orders.get(resolved_id)
                 if known is not None:
-                    order_id = resolved_id
+                    if (resolved_id.startswith(self.PENDING_PREFIX)
+                            and isinstance(order_id, str) and order_id):
+                        # First sight of a placement whose response was lost:
+                        # adopt the real txid so cancels, restart-gap queries
+                        # and the journal can all address it.
+                        self._known_orders.pop(resolved_id, None)
+                        known["order_id"] = order_id
+                        self._known_orders[order_id] = known
+                        self._userref_to_order_id[userref] = order_id
+                    else:
+                        order_id = resolved_id
             if known is None:
                 # Not one of ours (snapshot of historical fills, manual trade,
                 # or an order that hasn't been register()'d yet due to a race).
@@ -1005,6 +1123,7 @@ class ExecutionStream(BaseStream):
 
             term = {
                 "order_id": known["order_id"],
+                "userref": known.get("userref"),
                 "journal_index": known["journal_index"],
                 "engine_ref": known["engine_ref"],
                 "pre_trade_snapshot": known["pre_trade_snapshot"],

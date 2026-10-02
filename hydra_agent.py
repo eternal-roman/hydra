@@ -78,13 +78,144 @@ from hydra_kraken_cli import KrakenCLI, describe_error
 from hydra_pair_registry import STABLE_QUOTES
 from hydra_config import TradingTriangle, add_config_args
 from hydra_ws_server import DashboardBroadcaster
-from hydra_streams import CandleStream, TickerStream, BalanceStream, BookStream, ExecutionStream, _is_fully_filled
+from hydra_streams import (
+    CandleStream, TickerStream, BalanceStream, BookStream, ExecutionStream,
+    _is_fully_filled, candle_open_epoch,
+)
 
 # Kraken REST minimum interval (seconds) between distinct REST calls.
 # Below this Kraken throttles or bans. Authoritative floor for the agent's
 # order path; every REST hit (validate, place, cancel, query) must be spaced
 # by at least this. See CLAUDE.md "2s REST floor" invariant.
 KRAKEN_REST_FLOOR_S = 2.0
+
+# Placement errors after which the order may still be live on Kraken: the
+# request can have been sent and accepted before the response was lost. A
+# retry here double-places, so the row stays PLACED (blocking the pair) until
+# the execution stream names the order or proves it never existed.
+_AMBIGUOUS_PLACEMENT_CATEGORIES = frozenset({
+    "transport_timeout", "transport_empty", "transport_exit", "transport_parse",
+    "network", "parse",
+})
+# An unconfirmed placement is declared never-accepted only after the
+# execution stream has been connected, without a restart, for this long since
+# the send and has reported nothing for its userref.
+UNCONFIRMED_PLACEMENT_GRACE_S = 180.0
+# Working orders whose terminal event never arrived are re-queried by txid.
+STALE_PLACED_REQUERY_S = 1800.0
+REQUERY_EVERY_TICKS = 6
+
+
+def merge_llm_verdict(engine_action: Any, final_signal: Any) -> str:
+    """Action to execute after the LLM's final verdict on an engine signal.
+
+    One rule for the fresh deliberation and the same-candle cached replay
+    (they used to disagree, so a BUY was placed on one tick and cancelled by
+    the cache on the next). The verdict may veto (HOLD) or turn an entry
+    into an exit; it may never open a position the engine did not signal —
+    an OVERRIDE of an engine SELL to BUY executed a long sized on the
+    bearish signal's confidence. An unparseable verdict changes nothing.
+    """
+    engine = str(engine_action or "HOLD").upper()
+    final = str(final_signal or "").upper()
+    if engine not in ("BUY", "SELL") or final not in ("BUY", "SELL", "HOLD"):
+        return engine
+    if engine == "SELL" and final == "BUY":
+        return "HOLD"
+    return final
+
+
+def placement_outcome_unknown(result: Any) -> bool:
+    """True when a placement error leaves it unknown whether Kraken took it."""
+    if not isinstance(result, dict) or "error" not in result:
+        return False
+    return result.get("error_category") in _AMBIGUOUS_PLACEMENT_CATEGORIES
+
+
+def order_reprice_settings() -> tuple:
+    """(rest_seconds, min_away_bps) for re-pricing working orders.
+
+    A post-only order resting at a price the market has left behind keeps
+    the engine's optimistic book wrong: a parked SELL reads flat while the
+    coins are still on the exchange. After `rest_seconds` with the touch at
+    least `min_away_bps` beyond the limit, the order is cancelled and the
+    engine re-decides. HYDRA_ORDER_REPRICE_S=0 disables.
+    """
+    try:
+        rest_s = float(os.environ.get("HYDRA_ORDER_REPRICE_S", "900"))
+    except ValueError:
+        rest_s = 900.0
+    try:
+        min_bps = float(os.environ.get("HYDRA_ORDER_REPRICE_BPS", "15"))
+    except ValueError:
+        min_bps = 15.0
+    if not math.isfinite(rest_s):
+        rest_s = 900.0
+    if not math.isfinite(min_bps) or min_bps < 0:
+        min_bps = 15.0
+    return rest_s, min_bps
+
+
+def _ws_candle_to_engine(ws_candle: Dict[str, Any]) -> Dict[str, Any]:
+    """WS ohlc entry -> engine candle dict (bar-open epoch timestamp)."""
+    ts = candle_open_epoch(ws_candle)
+    return {
+        "open": ws_candle.get("open", 0),
+        "high": ws_candle.get("high", 0),
+        "low": ws_candle.get("low", 0),
+        "close": ws_candle.get("close", 0),
+        "volume": ws_candle.get("volume", 0),
+        "timestamp": ts if ts is not None else time.time(),
+    }
+
+
+def _iso_age_seconds(iso: Any) -> Optional[float]:
+    """Seconds since an ISO-8601 UTC timestamp, or None if unparseable."""
+    if not isinstance(iso, str) or not iso:
+        return None
+    try:
+        then = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - then).total_seconds()
+
+
+# Paper/demo sessions persist under this subdirectory, never beside the live
+# state files. See state_dir_for_mode.
+PAPER_STATE_DIR = ".hydra-paper"
+
+
+def state_dir_for_mode(paper: bool) -> str:
+    """Directory holding snapshot, rolling journal, backfill and params.
+
+    Live uses the agent directory (where the operator's files have always
+    been). Paper and demo use PAPER_STATE_DIR beneath it, so a paper session
+    cannot overwrite the live snapshot that `--resume` restores.
+    """
+    root = os.path.dirname(os.path.abspath(__file__))
+    if not paper:
+        return root
+    path = os.path.join(root, PAPER_STATE_DIR)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def journal_row_matches_mode(entry: Any, paper: bool) -> bool:
+    """True when a persisted journal row belongs to this trading mode.
+
+    Rows record ``intent.paper``. Rows without the flag predate it and are
+    treated as live, which is what every pre-flag session was.
+    """
+    if not isinstance(entry, dict):
+        return False
+    intent = entry.get("intent")
+    flag = intent.get("paper") if isinstance(intent, dict) else None
+    if flag is None:
+        return not paper
+    return bool(flag) == bool(paper)
+
 
 # Seed prices for offline --demo synthetic candles (approx market levels).
 # Used only when demo=True; never for live/paper exchange paths.
@@ -298,11 +429,21 @@ class HydraAgent:
         # still in flight. A failed attempt is not recorded, so the next
         # tick retries.
         self._cancel_sent_ids: set = set()
+        # userref -> monotonic send time of placements whose CLI reply was
+        # lost (see _track_unconfirmed_placement); txids to re-query because
+        # a cancel came back "Unknown order" (see _requery_stale_placed).
+        self._unconfirmed_since: Dict[int, float] = {}
+        self._requery_ids: set = set()
         # A fill or cancel rewrites a journal row in place. Length does not
         # change, so the snapshot cadence would keep the pre-fill engine
         # book until the next new order or the periodic save.
         self._books_dirty: bool = False
-        self._snapshot_dir = os.path.dirname(os.path.abspath(__file__))
+        # Paper (and demo) state lives in its own directory. The companion
+        # launcher runs --paper from the production directory, and paper used
+        # to write hydra_session_snapshot.json / hydra_order_journal.json /
+        # hydra_params_<pair>.json beside the live ones — the next live
+        # --resume then restored the paper books over real positions.
+        self._snapshot_dir = state_dir_for_mode(self.paper)
         self._completed_trades_since_update = 0  # Counter for tuner update cadence
         self._last_brain_candle_ts: Dict[str, float] = {}  # Per-pair: last candle timestamp brain evaluated
         # Demo RNG + last synthetic mid per pair (seeded once; deterministic enough for smoke).
@@ -339,11 +480,11 @@ class HydraAgent:
         # Sizing config based on mode
         sizing = SIZING_COMPETITION if mode == "competition" else SIZING_CONSERVATIVE
 
-        # Self-tuning parameter trackers (one per pair)
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        # Self-tuning parameter trackers (one per pair). Same directory as the
+        # snapshot, so paper tuning never writes the live params files.
         self.trackers: Dict[str, ParameterTracker] = {}
         for pair in pairs:
-            tracker = ParameterTracker(pair=pair, save_dir=base_dir)
+            tracker = ParameterTracker(pair=pair, save_dir=self._snapshot_dir)
             if reset_params:
                 tracker.reset()
                 print(f"  [TUNER] Reset learned params for {pair}")
@@ -1005,14 +1146,37 @@ class HydraAgent:
         if key in sent:
             return
         if not oid or oid == "unknown":
-            print(f"  [INFLIGHT] {pair}: resting {side} has no order id — "
-                  f"cannot cancel")
-            sent.add(key)
-            return
+            # An unconfirmed placement may have been named by the stream since.
+            stream = getattr(self, "execution_stream", None)
+            learned = (stream.learned_order_id((entry.get("order_ref") or {}).get("order_userref"))
+                       if stream is not None else None)
+            if learned:
+                entry.setdefault("order_ref", {})["order_id"] = learned
+                (entry.get("lifecycle") or {}).pop("unconfirmed", None)
+                oid, key = learned, learned
+            else:
+                warned = getattr(self, "_cancel_no_id_warned", None)
+                if warned is None:
+                    warned = self._cancel_no_id_warned = set()
+                if key not in warned:
+                    warned.add(key)
+                    print(f"  [INFLIGHT] {pair}: resting {side} has no order id — "
+                          f"cannot cancel until the exchange names it")
+                return
         time.sleep(KRAKEN_REST_FLOOR_S)
         result = KrakenCLI.cancel_order(oid)
         if isinstance(result, dict) and result.get("error"):
             print(f"  [INFLIGHT] {pair}: cancel {oid} failed: {result.get('error')}")
+            # "Unknown order": Kraken already finalized it (filled, or
+            # cancelled by the dead man's switch) and the terminal event was
+            # missed. Re-query instead of retrying the cancel forever.
+            text = " ".join(str(result.get(k) or "") for k in
+                            ("error", "error_message", "message")).lower()
+            if "unknown order" in text:
+                flagged = getattr(self, "_requery_ids", None)
+                if flagged is None:
+                    flagged = self._requery_ids = set()
+                flagged.add(oid)
             return
         sent.add(key)
         print(f"  [INFLIGHT] {pair}: cancel sent for resting {side} {oid} "
@@ -1042,6 +1206,35 @@ class HydraAgent:
             seen.add(marker)
             out.append(entry)
         return out
+
+    def _trim_journal(self) -> None:
+        """Bound the in-memory journal at ORDER_JOURNAL_CAP, oldest first.
+
+        Session-only PLACEMENT_FAILED diagnostics go first, and a PLACED row
+        is never dropped. A plain tail slice let a failure loop (one row per
+        pair per tick) evict real fills — the next rolling write then deleted
+        them from disk — and could evict a working order, after which its
+        fill or cancel was dropped as "journal entry not found" and the
+        engine kept a phantom position.
+        """
+        cap = int(getattr(self, "ORDER_JOURNAL_CAP", 2000))
+        journal = self.order_journal
+        excess = len(journal) - cap
+        if excess <= 0:
+            return
+        for drop_state in ("PLACEMENT_FAILED", None):
+            if excess <= 0:
+                break
+            kept = []
+            for entry in journal:
+                state = (entry.get("lifecycle") or {}).get("state") if isinstance(entry, dict) else None
+                droppable = (state == "PLACEMENT_FAILED") if drop_state else (state != "PLACED")
+                if excess > 0 and droppable:
+                    excess -= 1
+                    continue
+                kept.append(entry)
+            journal = kept
+        self.order_journal = journal
 
     def _persist_rolling_journal(self) -> None:
         """Atomic write of the rolling journal. Demo never touches the operator file."""
@@ -1285,6 +1478,18 @@ class HydraAgent:
             if snapshot.get("version") != 1:
                 print(f"  [SNAPSHOT] Unknown version {snapshot.get('version')}, skipping.")
                 return
+            # A paper book is not the account. Before paper state moved to
+            # PAPER_STATE_DIR, a --paper run wrote this same file, and a live
+            # --resume restored its positions in place of the real ones.
+            snap_paper = snapshot.get("paper")
+            running_paper = bool(getattr(self, "paper", False))
+            if isinstance(snap_paper, bool) and snap_paper != running_paper:
+                written = "paper" if snap_paper else "live"
+                running = "paper" if running_paper else "live"
+                print(f"  [SNAPSHOT] REFUSED {path}: written by a {written} session, "
+                      f"this is a {running} session. Starting fresh — verify "
+                      f"exchange positions before trading.")
+                return
             # v2.19: quote-currency migration. If the snapshot's recorded
             # pairs use a different stable quote than the active triangle
             # (e.g. USDC snapshot, USD-default agent), rewrite the pair-
@@ -1469,9 +1674,12 @@ class HydraAgent:
             return (t, entry.get("pair", ""), entry.get("side", ""),
                     intent.get("amount", 0) if isinstance(intent, dict) else 0)
 
-        seen = {_key(e): e for e in self.order_journal}
+        paper = bool(getattr(self, "paper", False))
+        seen = {_key(e): e for e in self.order_journal
+                if journal_row_matches_mode(e, paper)}
         merged_count = 0
         overwritten_count = 0
+        foreign_count = len(self.order_journal) - len(seen)
 
         # Merge from rolling journal + optional backfill file (manual trades).
         # Backfill file is consumed once and deleted after successful merge.
@@ -1491,6 +1699,11 @@ class HydraAgent:
             if not isinstance(on_disk, list):
                 continue
             for e in on_disk:
+                # A paper fill in the live journal entered live realized P&L
+                # and cost basis; a live row is not part of a paper session.
+                if not journal_row_matches_mode(e, paper):
+                    foreign_count += 1
+                    continue
                 k = _key(e)
                 if k not in seen:
                     seen[k] = e
@@ -1504,9 +1717,8 @@ class HydraAgent:
                 backfill_consumed = True
 
         merged = sorted(seen.values(), key=lambda e: e.get("placed_at", ""))
-        if len(merged) > self.ORDER_JOURNAL_CAP:
-            merged = merged[-self.ORDER_JOURNAL_CAP:]
         self.order_journal = merged
+        self._trim_journal()
         self._normalize_journal_pairs(self.order_journal)
 
         if backfill_consumed:
@@ -1516,12 +1728,15 @@ class HydraAgent:
             except OSError as e:
                 import logging; logging.warning(f"Ignored exception: {e}")
 
-        if merged_count or overwritten_count:
+        if merged_count or overwritten_count or foreign_count:
             parts = []
             if merged_count:
                 parts.append(f"merged {merged_count} new")
             if overwritten_count:
                 parts.append(f"overwrote {overwritten_count} stale")
+            if foreign_count:
+                other = "live" if paper else "paper"
+                parts.append(f"dropped {foreign_count} {other}-mode rows")
             print(f"  [JOURNAL] {' + '.join(parts)}; "
                   f"total = {len(self.order_journal)}")
 
@@ -1599,6 +1814,17 @@ class HydraAgent:
             if self.s3 is not None:
                 self.s3.seed_absent_members(
                     lambda a: KrakenCLI.ohlc(a, interval=1440))
+
+            # Reconcile stale PLACED journal entries from previous sessions
+            # BEFORE seeding balances. Shutdown cancel-all (or the dead man's
+            # switch) has already released a resting BUY's hold into the free
+            # pool; seeding first kept that engine's post-buy cash as "locked",
+            # split the rest across siblings, and the rollback afterwards
+            # handed the buy's cost back — engines held more quote than the
+            # exchange, and inflated sibling peaks armed their breakers on the
+            # next restart. register() is safe before the stream starts.
+            if not self.paper:
+                self._reconcile_stale_placed()
 
             # Fetch live account balance and initialize engines from real funds
             print("\n  [HYDRA] Checking account balance...")
@@ -1678,7 +1904,7 @@ class HydraAgent:
         # Failure is non-fatal — _fetch_and_tick falls back to REST.
         if not self.paper:
             if not self.candle_stream.start():
-                print("  [WARN] CandleStream failed to start — falling back to REST ohlc")
+                print("  [WARN] CandleStream failed to start — falling back to kraken CLI ohlc")
             if not self.ticker_stream.start():
                 print("  [WARN] TickerStream failed to start — falling back to REST ticker")
             
@@ -1687,13 +1913,6 @@ class HydraAgent:
                 print("  [WARN] BalanceStream failed to start — falling back to REST balance")
             if not self.book_stream.start():
                 print("  [WARN] BookStream failed to start — falling back to REST depth")
-
-        # Reconcile stale PLACED journal entries from previous sessions.
-        # After --resume, the journal may contain entries that finalized on
-        # the exchange while we were offline. Query the exchange and update
-        # lifecycle state; register still-open orders with the live stream.
-        if not self.paper:
-            self._reconcile_stale_placed()
 
         loop_label = "DEMO (synthetic)" if self.demo else ("PAPER" if self.paper else "LIVE")
         print(f"\n  [HYDRA] Starting {loop_label} trading loop")
@@ -1756,6 +1975,14 @@ class HydraAgent:
                 if not self.paper:
                     self._refresh_tradable_flags()
 
+                # Phase 0.6: settle working orders whose outcome is unknown —
+                # a placement whose CLI reply was lost, or a PLACED row whose
+                # terminal event never arrived. Either one otherwise holds
+                # every later signal on its pair, exits included.
+                if not self.paper:
+                    self._resolve_unconfirmed_placements()
+                    self._requery_stale_placed(tick)
+
                 # Phase 1: Fetch data and run all engines (regimes, signals, positions)
                 engine_states = {}
                 for pair in self.pairs:
@@ -1784,23 +2011,9 @@ class HydraAgent:
                 cross_overrides = self.coordinator.get_overrides(
                     engine_states, price_series=price_series,
                 )
-                pending_swaps = []
-                for pair, override in cross_overrides.items():
-                    state = engine_states.get(pair)
-                    if not state:
-                        continue
-                    if _is_halt_flatten(state):
-                        print(f"  [CROSS] {pair}: halt flatten kept — override skipped")
-                        continue
-                    print(f"  [CROSS] {pair}: {override['action']} → {override['signal']} "
-                          f"(conf {override['confidence_adj']:.2f}) — {override['reason']}")
-                    state["signal"]["action"] = override["signal"]
-                    state["signal"]["confidence"] = override["confidence_adj"]
-                    state["signal"]["reason"] = f"[CROSS-PAIR] {override['reason']}"
-                    state["cross_pair_override"] = override
-                    # Collect swap opportunities for execution after trades
-                    if override.get("swap"):
-                        pending_swaps.append(override["swap"])
+                pending_swaps = self._apply_cross_pair_overrides(
+                    engine_states, cross_overrides,
+                )
 
                 # If coordinator changed signal direction, reset baseline for cap
                 for pair in self.pairs:
@@ -2075,6 +2288,12 @@ class HydraAgent:
                     finally:
                         executor.shutdown(wait=False, cancel_futures=True)
 
+                # A working order the market has left behind is cancelled
+                # so the engine's optimistic book cannot drift from the
+                # exchange (a parked exit reads flat while coins fall).
+                if not self.paper:
+                    self._reprice_stale_resting()
+
                 self._arm_portfolio_before_orders()
 
                 # Phase 2.5: Execute finalized signals on engines (deferred from
@@ -2231,8 +2450,7 @@ class HydraAgent:
                     self._apply_execution_event(term)
 
                 # Cap order journal to prevent unbounded memory growth
-                if len(self.order_journal) > self.ORDER_JOURNAL_CAP:
-                    self.order_journal = self.order_journal[-self.ORDER_JOURNAL_CAP:]
+                self._trim_journal()
 
 
             except Exception as e:
@@ -2296,6 +2514,39 @@ class HydraAgent:
 
         # Final report
         self._print_final_report()
+
+    @staticmethod
+    def _apply_cross_pair_overrides(engine_states: Dict[str, Any],
+                                    cross_overrides: Dict[str, Any]) -> List[dict]:
+        """Phase 1.5: write coordinator overrides onto the tick states.
+
+        A protected flatten (circuit-breaker HALT FLATTEN, hold-through trend
+        exit) is never rewritten: relabelling its reason to [CROSS-PAIR]
+        stripped the marker that keeps R10 and the brain from turning it into
+        HOLD, and the position rode the downtrend. Returns pending swaps.
+        """
+        pending_swaps: List[dict] = []
+        for pair, override in cross_overrides.items():
+            state = engine_states.get(pair)
+            if not state:
+                continue
+            sig = state.get("signal") or {}
+            if _is_halt_flatten(state) or (
+                sig.get("action") == "SELL"
+                and is_protected_flatten_reason(sig.get("reason"))
+            ):
+                print(f"  [CROSS] {pair}: protected flatten kept — override skipped")
+                continue
+            print(f"  [CROSS] {pair}: {override['action']} → {override['signal']} "
+                  f"(conf {override['confidence_adj']:.2f}) — {override['reason']}")
+            state["signal"]["action"] = override["signal"]
+            state["signal"]["confidence"] = override["confidence_adj"]
+            state["signal"]["reason"] = f"[CROSS-PAIR] {override['reason']}"
+            state["cross_pair_override"] = override
+            # Collect swap opportunities for execution after trades
+            if override.get("swap"):
+                pending_swaps.append(override["swap"])
+        return pending_swaps
 
     def _demo_seed_price(self, pair: str) -> float:
         """Return a reasonable starting mid for offline synthetic series."""
@@ -2368,6 +2619,7 @@ class HydraAgent:
         engine = self.engines[pair]
         candle_ingested = False
         fed_candle = None          # same dict the engine saw, for the S3 feed
+        fed_closed = None          # previous bar's final state, when known
 
         # Offline demo: always synthesize a fresh bar (no exchange I/O).
         if getattr(self, "demo", False):
@@ -2382,50 +2634,50 @@ class HydraAgent:
                 else None
             )
             if ws_candle:
-                # Convert WS ohlc shape to engine candle format.
-                # WS uses interval_begin (ISO) or timestamp; parse to epoch.
-                ts_raw = ws_candle.get("interval_begin") or ws_candle.get("timestamp")
-                if isinstance(ts_raw, str):
-                    try:
-                        ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
-                    except Exception:
-                        ts = time.time()
-                elif isinstance(ts_raw, (int, float)):
-                    ts = float(ts_raw)
-                else:
-                    ts = time.time()
-                fed_candle = {
-                    "open": ws_candle.get("open", 0),
-                    "high": ws_candle.get("high", 0),
-                    "low": ws_candle.get("low", 0),
-                    "close": ws_candle.get("close", 0),
-                    "volume": ws_candle.get("volume", 0),
-                    "timestamp": ts,
-                }
+                # The previous bar's final push first: same open time as the
+                # engine's last bar, so ingest_candle rewrites it in place
+                # with its true close/high/low (dropped as stale otherwise).
+                closer = getattr(self.candle_stream, "latest_closed_candle", None)
+                closed = closer(pair) if callable(closer) else None
+                if isinstance(closed, dict):
+                    closed_candle = _ws_candle_to_engine(closed)
+                    engine.ingest_candle(closed_candle)
+                    fed_closed = closed_candle
+                fed_candle = _ws_candle_to_engine(ws_candle)
                 engine.ingest_candle(fed_candle)
                 candle_ingested = True
 
-            # Paper streams short-circuit healthy=True but never push candles.
-            # Fall back to REST so --paper actually advances the engines.
-            if not candle_ingested and self.paper:
-                candles = KrakenCLI.ohlc(pair, interval=self.candle_interval)
+            # No pushed candle — paper streams never push, and a dead live
+            # stream used to return None here, which skipped the pair's tick
+            # entirely: no exits and no halt flatten for the whole outage.
+            # The kraken CLI ohlc call is allowed market data (CLI-or-WS).
+            if not candle_ingested:
+                candles = KrakenCLI.ohlc(pair, interval=getattr(self, "candle_interval", 60))
                 if candles:
-                    # Prefer the newest bar; re-ingest updates in place by ts.
+                    # The last element is the forming bar; the one before it
+                    # is the just-finished bar in its final form.
+                    for c in candles[-2:]:
+                        engine.ingest_candle(c)
+                    if len(candles) >= 2:
+                        fed_closed = candles[-2]
                     fed_candle = candles[-1]
-                    engine.ingest_candle(fed_candle)
                     candle_ingested = True
                 time.sleep(KRAKEN_REST_FLOOR_S)
 
         if not candle_ingested:
-            # Live: CandleStream unavailable — skip tick for this pair.
-            # Engine retains previous candle data from warmup / prior ticks.
+            # Neither the stream nor the CLI produced a candle. Engine
+            # retains previous candle data from warmup / prior ticks.
             return None
 
-        # S3 daily-bar feed: same candle the engine ingested (adapter is
-        # inert on error and folds only on close-confirmation).
+        # S3 daily-bar feed: same candles the engine ingested (adapter is
+        # inert on error and folds only on close-confirmation). The final
+        # previous bar goes first so S3 folds the true bar, not a truncation.
         s3 = getattr(self, "s3", None)
-        if s3 is not None and fed_candle is not None:
-            s3.on_candle(pair, fed_candle)
+        if s3 is not None:
+            if fed_closed is not None:
+                s3.on_candle(pair, fed_closed)
+            if fed_candle is not None:
+                s3.on_candle(pair, fed_candle)
 
         # Always generate_only so coordinator can mutate the signal before
         # phase-2.5 execute_signal. Pre-trade snapshots are taken in phase 2.5
@@ -2530,7 +2782,11 @@ class HydraAgent:
         same documented degradation as the fallback path) and there is no
         brain size multiplier, so the final multiplier is the rule stack alone.
         """
-        if os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1":
+        # The kill switch removes the indicator rules (R1-R11, QFE), not the
+        # LLM's cached same-candle verdict — returning early here used to let
+        # a BUY the brain had vetoed through on the next tick.
+        rules_disabled = os.environ.get("HYDRA_QUANT_INDICATORS_DISABLED") == "1"
+        if rules_disabled and not keep_brain:
             return state
 
         cached = state.get("ai_decision") if keep_brain else None
@@ -2561,24 +2817,25 @@ class HydraAgent:
         rules_force_hold_reason = ""
         rules_size_mult = 1.0
 
-        try:
-            from hydra_quant_rules import apply_rules as _apply_quant_rules
-            rule_result = _apply_quant_rules(
-                engine_action=engine_action,
-                quant_output={"positioning_bias": "", "force_hold": False},
-                quant_indicators=state.get("quant_indicators") or None,
-            )
-            rules_triggered = [
-                {"rule_id": f.rule_id, "name": f.name, "effect": f.effect,
-                 "size_mult": f.size_mult, "reason": f.reason}
-                for f in rule_result.triggered
-            ]
-            rules_force_hold = rule_result.force_hold
-            rules_force_hold_reason = rule_result.force_hold_reason
-            rules_size_mult = rule_result.size_multiplier
-        except Exception as re:
-            print(f"  [QUANT RULES] apply_rules error ({type(re).__name__}: {re})")
-            return state
+        if not rules_disabled:
+            try:
+                from hydra_quant_rules import apply_rules as _apply_quant_rules
+                rule_result = _apply_quant_rules(
+                    engine_action=engine_action,
+                    quant_output={"positioning_bias": "", "force_hold": False},
+                    quant_indicators=state.get("quant_indicators") or None,
+                )
+                rules_triggered = [
+                    {"rule_id": f.rule_id, "name": f.name, "effect": f.effect,
+                     "size_mult": f.size_mult, "reason": f.reason}
+                    for f in rule_result.triggered
+                ]
+                rules_force_hold = rule_result.force_hold
+                rules_force_hold_reason = rule_result.force_hold_reason
+                rules_size_mult = rule_result.size_multiplier
+            except Exception as re:
+                print(f"  [QUANT RULES] apply_rules error ({type(re).__name__}: {re})")
+                return state
 
         final_size_multiplier = max(0.0, min(1.5, rules_size_mult * (brain_size if keep_brain else 1.0)))
         if rules_force_hold and not (
@@ -2596,13 +2853,37 @@ class HydraAgent:
             print(f"  [QUANT RULES] {pair}: {rules_force_hold_reason} "
                   f"— HALT FLATTEN still sells")
 
-        # R11/QFE — rescue a profitable exit that the rules just blocked.
-        # Same contract as the brain path: exit-only, profit-only,
-        # squeeze-filtered, and it can only ever rewrite an existing SELL.
+        # Same-candle replay of the LLM verdict, by the same rule as the fresh
+        # deliberation (merge_llm_verdict): it may veto or turn an entry into
+        # an exit, never open a position. Before QFE, so QFE can still rescue
+        # a profitable exit the cached verdict vetoed. Never on a protected
+        # flatten — the breaker and trend exits are already the decision.
+        protected = _is_halt_flatten(state) or is_protected_flatten_reason(
+            (state.get("signal") or {}).get("reason"))
+        if keep_brain and cached is not None and not protected:
+            current = str(state["signal"]["action"] or "HOLD").upper()
+            merged_action = merge_llm_verdict(current, cached.get("final_signal"))
+            if merged_action != current:
+                state["signal"]["action"] = merged_action
+                state["signal"]["reason"] = (
+                    f"[BRAIN CACHE] {cached.get('combined_summary') or cached.get('summary') or 'cached verdict'}"
+                )
+                if merged_action == "HOLD":
+                    final_size_multiplier = 0.0
+            elif (current == "SELL" and brain_size <= 0.0):
+                state["signal"]["action"] = "HOLD"
+                state["signal"]["reason"] = "[BRAIN CACHE] exit sized 0"
+                final_size_multiplier = 0.0
+
+        # R11/QFE — rescue a profitable exit that the rules or the cached
+        # verdict just blocked. Same contract as the brain path: exit-only,
+        # profit-only, squeeze-filtered, and it can only ever rewrite an
+        # existing SELL.
         qfe_active = False
         qfe_reason = ""
         qfe_trigger_values: dict = {}
-        if engine_action == "SELL" and state["signal"]["action"] == "HOLD":
+        if (engine_action == "SELL" and state["signal"]["action"] == "HOLD"
+                and not rules_disabled):
             pos = state.get("position", {}) or {}
             pos_size = pos.get("size", 0)
             avg_entry = pos.get("avg_entry", 0)
@@ -2628,17 +2909,6 @@ class HydraAgent:
                               f"P&L {pnl_pct:+.2f}%, no squeeze catalyst")
                 except Exception as qe:
                     print(f"  [QFE] evaluate_qfe error ({type(qe).__name__}: {qe})")
-
-        if keep_brain and cached is not None and not qfe_active:
-            cached_act = str(cached.get("action") or "").upper()
-            cached_final = str(cached.get("final_signal") or "").upper()
-            if cached_act == "OVERRIDE" or cached_final == "HOLD":
-                if state["signal"]["action"] == "BUY":
-                    state["signal"]["action"] = "HOLD"
-                    state["signal"]["reason"] = (
-                        f"[BRAIN CACHE] {cached.get('combined_summary') or 'OVERRIDE HOLD'}"
-                    )
-                    final_size_multiplier = 0.0
 
         if keep_brain and cached is not None:
             merged = dict(cached)
@@ -2685,6 +2955,22 @@ class HydraAgent:
                 state["ai_decision"] = cached
             return state
 
+        # A SELL with no inventory cannot execute (_maybe_execute needs a
+        # position), so an LLM call on it buys nothing — 182 of 187 actionable
+        # rows in the Sept 2026 paper ledger — and its only possible effect
+        # was an OVERRIDE into an unsignalled BUY.
+        if state["signal"]["action"] == "SELL":
+            try:
+                held = float((state.get("position") or {}).get("size") or 0.0)
+            except (TypeError, ValueError):
+                held = 0.0
+            if held <= 0.0:
+                cached = self._last_ai_decision.get(pair)
+                if cached:
+                    state["ai_decision"] = cached
+                return state
+
+        engine_action_original = state["signal"]["action"]
         replay_candle = None
         brain_finished = False
         # Pre-brain filter: skip brain for BUY signals that can't produce tradeable order size
@@ -2706,13 +2992,19 @@ class HydraAgent:
         candles = state.get("candles", [])
         current_candle_ts = candles[-1]["t"] if candles else 0.0
         last_ts = self._last_brain_candle_ts.get(pair, 0.0)
-        if current_candle_ts > 0 and current_candle_ts == last_ts:
-            cached = self._last_ai_decision.get(pair)
+        cached = self._last_ai_decision.get(pair)
+        same_question = (
+            isinstance(cached, dict)
+            and cached.get("engine_action", engine_action_original) == engine_action_original
+        )
+        if current_candle_ts > 0 and current_candle_ts == last_ts and (same_question or not cached):
             if cached:
                 state["ai_decision"] = cached
             # Intra-candle: skip the LLM, not R1–R11. Funding/OI/CVD can
             # print mid-bar; a cached OVERRIDE must not let a SELL through
             # a later R10 blackout, and must not skip a new force_hold.
+            # Keyed by the engine action too: a BUY that appears after a SELL
+            # deliberation on the same candle is a new question, not a replay.
             return self._apply_quant_guardrails(pair, state, keep_brain=True)
 
         # Inject cross-pair triangle context and portfolio-level awareness
@@ -2847,6 +3139,7 @@ class HydraAgent:
             state["ai_decision"] = {
                 "action": decision.action,
                 "final_signal": decision.final_signal,
+                "engine_action": engine_action_original,
                 "confidence_adj": decision.confidence_adj,
                 # v2.14: three-layer size disclosure for auditability.
                 "size_multiplier": final_size_multiplier,
@@ -2907,18 +3200,19 @@ class HydraAgent:
                 # HOLD and surface which rule, so audit is unambiguous.
                 state["signal"]["action"] = "HOLD"
                 state["signal"]["reason"] = f"[QUANT RULES FORCE_HOLD] {rules_force_hold_reason}"
-            elif decision.action == "OVERRIDE":
-                state["signal"]["action"] = decision.final_signal
+            elif merge_llm_verdict(engine_action_for_rules, decision.final_signal) != engine_action_for_rules:
+                merged_action = merge_llm_verdict(engine_action_for_rules, decision.final_signal)
+                state["signal"]["action"] = merged_action
                 state["signal"]["reason"] = f"[AI OVERRIDE] {decision.combined_summary}"
-                # PR-E / E2: re-run rules on FINAL action so SELL→BUY cannot
-                # skip R1 (or any direction-sensitive rule).
+                # PR-E / E2: re-run rules on FINAL action so a direction
+                # change cannot skip R1 (or any direction-sensitive rule).
                 if (not _quant_rules_disabled
-                        and decision.final_signal
-                        and decision.final_signal != engine_action_for_rules):
+                        and merged_action in ("BUY", "SELL")
+                        and merged_action != engine_action_for_rules):
                     try:
                         from hydra_quant_rules import apply_rules as _apply_quant_rules
                         rr2 = _apply_quant_rules(
-                            engine_action=decision.final_signal,
+                            engine_action=merged_action,
                             quant_output=quant_out_for_rules,
                             quant_indicators=state.get("quant_indicators") or None,
                         )
@@ -2961,8 +3255,27 @@ class HydraAgent:
                         print(f"  [QUANT RULES] post-OVERRIDE re-apply error "
                               f"({type(re2).__name__}: {re2})")
             elif decision.action == "ADJUST":
-                state["signal"]["reason"] = f"[AI ADJUSTED] {decision.combined_summary}"
+                # Keep the engine reason: the hold-through rail re-reads it in
+                # execute_signal, and replacing it erased the "extreme
+                # overbought" marker that lets a mid-TREND_UP exit through —
+                # the risk manager's ordinary resize verdict cancelled the exit.
+                state["signal"]["reason"] = (
+                    f"[AI ADJUSTED] {decision.combined_summary}|{state['signal'].get('reason', '')}"
+                )
             # CONFIRM leaves signal unchanged, just adds reasoning
+
+            # A zero size on a non-protected exit is a veto, not an order.
+            # Make it an explicit HOLD so QFE below can still rescue a
+            # profitable exit (it only looks at HOLDs); left as SELL x0 the
+            # engine silently refused it and QFE never saw it.
+            if (state["signal"]["action"] == "SELL"
+                    and final_size_multiplier <= 0.0
+                    and not _is_halt_flatten(state)
+                    and not is_protected_flatten_reason(state["signal"].get("reason"))):
+                state["signal"]["action"] = "HOLD"
+                state["signal"]["reason"] = (
+                    f"[AI OVERRIDE] exit sized 0 — {decision.combined_summary}"
+                )
 
             # R11/QFE — Quant Force Exit: rescue profitable exits from
             # force_hold.  Runs AFTER signal rewriting — if the engine
@@ -3538,6 +3851,12 @@ class HydraAgent:
             result = KrakenCLI.order_sell(pair, amount, price=limit_price, userref=userref)
 
         if "error" in result:
+            if placement_outcome_unknown(result):
+                return self._track_unconfirmed_placement(
+                    pair, entry, userref=userref, amount=amount,
+                    side=action_upper, pre_trade_snap=pre_trade_snap,
+                    result=result,
+                )
             print(f"  [TRADE] FAILED: {result['error']}")
             self._finalize_failed_entry(
                 entry, terminal_reason=f"placement_error:{result['error']}",
@@ -3550,15 +3869,24 @@ class HydraAgent:
             order_id = order_id[0] if order_id else "unknown"
         print(f"  [TRADE] PLACED: {action_upper} {amount:.8f} {pair} | order_id: {order_id}")
 
-        entry["order_ref"] = {"order_userref": userref, "order_id": order_id}
+        no_txid = not order_id or order_id == "unknown"
+        entry["order_ref"] = {"order_userref": userref,
+                              "order_id": None if no_txid else order_id}
+        if no_txid:
+            # Accepted, but unaddressable until the execution stream names it
+            # by userref. Never auto-declared "not accepted" — Kraken said yes.
+            lifecycle = entry.setdefault("lifecycle", {})
+            lifecycle["unconfirmed"] = True
+            lifecycle["accepted_without_txid"] = True
         self.order_journal.append(entry)
         journal_index = len(self.order_journal) - 1
+        # A new working order changes the book; at the journal cap the length
+        # no longer grows, so mark it rather than rely on the length test.
+        self._books_dirty = True
 
         # Register with the execution stream so WS events can finalize this
-        # order's lifecycle on subsequent ticks. Orders that come back as
-        # order_id='unknown' cannot be correlated by id; register() is a
-        # no-op in that case and the entry will stay at PLACED until manual
-        # audit (rare — Kraken almost always returns a txid on success).
+        # order's lifecycle on subsequent ticks. With no txid the stream
+        # tracks the userref and adopts the txid from the first event.
         self.execution_stream.register(
             order_id=order_id, userref=userref, journal_index=journal_index,
             pair=pair, side=action_upper, placed_amount=amount,
@@ -3614,6 +3942,7 @@ class HydraAgent:
         entry["order_ref"] = {"order_userref": paper_userref, "order_id": paper_order_id}
         self.order_journal.append(entry)
         journal_index = len(self.order_journal) - 1
+        self._books_dirty = True
         self.execution_stream.register(
             order_id=paper_order_id, userref=paper_userref, journal_index=journal_index,
             pair=pair, side=action_upper, placed_amount=amount,
@@ -3655,6 +3984,286 @@ class HydraAgent:
         }
         self.order_journal.append(entry)
 
+    # ───────── unconfirmed placements, stuck rows, stale working orders ─────────
+
+    def _track_unconfirmed_placement(self, pair: str, entry: Dict[str, Any], *,
+                                     userref: int, amount: float, side: str,
+                                     pre_trade_snap: Any, result: dict) -> bool:
+        """Keep a placement whose outcome is unknown as a blocking PLACED row.
+
+        The CLI failed after the order may have reached Kraken (timeout,
+        empty or unparseable reply). Marking it PLACEMENT_FAILED rolled the
+        engine back and unblocked the pair, so the next tick placed the same
+        order again — two live orders, double exposure, and a fill the
+        stream dropped as "not ours". Instead the row stays PLACED with no
+        txid, the engine keeps its optimistic book, and the stream tracks
+        the userref until it names the order or the grace window proves
+        Kraken never took it (`_resolve_unconfirmed_placements`).
+        """
+        why = describe_error(result) or str(result.get("error"))
+        print(f"  [TRADE] {pair} {side}: placement outcome UNKNOWN ({why}) — "
+              f"holding {pair} until userref {userref} is resolved")
+        entry["order_ref"] = {"order_userref": userref, "order_id": None}
+        lifecycle = entry.setdefault("lifecycle", {})
+        lifecycle["state"] = "PLACED"
+        lifecycle["unconfirmed"] = True
+        lifecycle["unconfirmed_reason"] = why
+        self.order_journal.append(entry)
+        journal_index = len(self.order_journal) - 1
+        since = getattr(self, "_unconfirmed_since", None)
+        if since is None:
+            since = self._unconfirmed_since = {}
+        since[int(userref)] = time.monotonic()
+        self._books_dirty = True
+        self.execution_stream.register(
+            order_id=None, userref=userref, journal_index=journal_index,
+            pair=pair, side=side, placed_amount=amount,
+            engine_ref=self.engines[pair], pre_trade_snapshot=pre_trade_snap,
+        )
+        return True
+
+    def _terminal_event_for(self, entry: Dict[str, Any], *, state: str,
+                            vol_exec: float = 0.0,
+                            avg_fill_price: Optional[float] = None,
+                            fee_quote: float = 0.0, reason: str = "",
+                            order_id: Optional[str] = None,
+                            timestamp: Any = None) -> Dict[str, Any]:
+        """Build the stream's terminal-event shape for a journal row so every
+        finalization path shares `_apply_execution_event`."""
+        ref = entry.get("order_ref") or {}
+        intent = entry.get("intent") or {}
+        pair = entry.get("pair")
+        try:
+            idx = self.order_journal.index(entry)
+        except ValueError:
+            idx = None
+        return {
+            "order_id": order_id or ref.get("order_id"),
+            "userref": ref.get("order_userref"),
+            "journal_index": idx,
+            "engine_ref": self.engines.get(pair) if pair else None,
+            "pre_trade_snapshot": entry.get("pre_trade_snapshot"),
+            "placed_amount": float(intent.get("amount") or 0.0),
+            "pair": pair,
+            "side": entry.get("side"),
+            "state": state,
+            "vol_exec": float(vol_exec or 0.0),
+            "avg_fill_price": avg_fill_price,
+            "fee_quote": float(fee_quote or 0.0),
+            "terminal_reason": reason,
+            "exec_ids": [],
+            "timestamp": timestamp,
+        }
+
+    def _resolve_unconfirmed_placements(self) -> None:
+        """Adopt the txid of an unconfirmed placement once the execution
+        stream has seen it; declare it never accepted only when the stream
+        stayed connected through the whole grace window without a word.
+
+        A row restored from an earlier process has no in-memory send time,
+        so the second test cannot be made: it keeps blocking and asks the
+        operator to verify, rather than risk discarding a real fill.
+        """
+        if getattr(self, "paper", False):
+            return
+        stream = getattr(self, "execution_stream", None)
+        if stream is None:
+            return
+        since = getattr(self, "_unconfirmed_since", None)
+        if since is None:
+            since = self._unconfirmed_since = {}
+        now = time.monotonic()
+        for entry in list(self.order_journal):
+            if not isinstance(entry, dict):
+                continue
+            lifecycle = entry.get("lifecycle") or {}
+            ref = entry.get("order_ref") or {}
+            # 'unknown' is how a txid-less success was journaled before
+            # rows carried the unconfirmed flag.
+            legacy_unknown = ref.get("order_id") == "unknown"
+            if lifecycle.get("state") != "PLACED" or not (
+                    lifecycle.get("unconfirmed") or legacy_unknown):
+                continue
+            userref = ref.get("order_userref")
+            if userref is None:
+                continue
+            pair, side = entry.get("pair"), entry.get("side")
+            learned = stream.learned_order_id(userref)
+            if learned:
+                ref["order_id"] = learned
+                entry["order_ref"] = ref
+                lifecycle.pop("unconfirmed", None)
+                lifecycle.pop("accepted_without_txid", None)
+                since.pop(int(userref), None)
+                self._books_dirty = True
+                print(f"  [EXEC] {pair} {side}: unconfirmed placement "
+                      f"userref={userref} is live as {learned}")
+                continue
+            # Kraken acknowledged it: silence never proves it was not placed.
+            accepted = bool(lifecycle.get("accepted_without_txid")) or legacy_unknown
+            sent_at = None if accepted else since.get(int(userref))
+            if sent_at is None:
+                warned = getattr(self, "_unconfirmed_warned", None)
+                if warned is None:
+                    warned = self._unconfirmed_warned = set()
+                if int(userref) not in warned:
+                    warned.add(int(userref))
+                    why = ("accepted without a txid" if accepted
+                           else "carried over from an earlier session")
+                    print(f"  [WARN] {pair} {side}: working order userref={userref} "
+                          f"is {why} — {pair} stays held until the execution "
+                          f"stream names it; verify on the exchange and clear "
+                          f"the row with journal_maintenance if it is not there")
+                continue
+            started = float(getattr(stream, "_started_at", 0.0) or 0.0)
+            connected_throughout = (bool(getattr(stream, "healthy", False))
+                                    and 0.0 < started <= sent_at)
+            if now - sent_at < UNCONFIRMED_PLACEMENT_GRACE_S or not connected_throughout:
+                continue
+            stream.forget(userref=userref)
+            since.pop(int(userref), None)
+            print(f"  [EXEC] {pair} {side}: userref={userref} never appeared on "
+                  f"the execution stream in {UNCONFIRMED_PLACEMENT_GRACE_S:.0f}s "
+                  f"— treating the placement as not accepted")
+            self._apply_execution_event(self._terminal_event_for(
+                entry, state="REJECTED",
+                reason="placement_unconfirmed: no exchange record after grace window",
+            ))
+
+    def _requery_stale_placed(self, tick: int) -> None:
+        """Re-query working orders whose terminal event may never arrive.
+
+        Boot reconciliation runs once; a later boot query error, an
+        execution-stream sequence gap, or a cancel answered "Unknown order"
+        left a PLACED row that nothing would ever finalize. `_resting_entry`
+        then held every later signal on the pair — exits and halt flattens
+        included — for good. Untracked rows and rows flagged by a failed
+        cancel are queried every tick; rows the stream still tracks are
+        queried once they are older than STALE_PLACED_REQUERY_S.
+        """
+        if getattr(self, "paper", False):
+            return
+        stream = getattr(self, "execution_stream", None)
+        flagged = getattr(self, "_requery_ids", None)
+        if flagged is None:
+            flagged = self._requery_ids = set()
+        periodic = tick % REQUERY_EVERY_TICKS == 0
+        targets: Dict[str, Dict[str, Any]] = {}
+        for entry in self.order_journal:
+            if not isinstance(entry, dict):
+                continue
+            if (entry.get("lifecycle") or {}).get("state") != "PLACED":
+                continue
+            oid = (entry.get("order_ref") or {}).get("order_id")
+            if not oid or oid == "unknown":
+                continue
+            tracked = stream.is_tracking(order_id=oid) if stream is not None else False
+            age = _iso_age_seconds(entry.get("placed_at"))
+            old = age is not None and age >= STALE_PLACED_REQUERY_S
+            if oid in flagged or not tracked or (periodic and old):
+                targets[oid] = entry
+        if not targets:
+            return
+        ids = list(targets)
+        for i in range(0, len(ids), 20):
+            batch = ids[i:i + 20]
+            time.sleep(KRAKEN_REST_FLOOR_S)
+            resp = KrakenCLI.query_orders(*batch, trades=True)
+            if not isinstance(resp, dict) or "error" in resp:
+                print(f"  [WARN] working-order re-query failed: {describe_error(resp) if isinstance(resp, dict) else resp}")
+                continue
+            for txid in batch:
+                info = resp.get(txid)
+                entry = targets[txid]
+                if not isinstance(info, dict):
+                    continue
+                flagged.discard(txid)
+                status = info.get("status", "")
+                if status in ("open", "pending", "pending_new", "new"):
+                    if stream is not None and not stream.is_tracking(order_id=txid):
+                        pair = entry.get("pair", "")
+                        engine = self.engines.get(pair)
+                        if engine is not None:
+                            stream.register(
+                                order_id=txid,
+                                userref=(entry.get("order_ref") or {}).get("order_userref"),
+                                journal_index=self.order_journal.index(entry),
+                                pair=pair, side=entry.get("side", ""),
+                                placed_amount=float((entry.get("intent") or {}).get("amount") or 0.0),
+                                engine_ref=engine,
+                                pre_trade_snapshot=entry.get("pre_trade_snapshot"),
+                            )
+                    continue
+                if status not in ("closed", "canceled", "expired"):
+                    continue
+                vol_exec = float(info.get("vol_exec") or 0.0)
+                placed = float((entry.get("intent") or {}).get("amount") or 0.0)
+                raw_price = float(info.get("price") or 0.0)
+                if status == "closed":
+                    state = "FILLED" if _is_fully_filled(vol_exec, placed) else "PARTIALLY_FILLED"
+                elif vol_exec > 0:
+                    state = "PARTIALLY_FILLED"
+                else:
+                    state = "CANCELLED_UNFILLED"
+                if stream is not None:
+                    stream.forget(order_id=txid)
+                self._apply_execution_event(self._terminal_event_for(
+                    entry, state=state, vol_exec=vol_exec,
+                    avg_fill_price=raw_price if raw_price > 0 else None,
+                    fee_quote=float(info.get("fee") or 0.0),
+                    reason=f"re-queried in session ({status})",
+                    order_id=txid, timestamp=info.get("closetm"),
+                ))
+
+    def _reprice_stale_resting(self) -> None:
+        """Cancel a working order the market has moved away from.
+
+        Hydra books every fill optimistically at placement and never
+        expired or re-priced a post-only order. A protective SELL left at
+        the old ask while price fell kept the engine flat on paper — its
+        drawdown and 15% breaker blind to coins still on the exchange —
+        for as long as the fall lasted. After `rest_s` with the touch at
+        least `min_bps` beyond the limit, the order is cancelled; the
+        execution stream rolls the book back and the next tick re-decides
+        at the current touch (still limit post-only).
+        """
+        if getattr(self, "paper", False):
+            return
+        rest_s, min_bps = order_reprice_settings()
+        if rest_s <= 0:
+            return
+        ticker_stream = getattr(self, "ticker_stream", None)
+        for pair in self.pairs:
+            entry = self._resting_entry(pair)
+            if entry is None or (entry.get("lifecycle") or {}).get("unconfirmed"):
+                continue
+            age = _iso_age_seconds(entry.get("placed_at"))
+            if age is None or age < rest_s:
+                continue
+            try:
+                limit = float((entry.get("intent") or {}).get("limit_price") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            ticker = (ticker_stream.latest_ticker(pair)
+                      if ticker_stream is not None and ticker_stream.healthy else None)
+            if limit <= 0 or not isinstance(ticker, dict):
+                continue
+            side = str(entry.get("side") or "").upper()
+            try:
+                if side == "BUY":
+                    away_bps = (float(ticker["bid"]) - limit) / limit * 1e4
+                elif side == "SELL":
+                    away_bps = (limit - float(ticker["ask"])) / limit * 1e4
+                else:
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            if away_bps >= min_bps:
+                print(f"  [REPRICE] {pair}: {side} @ {limit} rested {age:.0f}s with "
+                      f"the market {away_bps:.0f} bps away — cancelling so the "
+                      f"engine re-decides at the touch")
+                self._cancel_resting_for_opposite(entry, "REPRICE")
+
     def _reconcile_stale_placed(self):
         """Query exchange for PLACED journal entries that have no ExecutionStream
         registration — typically orders from a previous session that finalized
@@ -3675,6 +4284,18 @@ class HydraAgent:
                 continue
             order_id = entry.get("order_ref", {}).get("order_id")
             if not order_id or order_id == "unknown":
+                # Unconfirmed placement from an earlier process: track its
+                # userref so the stream's open-order snapshot can name it.
+                userref = (entry.get("order_ref") or {}).get("order_userref")
+                engine = self.engines.get(entry.get("pair", ""))
+                if userref is not None and engine:
+                    self.execution_stream.register(
+                        order_id=None, userref=userref, journal_index=idx,
+                        pair=entry.get("pair", ""), side=entry.get("side", ""),
+                        placed_amount=float((entry.get("intent") or {}).get("amount") or 0.0),
+                        engine_ref=engine,
+                        pre_trade_snapshot=entry.get("pre_trade_snapshot"),
+                    )
                 continue
             stale.append((idx, entry, order_id))
 
@@ -3717,11 +4338,11 @@ class HydraAgent:
 
                 if status in ("closed", "canceled", "expired"):
                     # Terminal — finalize journal entry
-                    vol_exec = float(order_info.get("vol_exec", 0))
+                    vol_exec = float(order_info.get("vol_exec") or 0)
                     placed = entry.get("intent", {}).get("amount", 0)
-                    raw_price = float(order_info.get("price", 0))
+                    raw_price = float(order_info.get("price") or 0)
                     avg_price = raw_price if raw_price > 0 else None
-                    fee = float(order_info.get("fee", 0))
+                    fee = float(order_info.get("fee") or 0)
 
                     if status == "closed":
                         state = (
@@ -3767,7 +4388,11 @@ class HydraAgent:
 
                     if state == "FILLED":
                         fill_amt = vol_exec if vol_exec > 0 else placed
-                        if engine and snap is not None and avg_price > 0 and fill_amt > 0:
+                        # avg_price is None when Kraken reports price 0;
+                        # `None > 0` raised before the loop and the watchdog
+                        # crash-looped on boot.
+                        if (engine and snap is not None and avg_price is not None
+                                and avg_price > 0 and fill_amt > 0):
                             try:
                                 engine.true_up_fill(
                                     side=side,
@@ -3802,6 +4427,8 @@ class HydraAgent:
                                 note = ("" if snap is not None else
                                         " (arithmetic fallback; avg_entry may drift "
                                         "slightly if original was an average-in)")
+                                if str(side).upper() == "BUY":
+                                    engine.release_unfilled_buy_halt()
                                 print(f"  [HYDRA] {pair} {side} engine adjusted{note}")
                             except Exception as e:
                                 print(f"  [WARN] {pair} {side} partial-fill reconcile "
@@ -3810,6 +4437,8 @@ class HydraAgent:
                         if engine and snap is not None:
                             try:
                                 engine.restore_position(snap)
+                                if str(side).upper() == "BUY":
+                                    engine.release_unfilled_buy_halt()
                                 print(f"  [HYDRA] {pair} {side} was never filled — "
                                       f"engine rolled back to pre-order book")
                             except Exception as e:
@@ -3887,9 +4516,33 @@ class HydraAgent:
                     entry = e
                     break
 
+        # Unconfirmed placement: the row has our userref but no txid yet.
+        userref = event.get("userref")
+        if entry is None and userref is not None:
+            for e in reversed(self.order_journal):
+                ref = e.get("order_ref") or {}
+                if (ref.get("order_userref") == userref
+                        and ref.get("order_id") in (None, "", "unknown")
+                        and (e.get("lifecycle") or {}).get("state") == "PLACED"):
+                    entry = e
+                    if order_id:
+                        ref["order_id"] = order_id
+                        e["order_ref"] = ref
+                        (e.get("lifecycle") or {}).pop("unconfirmed", None)
+                        (e.get("lifecycle") or {}).pop("accepted_without_txid", None)
+                    break
+
         if entry is None:
             print(f"  [EXEC] journal entry not found for order_id={order_id} "
                   f"idx={idx} — event dropped")
+            return
+        # One terminal event per order. A second one (a REST re-query racing
+        # the stream, a replay after restart) would restore the pre-trade
+        # snapshot over every trade booked since, or debit the fee twice.
+        prior_state = (entry.get("lifecycle") or {}).get("state")
+        if prior_state is not None and prior_state != "PLACED":
+            print(f"  [EXEC] {event.get('pair')} {event.get('side')} {order_id}: "
+                  f"already {prior_state} — duplicate {event.get('state')} ignored")
             return
         state_name = event["state"]
         # Length does not change. The tick loop snapshots when this is set
@@ -3990,6 +4643,11 @@ class HydraAgent:
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                           f"filled {vol_exec:.8f}/{placed_amount:.8f} ({ratio:.1%}) — "
                           f"engine reconciled to actual fill")
+                    if str(side or "").upper() == "BUY":
+                        # The unfilled remainder was optimistic inventory too.
+                        # Only the full-cancel path released a halt it armed,
+                        # so a 1% fill left a phantom-armed breaker sticky.
+                        engine.release_unfilled_buy_halt()
                 except Exception as e:
                     print(f"  [EXEC] {pair} {side} PARTIALLY_FILLED: "
                           f"reconcile failed ({e}); engine may be over-committed")

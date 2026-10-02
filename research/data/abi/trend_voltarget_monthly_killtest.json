@@ -1,0 +1,271 @@
+{
+  "registration": "research/data/abi/trend_voltarget_monthly_REGISTRATION.md",
+  "source": "backtesting==0.6.6 test/BTCUSD.csv (monthly)",
+  "window": [
+    "2013-02-28",
+    "2024-12-31"
+  ],
+  "months": 143,
+  "costs_per_side": {
+    "base": 0.0035,
+    "stress": 0.005
+  },
+  "stats": {
+    "bh": {
+      "total_pct": 447491.0,
+      "cagr_pct": 102.47,
+      "sharpe": 0.822,
+      "max_dd_pct": 79.2,
+      "months": 143
+    },
+    "bh_vt": {
+      "total_pct": 11132.2,
+      "cagr_pct": 48.62,
+      "sharpe": 0.979,
+      "max_dd_pct": 50.1,
+      "months": 143
+    },
+    "sma10": {
+      "total_pct": 805878.6,
+      "cagr_pct": 112.72,
+      "sharpe": 0.831,
+      "max_dd_pct": 69.7,
+      "months": 143
+    },
+    "sma10_vt": {
+      "total_pct": 13214.5,
+      "cagr_pct": 50.75,
+      "sharpe": 1.052,
+      "max_dd_pct": 33.0,
+      "months": 143
+    },
+    "tsmom12_vt": {
+      "total_pct": 10071.2,
+      "cagr_pct": 47.38,
+      "sharpe": 0.999,
+      "max_dd_pct": 28.4,
+      "months": 143
+    },
+    "inverse_vt": {
+      "total_pct": -19.2,
+      "cagr_pct": -1.77,
+      "sharpe": 0.018,
+      "max_dd_pct": 41.3,
+      "months": 143
+    }
+  },
+  "thirds": {
+    "bh": [
+      {
+        "total_pct": 4516.6,
+        "cagr_pct": 166.03,
+        "sharpe": 0.858,
+        "max_dd_pct": 79.2,
+        "months": 47
+      },
+      {
+        "total_pct": 1891.6,
+        "cagr_pct": 114.64,
+        "sharpe": 1.259,
+        "max_dd_pct": 75.4,
+        "months": 47
+      },
+      {
+        "total_pct": 386.8,
+        "cagr_pct": 47.34,
+        "sharpe": 0.899,
+        "max_dd_pct": 72.7,
+        "months": 49
+      }
+    ],
+    "bh_vt": [
+      {
+        "total_pct": 588.2,
+        "cagr_pct": 63.64,
+        "sharpe": 0.94,
+        "max_dd_pct": 50.1,
+        "months": 47
+      },
+      {
+        "total_pct": 415.4,
+        "cagr_pct": 51.99,
+        "sharpe": 1.276,
+        "max_dd_pct": 39.2,
+        "months": 47
+      },
+      {
+        "total_pct": 216.7,
+        "cagr_pct": 32.62,
+        "sharpe": 0.928,
+        "max_dd_pct": 45.7,
+        "months": 49
+      }
+    ],
+    "sma10": [
+      {
+        "total_pct": 4871.5,
+        "cagr_pct": 171.11,
+        "sharpe": 0.85,
+        "max_dd_pct": 69.7,
+        "months": 47
+      },
+      {
+        "total_pct": 1565.8,
+        "cagr_pct": 105.07,
+        "sharpe": 1.238,
+        "max_dd_pct": 59.1,
+        "months": 47
+      },
+      {
+        "total_pct": 873.2,
+        "cagr_pct": 74.59,
+        "sharpe": 1.255,
+        "max_dd_pct": 40.6,
+        "months": 49
+      }
+    ],
+    "sma10_vt": [
+      {
+        "total_pct": 631.1,
+        "cagr_pct": 66.18,
+        "sharpe": 0.972,
+        "max_dd_pct": 33.0,
+        "months": 47
+      },
+      {
+        "total_pct": 327.5,
+        "cagr_pct": 44.9,
+        "sharpe": 1.3,
+        "max_dd_pct": 19.5,
+        "months": 47
+      },
+      {
+        "total_pct": 326.1,
+        "cagr_pct": 42.61,
+        "sharpe": 1.27,
+        "max_dd_pct": 18.6,
+        "months": 49
+      }
+    ],
+    "tsmom12_vt": [
+      {
+        "total_pct": 604.2,
+        "cagr_pct": 64.6,
+        "sharpe": 0.958,
+        "max_dd_pct": 28.4,
+        "months": 47
+      },
+      {
+        "total_pct": 305.7,
+        "cagr_pct": 42.98,
+        "sharpe": 1.203,
+        "max_dd_pct": 20.3,
+        "months": 47
+      },
+      {
+        "total_pct": 256.0,
+        "cagr_pct": 36.48,
+        "sharpe": 1.125,
+        "max_dd_pct": 23.6,
+        "months": 49
+      }
+    ],
+    "inverse_vt": [
+      {
+        "total_pct": -7.6,
+        "cagr_pct": -2.01,
+        "sharpe": -0.002,
+        "max_dd_pct": 41.3,
+        "months": 47
+      },
+      {
+        "total_pct": 18.4,
+        "cagr_pct": 4.41,
+        "sharpe": 0.302,
+        "max_dd_pct": 31.9,
+        "months": 47
+      },
+      {
+        "total_pct": -26.1,
+        "cagr_pct": -7.14,
+        "sharpe": -0.27,
+        "max_dd_pct": 39.3,
+        "months": 49
+      }
+    ]
+  },
+  "stress": {
+    "bh_vt": {
+      "total_pct": 10899.0,
+      "cagr_pct": 48.36,
+      "sharpe": 0.976,
+      "max_dd_pct": 50.2,
+      "months": 143
+    },
+    "sma10_vt": {
+      "total_pct": 12914.7,
+      "cagr_pct": 50.46,
+      "sharpe": 1.048,
+      "max_dd_pct": 33.4,
+      "months": 143
+    }
+  },
+  "time_in_market": {
+    "sma10_vt": 0.692,
+    "tsmom12_vt": 0.741,
+    "inverse_vt": 0.308
+  },
+  "avg_exposure": {
+    "bh": 1.0,
+    "bh_vt": 0.459,
+    "sma10": 0.692,
+    "sma10_vt": 0.307,
+    "tsmom12_vt": 0.319,
+    "inverse_vt": 0.151
+  },
+  "bootstrap_sharpe_diff_sma10vt_minus_bhvt": {
+    "p05": -0.1316,
+    "p95": 0.374,
+    "block": 5,
+    "n_boot": 2000
+  },
+  "criteria": {
+    "C1_sharpe_gt_voltarget_bh": true,
+    "C2_wins_2_of_3_thirds": true,
+    "C3_maxdd_le_0.75x_voltarget_bh": true,
+    "C4_inverse_sharpe_lt_voltarget_bh": true,
+    "C5_sharpe_gt_voltarget_bh_at_stress": true
+  },
+  "verdict": "SURVIVES",
+  "significant": false,
+  "post_hoc_readouts_not_gated": {
+    "bh_vt_cap40": {
+      "total_pct": 777.3,
+      "cagr_pct": 19.99,
+      "sharpe": 0.978,
+      "max_dd_pct": 22.8,
+      "months": 143
+    },
+    "bh_vt_cap40_breaker15": {
+      "total_pct": 71.3,
+      "cagr_pct": 4.62,
+      "sharpe": 0.348,
+      "max_dd_pct": 21.5,
+      "months": 143
+    },
+    "sma10_vt_cap40": {
+      "total_pct": 783.9,
+      "cagr_pct": 20.07,
+      "sharpe": 1.051,
+      "max_dd_pct": 14.3,
+      "months": 143
+    },
+    "sma10_vt_cap40_breaker15": {
+      "total_pct": 783.9,
+      "cagr_pct": 20.07,
+      "sharpe": 1.051,
+      "max_dd_pct": 14.3,
+      "months": 143
+    }
+  }
+}

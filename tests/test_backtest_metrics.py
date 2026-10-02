@@ -137,50 +137,43 @@ class TestBlockBootstrap(unittest.TestCase):
         b = _block_bootstrap_sample(profits, 10, random.Random(99))
         self.assertEqual(a, b)
 
-    def test_no_circular_wrap_within_block(self):
-        """Fix 4: a block must not contain the sequence [..., n-1, 0, ...].
-        With profits = [0, 1, 2, ..., n-1], that pattern is a strict-decrease
-        followed by 0 inside a single block — impossible if blocks are
-        contiguous non-wrapping slices, but possible under the old modulo
-        implementation."""
-        n = 50
-        profits = [float(i) for i in range(n)]
-        block_len = 10
-        # Sample many times across diverse seeds so a regression would show
-        for seed in range(64):
-            sample = _block_bootstrap_sample(profits, block_len, random.Random(seed))
-            # Walk the sample looking for "... n-1 → 0 ..." inside a block.
-            # Each block is block_len consecutive entries starting at index
-            # 0, block_len, 2*block_len, ... Check every offset inside each
-            # block for the n-1 → 0 transition.
-            for block_start in range(0, n, block_len):
-                block = sample[block_start:block_start + block_len]
-                for k in range(len(block) - 1):
-                    if block[k] == float(n - 1) and block[k + 1] == 0.0:
-                        self.fail(
-                            f"wrap detected in seed={seed} block={block!r} "
-                            "— _block_bootstrap_sample must NOT wrap circularly"
-                        )
-
-    def test_block_contents_are_consecutive(self):
-        """Every block of length block_len in the sample must be a contiguous
-        slice of the original sequence (start..start+block_len-1).
-        With profits = [0, 1, 2, ...] this means each block is an arithmetic
-        progression with step=1."""
+    def test_block_is_capped_at_cube_root_of_n_and_circular(self):
+        """Blocks are consecutive runs (wrapping at the end) of
+        min(block_len, round(n ** (1/3))) trades. A block that is a large
+        share of n made every resample nearly the original sequence."""
         n = 100
         profits = [float(i) for i in range(n)]
-        block_len = 15
-        sample = _block_bootstrap_sample(profits, block_len, random.Random(42))
-        for block_start in range(0, len(sample) - block_len + 1, block_len):
-            block = sample[block_start:block_start + block_len]
-            if len(block) < block_len:
-                continue  # truncated tail
-            first = block[0]
+        cap = round(n ** (1 / 3))  # 5
+        sample = _block_bootstrap_sample(profits, 15, random.Random(42))
+        for block_start in range(0, len(sample) - cap + 1, cap):
+            block = sample[block_start:block_start + cap]
             for offset, value in enumerate(block):
-                self.assertEqual(
-                    value, first + offset,
-                    f"block at {block_start} not consecutive: {block!r}",
-                )
+                self.assertEqual(value, (block[0] + offset) % n,
+                                 f"block at {block_start} not consecutive: {block!r}")
+
+    def test_every_trade_is_equally_likely(self):
+        """Non-circular starts drew middle trades up to 16x as often as the
+        first and last, so the resample forgot the edges of the history."""
+        n = 30
+        profits = list(range(n))
+        counts = [0] * n
+        rng = random.Random(7)
+        for _ in range(3000):
+            for v in _block_bootstrap_sample(profits, 20, rng):
+                counts[v] += 1
+        self.assertLess(max(counts) / min(counts), 1.25)
+
+    def test_null_ci_excludes_zero_near_the_nominal_rate(self):
+        """Zero-edge trades: the 95% CI's lower bound should clear zero about
+        2.5% of the time. The old sampler did so 26% of the time at n=25."""
+        hits = 0
+        trials = 160
+        for t in range(trials):
+            r = random.Random(500 + t)
+            profits = [r.gauss(0.0, 1.0) for _ in range(25)]
+            rep = monte_carlo_resample(profits, n_iter=200, block_len=20, seed=t)
+            hits += rep.total_return_ci.lower > 0
+        self.assertLess(hits / trials, 0.08)
 
 
 class TestReturnsHelpers(unittest.TestCase):

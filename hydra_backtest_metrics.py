@@ -34,6 +34,8 @@ Design invariants
 """
 from __future__ import annotations
 
+import dataclasses
+import json
 import math
 import random
 import statistics
@@ -213,33 +215,33 @@ def _block_bootstrap_sample(
     block_len: int,
     rng: random.Random,
 ) -> List[float]:
-    """NON-CIRCULAR block resample preserving local temporal structure.
+    """Circular block resample with a block no longer than n^(1/3).
 
-    For each block draw, sample a start index uniformly from the set of
-    valid starts (0..n-block_len) so every block fits without wrapping.
-    Emit block_len consecutive profits; repeat until length ≥ n; truncate.
-    Blocks within a single resample are drawn independently, so two draws
-    can share overlapping ranges — "non-circular" refers to wrap-around,
-    not cross-draw disjointness.
+    Blocks keep short-range autocorrelation; circular indexing gives every
+    trade the same chance to be drawn; and the block length is capped at
+    round(n ** (1/3)) (Hall, Horowitz & Jing 1995) because a block that is a
+    large share of n makes every resample nearly the original sequence.
 
-    Fix 4: previously used `(start + j) % n` circular indexing, which
-    joined tail-of-sequence to head-of-sequence inside a block. For small
-    trade counts (n ≤ ~50) this was effectively IID and yielded CIs that
-    were too narrow — rigor gate `mc_ci_lower_positive` passed marginal
-    strategies. Non-circular blocks preserve the intended autocorrelation
-    structure of the original sequence.
+    The previous NON-circular L=20 draw had both defects at once: with 25-60
+    trades only a handful of start points existed, middle trades were drawn
+    up to 16x as often as the first and last, and the CIs collapsed. Under a
+    zero-edge null its 95% CI excluded zero (lower > 0) 26% of the time at
+    n=25 and 21% at n=40 — not the nominal 2.5% — so `mc_ci_lower_positive`
+    passed coin-flip strategies about 10x too often. Circular L=20 was still
+    13-15%. Circular with this cap measures 3.3-3.5% across n=25..100
+    (research/data/abi/mc_bootstrap_calibration.json).
     """
     n = len(profits)
     if n == 0:
         return []
-    if block_len <= 0 or block_len >= n:
-        # Degenerate: fall back to iid bootstrap so the call still produces a sample
-        return [profits[rng.randint(0, n - 1)] for _ in range(n)]
-    max_start = n - block_len  # inclusive upper bound — no wrap needed
+    cap = max(1, int(round(n ** (1.0 / 3.0))))
+    block = cap if block_len <= 0 else min(block_len, cap)
+    if block <= 1:
+        return [profits[rng.randrange(n)] for _ in range(n)]
     sample: List[float] = []
     while len(sample) < n:
-        start = rng.randint(0, max_start)
-        sample.extend(profits[start:start + block_len])
+        start = rng.randrange(n)
+        sample.extend(profits[(start + j) % n] for j in range(block))
     return sample[:n]
 
 
@@ -373,10 +375,29 @@ def _final_equity(result: BacktestResult) -> float:
     return total
 
 
-def _slice_length(full: Dict[str, List[Candle]]) -> int:
-    # walk_forward iterates over the SHORTEST pair series to stay aligned;
-    # per-pair candles are time-aligned in BacktestRunner.
-    return min((len(v) for v in full.values()), default=0)
+def _timeline(full: Dict[str, List[Candle]]) -> List[float]:
+    """Sorted union of bar timestamps across pairs — the walk-forward clock.
+
+    Slicing each pair by its own INDEX misaligned pairs with different
+    listing dates or gaps (BTC hours 466-776 tested against SOL hours
+    966-1376) and never tested the longer pair's tail. Same defect class as
+    the backtest's "align on timestamp, never index" invariant.
+    """
+    return sorted({c.timestamp for series in full.values() for c in series})
+
+
+def _slice_config(cfg: BacktestConfig, t_lo: float, t_hi: float) -> BacktestConfig:
+    """Config for one walk-forward slice: sqlite pre-window seeding (the
+    daily trend overlay) must end at the SLICE start. Seeding from the full
+    window's start left a 90-210 day hole in the daily closes of later
+    slices. Non-sqlite sources carry no window and are returned unchanged."""
+    params = cfg.data_source_params
+    if cfg.data_source != "sqlite" or "start_ts" not in params:
+        return cfg
+    params = dict(params)
+    params["start_ts"] = int(t_lo)
+    params["end_ts"] = int(t_hi) + 1
+    return dataclasses.replace(cfg, data_source_params_json=json.dumps(params))
 
 
 def walk_forward(
@@ -410,7 +431,8 @@ def walk_forward(
         raise ValueError("train_pct / test_pct must be in (0, 1]")
 
     full = _materialize_candles(base_config)
-    total_len = _slice_length(full)
+    timeline = _timeline(full)
+    total_len = len(timeline)
     if total_len == 0:
         return WalkForwardReport(n_windows=0, train_pct=train_pct, test_pct=test_pct)
 
@@ -428,12 +450,17 @@ def walk_forward(
             end = total_len
         test_start = end - test_size
 
-        sliced_by_pair = {p: full[p][test_start:end] for p in base_config.pairs}
+        t_lo, t_hi = timeline[test_start], timeline[end - 1]
+        sliced_by_pair = {
+            p: [c for c in full[p] if t_lo <= c.timestamp <= t_hi]
+            for p in base_config.pairs
+        }
         sources_override = {
             p: ListCandleSource({p: sliced_by_pair[p]}, label=f"wf_{i}")
             for p in base_config.pairs
         }
-        runner = BacktestRunner(base_config, sources_override=sources_override)
+        runner = BacktestRunner(_slice_config(base_config, t_lo, t_hi),
+                                sources_override=sources_override)
         result = runner.run()
         slices.append(WalkForwardSlice(
             window_index=i,

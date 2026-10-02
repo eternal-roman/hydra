@@ -45,6 +45,9 @@ class Strategy(str, Enum):
     MEAN_REVERSION = "MEAN_REVERSION"
     GRID = "GRID"
     DEFENSIVE = "DEFENSIVE"
+    # Daily trend sleeve (HYDRA_TREND_SLEEVE=1): entries and exits on
+    # completed daily closes only, never on 1h signals or 1h rails.
+    TREND = "TREND"
 
 class SignalAction(str, Enum):
     BUY = "BUY"
@@ -344,6 +347,20 @@ class RegimeDetector:
 
         return Regime.RANGING
 
+    @staticmethod
+    def trend_down(prices: List[float], trend_ema_ratio: float = 1.005) -> bool:
+        """The TREND_DOWN condition alone, whatever the volatility test says.
+
+        detect() checks VOLATILE first, so a dump — exactly when ATR and BB
+        width spike — is labelled VOLATILE and never TREND_DOWN. The
+        hold-through flatten keyed off the label and rode those dumps.
+        """
+        if len(prices) < 50:
+            return False
+        ema20 = Indicators.ema(prices, 20)
+        ema50 = Indicators.ema(prices, 50)
+        return ema20 < ema50 * (1.0 / trend_ema_ratio) and prices[-1] < ema20
+
 
 # ═══════════════════════════════════════════════════════════════
 # STRATEGY SELECTOR
@@ -361,19 +378,50 @@ REGIME_STRATEGY_MAP = {
 # SIGNAL GENERATOR
 # ═══════════════════════════════════════════════════════════════
 
+def _env_default_on(name: str) -> bool:
+    """A default-ON switch is off only for an explicit off value.
+
+    Accepting only "1/true/yes/on" meant an empty or unexpected value
+    (HYDRA_HOLD_THROUGH="" or "enabled") silently turned the rails off.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _env_flag_on(name: str) -> bool:
+    """A default-OFF switch is on only for an explicit on value."""
+    raw = os.environ.get(name)
+    return raw is not None and raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def is_rules_force_hold_reason(reason: str) -> bool:
     """Quant-rules HOLD. Hold-through must not turn it back into a sell."""
     return str(reason or "").startswith("[QUANT RULES FORCE_HOLD]")
 
 
+def is_sleeve_trim_reason(reason: str) -> bool:
+    """The trend sleeve's re-size SELL (a partial sell, not an exit)."""
+    return "trend_sleeve:trim" in str(reason or "").lower()
+
+
 def is_protected_flatten_reason(reason: str) -> bool:
-    """Halt flatten and hold-through flatten survive a zero size multiplier."""
+    """Risk-reducing SELLs the rules, the LLM and the coordinator keep.
+
+    Halt flatten, hold-through flatten, and the trend sleeve's exit and
+    re-size trim survive a zero size multiplier. A vetoed trim (QFE only
+    rescues one in profit) left exposure drifting with the rally, which
+    is the failure the re-size exists to stop.
+    """
     text = str(reason or "")
     low = text.lower()
     return (
         text.upper().startswith("HALT FLATTEN")
         or "hold_through:force_flatten" in low
         or "hold_through:daily_trend_exit" in low
+        or "trend_sleeve:exit" in low
+        or "trend_sleeve:trim" in low
     )
 
 
@@ -813,9 +861,13 @@ class PositionSizer:
     # value for SOL regardless of which pair loaded it), and hydra_agent.py
     # + tests access these as a shared registry. Multi-engine "isolation"
     # does not apply to exchange constants.
+    # Fallbacks must equal hydra_pair_registry's (the source of truth); live
+    # boot overlays both with `kraken pairs`. BTC said 0.00005 here and
+    # 0.0001 there, so paper sizing and dust write-off disagreed with the
+    # registry whenever live constants were unavailable.
     MIN_ORDER_SIZE = {
         "SOL": 0.02,
-        "BTC": 0.00005,
+        "BTC": 0.0001,
         "ETH": 0.001,
         "ZEC": 0.01,
     }
@@ -1449,6 +1501,13 @@ class HydraEngine:
     TREND_DON_EXIT_DAYS = 20
     TREND_SCORE_LONG = 0.6      # ensemble score ≥ this ⇒ daily trend long
     TREND_VOL_LOOKBACK_DAYS = 21
+    # Daily sleeve re-sizing. Sizing once and holding the units let a rally
+    # drift exposure to ~0.9 of equity: on independent monthly BTC
+    # (K3b post-hoc, research/data/abi/) entry-only sizing at the 0.40 cap
+    # drew down 58% and tripped a sticky 15% breaker in its first months;
+    # re-setting to cap x vm every month kept the drawdown at 14.3%.
+    SLEEVE_RESIZE_DAYS = 30
+    SLEEVE_RESIZE_TOL = 0.10  # no trade when within 10% of the target
     MAX_DAILY_CLOSES = 420      # ~14 months; sma200 + headroom
     HOLD_THROUGH_FLATTEN_CONF = 0.65
 
@@ -1463,7 +1522,8 @@ class HydraEngine:
                  mean_reversion_rsi_buy: float = 35.0,
                  mean_reversion_rsi_sell: float = 65.0,
                  tradable: bool = True,
-                 hold_through: Optional[bool] = None):
+                 hold_through: Optional[bool] = None,
+                 trend_sleeve: Optional[bool] = None):
         self.asset = asset
         self.initial_balance = initial_balance
         self.balance = initial_balance
@@ -1486,13 +1546,7 @@ class HydraEngine:
         # persisted; the agent re-derives it every boot.
         self.exit_only = False
         if hold_through is None:
-            raw_ht = os.environ.get("HYDRA_HOLD_THROUGH")
-            if raw_ht is None:
-                self.hold_through = True  # product default
-            else:
-                self.hold_through = raw_ht.strip().lower() in (
-                    "1", "true", "yes", "on",
-                )
+            self.hold_through = _env_default_on("HYDRA_HOLD_THROUGH")
         else:
             self.hold_through = bool(hold_through)
 
@@ -1507,12 +1561,23 @@ class HydraEngine:
         # targeting. Fails OPEN end to end: with < TREND_SMA_DAYS+10 daily
         # closes the score is None and behavior is identical to pre-overlay.
         # Kill: HYDRA_TREND_OVERLAY=0 (or trend_overlay=False).
-        raw_to = os.environ.get("HYDRA_TREND_OVERLAY")
-        self.trend_overlay = (
-            raw_to is None or raw_to.strip().lower() in ("1", "true", "yes", "on")
-        )
+        self.trend_overlay = _env_default_on("HYDRA_TREND_OVERLAY")
+        # Daily trend sleeve (default OFF; HYDRA_TREND_SLEEVE=1). The engine
+        # cited the daily ensemble as its only validated edge but traded it
+        # only as a filter on rare 1h entries and exited on 1h noise: 11
+        # trades and +1.0% in 3 years. The sleeve holds the ensemble itself:
+        # long while the score on COMPLETED daily closes is >= 0.6, flat
+        # otherwise, vol-targeted at entry. It never consults the 1h signal
+        # generator or the 1h hold-through rails (daily entry with 1h exits
+        # was tested and rejected: trend_entry_gate.json). Evidence gate:
+        # tools/trend_sleeve_gate.py, research/data/trend_sleeve_REGISTRATION.md.
+        self.trend_sleeve = (_env_flag_on("HYDRA_TREND_SLEEVE")
+                             if trend_sleeve is None else bool(trend_sleeve))
         self._daily_closes: List[Tuple[int, float]] = []  # (utc_day, close)
         self._don_state = 0  # 1 = long regime per Donchian channel state
+        # UTC day of the sleeve's last sizing (entry, trim, top-up or a
+        # within-tolerance check); None = never sized.
+        self._sleeve_sized_day: Optional[int] = None
         try:
             self.trend_target_vol = float(
                 os.environ.get("HYDRA_TREND_TARGET_VOL") or 30.0
@@ -1726,10 +1791,149 @@ class HydraEngine:
         overlay is off or vol is unavailable (fail open)."""
         if not self.trend_overlay:
             return 1.0
+        # Fail open with the overlay itself. Vol needs 22 closes, the score
+        # 210; in between this cut BUYs to 0.2-1.0x while every doc and the
+        # backtest promised pre-overlay behaviour (new satellites, failed
+        # daily seeds, every CSV/synthetic backtest after day 22).
+        if self.daily_trend_score() is None:
+            return 1.0
         vol = self.daily_realized_vol_pct()
         if vol is None or vol <= 0 or self.trend_target_vol <= 0:
             return 1.0
         return max(0.2, min(1.0, self.trend_target_vol / vol))
+
+    # ── daily trend sleeve ──────────────────────────────────────────────
+
+    def _completed_daily_closes(self) -> List[float]:
+        """Closes of finished UTC days only; the forming day is excluded.
+
+        The overlay's daily_trend_score() reads the running intraday close,
+        so a dip below SMA200 that recovers by the close could flip it and
+        force an exit the daily system it cites would never take. The
+        sleeve decides on completed days only: it can change state once per
+        day, at the first tick after 00:00 UTC.
+        """
+        if not self._daily_closes:
+            return []
+        if not self.candles:
+            # No bar says what day it is; the last seeded day may be forming.
+            return [c for _, c in self._daily_closes[:-1]]
+        today = int(self.candles[-1].timestamp // 86400)
+        return [c for d, c in self._daily_closes if d < today]
+
+    def sleeve_trend_score(self) -> Optional[float]:
+        """The overlay's ensemble on completed daily closes; None warming."""
+        closes = self._completed_daily_closes()
+        if len(closes) < self.TREND_SMA_DAYS + 10:
+            return None
+        sma = sum(closes[-self.TREND_SMA_DAYS:]) / float(self.TREND_SMA_DAYS)
+        score = 0.0
+        if closes[-1] > sma:
+            score += 0.4
+        if (Indicators.ema(closes, self.TREND_EMA_FAST_DAYS)
+                > Indicators.ema(closes, self.TREND_EMA_SLOW_DAYS)):
+            score += 0.4
+        if self._don_state == 1:  # advanced on completed days only
+            score += 0.2
+        return round(score, 2)
+
+    def sleeve_wants_long(self) -> Optional[bool]:
+        score = self.sleeve_trend_score()
+        return None if score is None else score >= self.TREND_SCORE_LONG
+
+    def _sleeve_vol_multiplier(self) -> float:
+        """target / realized annualized vol on completed closes, in [0.2, 1]."""
+        closes = self._completed_daily_closes()
+        if len(closes) < self.TREND_VOL_LOOKBACK_DAYS + 1 or self.trend_target_vol <= 0:
+            return 1.0
+        window = closes[-(self.TREND_VOL_LOOKBACK_DAYS + 1):]
+        rets = [math.log(b / a) for a, b in zip(window, window[1:]) if a > 0 and b > 0]
+        if len(rets) < 2:
+            return 1.0
+        vol = statistics.pstdev(rets) * math.sqrt(365.0) * 100.0
+        if vol <= 0:
+            return 1.0
+        return max(0.2, min(1.0, self.trend_target_vol / vol))
+
+    def _sleeve_today(self) -> Optional[int]:
+        return int(self.candles[-1].timestamp // 86400) if self.candles else None
+
+    def _sleeve_resize_due(self) -> bool:
+        """A held sleeve is re-sized SLEEVE_RESIZE_DAYS after its last sizing."""
+        if self.position.size <= 0:
+            return False
+        today = self._sleeve_today()
+        if today is None:
+            return False
+        sized = getattr(self, "_sleeve_sized_day", None)
+        return sized is None or today - sized >= self.SLEEVE_RESIZE_DAYS
+
+    def _sleeve_target_notional(self, price: float, mult: float = 1.0) -> float:
+        equity = self.balance + self.position.size * price
+        return max(0.0, equity * self.sizer.max_position_pct
+                   * self._sleeve_vol_multiplier() * mult)
+
+    def _sleeve_rebalance(self, price: float) -> Optional[Tuple[str, float]]:
+        """('trim' | 'topup', units) when a due re-size is outside the
+        tolerance band and the delta clears the exchange minimums."""
+        if not price or price <= 0 or not self._sleeve_resize_due():
+            return None
+        target = self._sleeve_target_notional(price)
+        current = self.position.size * price
+        if target <= 0:
+            return None
+        if current > target * (1.0 + self.SLEEVE_RESIZE_TOL):
+            side, units = "trim", (current - target) / price
+        elif current < target * (1.0 - self.SLEEVE_RESIZE_TOL):
+            side, units = "topup", (target - current) / price
+        else:
+            return None
+        min_size = self.sizer.min_order_size(self.asset)
+        costmin = self.sizer.min_cost(self.asset)
+        if (min_size is None or costmin is None
+                or units < min_size or units * price < costmin):
+            return None
+        return side, units
+
+    def _trend_sleeve_signal(self) -> Signal:
+        score = self.sleeve_trend_score()
+        indicators = {"trend_sleeve_score": score}
+        if score is None:
+            return Signal(SignalAction.HOLD, 0.0,
+                          f"TREND_SLEEVE:warming (needs {self.TREND_SMA_DAYS + 10} "
+                          f"completed daily closes)",
+                          Strategy.TREND, indicators)
+        want = score >= self.TREND_SCORE_LONG
+        if want and self.position.size <= 0:
+            return Signal(SignalAction.BUY, 1.0, f"TREND_SLEEVE:enter|score={score:.1f}",
+                          Strategy.TREND, indicators)
+        if not want and self.position.size > 0:
+            return Signal(SignalAction.SELL, 1.0, f"TREND_SLEEVE:exit|score={score:.1f}",
+                          Strategy.TREND, indicators)
+        if want and self.position.size > 0 and self.prices:
+            rebalance = self._sleeve_rebalance(self.prices[-1])
+            if rebalance is not None:
+                side, _ = rebalance
+                action = SignalAction.SELL if side == "trim" else SignalAction.BUY
+                return Signal(action, 1.0, f"TREND_SLEEVE:{side}|score={score:.1f}",
+                              Strategy.TREND, indicators)
+        state = "hold_long" if want else "flat"
+        return Signal(SignalAction.HOLD, 0.5, f"TREND_SLEEVE:{state}|score={score:.1f}",
+                      Strategy.TREND, indicators)
+
+    def _sleeve_state(self, price: float) -> Dict[str, Any]:
+        if not getattr(self, "trend_sleeve", False):
+            return {"enabled": False, "score": None}
+        equity = self.balance + self.position.size * price
+        sized = getattr(self, "_sleeve_sized_day", None)
+        return {
+            "enabled": True,
+            "score": self.sleeve_trend_score(),
+            "exposure": round(self.position.size * price / equity, 4) if equity > 0 else 0.0,
+            "target_exposure": (round(self._sleeve_target_notional(price) / equity, 4)
+                                if equity > 0 and price > 0 else 0.0),
+            "next_resize_day": None if sized is None else sized + self.SLEEVE_RESIZE_DAYS,
+        }
 
     def cvd_divergence_sigma(self) -> Optional[float]:
         """v2.14 Quant signal: z-score of (cvd_slope − price_slope) measured
@@ -1748,21 +1952,38 @@ class HydraEngine:
         if len(self.signed_volumes) < samples_1h * 8:  # ~8 windows to estimate variance
             return None
 
-        cvd_series = [sum(self.signed_volumes[: i + 1]) for i in range(len(self.signed_volumes))]
+        # The CVD slope used to be divided by |mean cumulative CVD| — a level
+        # whose zero is wherever the 250-bar buffer happens to start. Changing
+        # one candle 250 bars back flipped sigma from +0.07 to -3.97, so R7
+        # and the QFE squeeze veto fired at random. The slope of cumulative
+        # CVD is net signed volume per bar; dividing by the window's mean
+        # volume makes it the net-buy share, independent of the start point.
+        # History is the last 24h of windows, as documented, not the buffer.
+        lookback = max(8, int(24 * 60 / max(1, self.candle_interval)))
+        n = min(len(self.signed_volumes), len(self.prices), len(self.candles))
+        start = max(0, n - (lookback + samples_1h))
+        signed = self.signed_volumes[start:n]
+        prices = self.prices[start:n]
+        volumes = [c.volume for c in self.candles[start:n]]
+        cvd_series: List[float] = []
+        running = 0.0
+        for sv in signed:
+            running += sv
+            cvd_series.append(running)
         window = samples_1h
         diffs: List[float] = []
         for end in range(window, len(cvd_series) + 1):
             cvd_seg = cvd_series[end - window : end]
-            px_seg = self.prices[end - window : end]
+            px_seg = prices[end - window : end]
             cvd_slope = _linear_slope(cvd_seg)
             px_slope = _linear_slope(px_seg)
             if cvd_slope is None or px_slope is None:
                 continue
-            # Normalize each slope by its series mean magnitude so unit
-            # difference between CVD (signed volume) and price is removed.
-            cvd_norm = abs(sum(cvd_seg) / len(cvd_seg)) or 1.0
+            vol_seg = volumes[end - window : end]
+            vol_norm = (sum(vol_seg) / len(vol_seg)) if vol_seg else 0.0
+            vol_norm = vol_norm if vol_norm > 0 else 1.0
             px_norm = abs(sum(px_seg) / len(px_seg)) or 1.0
-            diffs.append((cvd_slope / cvd_norm) - (px_slope / px_norm))
+            diffs.append((cvd_slope / vol_norm) - (px_slope / px_norm))
 
         # v2.14.1: require at least 8 diff windows (so history has >=7
         # samples for pstdev). Below that the z-score is unstable and
@@ -1829,17 +2050,27 @@ class HydraEngine:
             self.candles, self.prices,
             self.volatile_atr_mult, self.volatile_bb_mult, self.trend_ema_ratio,
         )
-        strategy = REGIME_STRATEGY_MAP[regime]
+        if self.trend_sleeve:
+            # Daily bandwidth only: no 1h signal, no 1h rails.
+            strategy = Strategy.TREND
+            signal = self._trend_sleeve_signal()
+            if (signal.action == SignalAction.HOLD and self._sleeve_resize_due()
+                    and self.sleeve_wants_long() is True):
+                # Due, but within tolerance or below the exchange minimum:
+                # the re-size is a no-op and the next one is 30 days out.
+                self._sleeve_sized_day = self._sleeve_today()
+        else:
+            strategy = REGIME_STRATEGY_MAP[regime]
 
-        # Generate signal
-        signal = SignalGenerator.generate(
-            strategy, self.prices, self.candles,
-            momentum_rsi_lower=self.momentum_rsi_lower,
-            momentum_rsi_upper=self.momentum_rsi_upper,
-            mean_reversion_rsi_buy=self.mean_reversion_rsi_buy,
-            mean_reversion_rsi_sell=self.mean_reversion_rsi_sell,
-        )
-        signal = self._apply_hold_through(regime, signal)
+            # Generate signal
+            signal = SignalGenerator.generate(
+                strategy, self.prices, self.candles,
+                momentum_rsi_lower=self.momentum_rsi_lower,
+                momentum_rsi_upper=self.momentum_rsi_upper,
+                mean_reversion_rsi_buy=self.mean_reversion_rsi_buy,
+                mean_reversion_rsi_sell=self.mean_reversion_rsi_sell,
+            )
+            signal = self._apply_hold_through(regime, signal)
 
         # Arm before the fill. An open book defers the entry and is flattened
         # after the commit below; a flat book is not sold, but halted is set
@@ -1872,7 +2103,17 @@ class HydraEngine:
         current_price = self.prices[-1] if self.prices else 0
         self.position.update_pnl(current_price)
         equity = self.balance + (self.position.size * current_price)
-        self.equity_history.append(equity)
+        # One equity point per candle. Live ticks ~12x per 60m bar, and
+        # _calc_sharpe annualises by candle spacing, so appending every tick
+        # understated live Sharpe by sqrt(12) (dashboard, brain prompt,
+        # competition export). An intra-candle tick updates the bar's point.
+        candle_ts = self.candles[-1].timestamp if self.candles else None
+        if (candle_ts is not None and self.equity_history
+                and getattr(self, "_equity_candle_ts", None) == candle_ts):
+            self.equity_history[-1] = equity
+        else:
+            self.equity_history.append(equity)
+        self._equity_candle_ts = candle_ts
 
         # Track drawdown
         if equity > self.peak_equity:
@@ -2016,9 +2257,10 @@ class HydraEngine:
         if remaining >= self.position.size - 1e-12:
             return
         if remaining <= 0:
-            self.position.size = 0.0
-            self.position.avg_entry = 0.0
-            self.position.params_at_entry = None
+            # Book the accumulated close P&L like any full close. Zeroing the
+            # size alone left realized_pnl on a flat book, and the next round
+            # trip inherited it (a real -5 trip was booked as a +4 win).
+            self._book_write_off(self.position.size)
             return
         self.position.size = remaining
 
@@ -2051,11 +2293,15 @@ class HydraEngine:
         # Daily trend overlay: None = warming up / disabled → fail open
         # (rails behave exactly as pre-overlay).
         daily_long = self.daily_trend_long()
-        if self.position.size > 0 and (
-            regime == Regime.TREND_DOWN or daily_long is False
-        ):
-            tag = ("force_flatten" if regime == Regime.TREND_DOWN
-                   else "daily_trend_exit")
+        # A dump is usually labelled VOLATILE (ATR/BB spike checked first), so
+        # the downtrend underneath it has to be tested directly or the
+        # "bag-holding dumps" rail never fires in one (docs/HOLD_THROUGH.md).
+        downtrend = regime == Regime.TREND_DOWN or (
+            regime == Regime.VOLATILE
+            and RegimeDetector.trend_down(self.prices, self.trend_ema_ratio)
+        )
+        if self.position.size > 0 and (downtrend or daily_long is False):
+            tag = "force_flatten" if downtrend else "daily_trend_exit"
             return Signal(
                 action=SignalAction.SELL,
                 confidence=max(
@@ -2155,6 +2401,15 @@ class HydraEngine:
         price = ind.get("price") or current_price
         if not price or price <= 0:
             return None
+        if signal.strategy == Strategy.TREND:
+            # A daily sleeve holds for weeks; its move proxy is two daily
+            # standard deviations of completed closes, not 2x a 1h ATR.
+            closes = self._completed_daily_closes()
+            window = closes[-(self.TREND_VOL_LOOKBACK_DAYS + 1):]
+            rets = [math.log(b / a) for a, b in zip(window, window[1:]) if a > 0 and b > 0]
+            if len(rets) < 2:
+                return None
+            return 2.0 * statistics.pstdev(rets) * 100.0
         if signal.strategy in (Strategy.MEAN_REVERSION, Strategy.GRID):
             mid = ind.get("bb_middle")
             if (not mid or mid <= 0) and len(self.prices) >= 20:
@@ -2231,7 +2486,12 @@ class HydraEngine:
         # when the signal is "right". SKIP semantics — exits are never
         # gated (friction on an open position is sunk; blocking the SELL
         # would trap it). Kill switch: HYDRA_FRICTION_GATE_DISABLED=1.
-        if (signal.action == SignalAction.BUY
+        # A sleeve top-up re-sizes a held position; like a trim it is not a
+        # new entry, and the friction proxy (2 daily sigmas) goes to zero in
+        # a calm market, which left a due top-up re-emitted every tick.
+        sleeve_topup = (self.trend_sleeve and signal.action == SignalAction.BUY
+                        and self.position.size > 0)
+        if (signal.action == SignalAction.BUY and not sleeve_topup
                 and os.environ.get("HYDRA_FRICTION_GATE_DISABLED") != "1"):
             expected = self._expected_move_pct(signal, current_price)
             # PR-D / D2: timeframe-aware hurdle. On 1h+ candles the BB-mid /
@@ -2254,12 +2514,20 @@ class HydraEngine:
                 return None
 
         if signal.action == SignalAction.BUY and signal.confidence >= self.sizer.min_confidence:
-            size = self.sizer.calculate(signal.confidence, self.balance, current_price, self.asset)
-            size = size * effective_mult
-            # v2.28 trend overlay: vol-target entries (target/realized daily
-            # vol, capped 1.0) — the de-risking that cut the validated
-            # ensemble's maxDD from 84% to ~30% at equal-or-better Sharpe.
-            size = size * self._trend_vol_multiplier()
+            if signal.strategy == Strategy.TREND:
+                # Daily sleeve: buy up to the vol-targeted share of the
+                # position cap (entry or top-up), scaled by every de-risking
+                # multiplier; the PR-B caps below bind.
+                target = self._sleeve_target_notional(current_price, effective_mult)
+                size = max(0.0, target - self.position.size * current_price) / current_price
+            else:
+                size = self.sizer.calculate(signal.confidence, self.balance, current_price, self.asset)
+                size = size * effective_mult
+                # v2.28 trend overlay: vol-target entries (target/realized
+                # daily vol, capped 1.0) — the de-risking that cut the
+                # validated ensemble's maxDD from 84% to ~30% at
+                # equal-or-better Sharpe.
+                size = size * self._trend_vol_multiplier()
             # Conviction sizing: when the daily ensemble confirms the long
             # regime, allocate the vol-targeted fraction of the position cap
             # (the validated trend systems' sizing shape) instead of the
@@ -2268,6 +2536,7 @@ class HydraEngine:
             # right. Kelly remains the floor; the gross-inventory cap below
             # still binds. Kill: HYDRA_TREND_CONVICTION_SIZING=0.
             if (effective_mult > 0
+                    and signal.strategy != Strategy.TREND
                     and self.daily_trend_long() is True
                     and os.environ.get("HYDRA_TREND_CONVICTION_SIZING") != "0"):
                 # `effective_mult` MUST scale the floor too. A hard veto
@@ -2307,7 +2576,7 @@ class HydraEngine:
                 if (min_size is None or costmin is None
                         or size < min_size or size * current_price < costmin):
                     size = 0.0
-            if size > 0 and decision_cost_usd:
+            if size > 0 and decision_cost_usd and not sleeve_topup:
                 expected = self._expected_move_pct(signal, current_price)
                 notional = size * current_price
                 profit = None if expected is None else notional * (expected / 100.0)
@@ -2342,6 +2611,8 @@ class HydraEngine:
                     self.position.params_at_entry = self.snapshot_params()
 
                 self.balance -= cost
+                if self.trend_sleeve:
+                    self._sleeve_sized_day = self._sleeve_today()
 
                 trade = Trade(
                     action="BUY",
@@ -2379,6 +2650,15 @@ class HydraEngine:
                     return None  # dust cleared; no exchange sell
                 return None
             sell_amount = self.position.size  # Full close
+            if self.trend_sleeve and is_sleeve_trim_reason(signal.reason):
+                # The sleeve's re-size is the one partial sell: back to
+                # cap x vm, not an exit. Nothing to trim means no order.
+                rebalance = self._sleeve_rebalance(current_price)
+                if rebalance is None or rebalance[0] != "trim":
+                    return None
+                sell_amount = min(self.position.size, rebalance[1])
+                if min_size > 0 and self.position.size - sell_amount < min_size:
+                    sell_amount = self.position.size  # never leave dust
             revenue = sell_amount * current_price
             profit = (current_price - self.position.avg_entry) * sell_amount
             # Capture params before position state is cleared
@@ -2411,6 +2691,8 @@ class HydraEngine:
                 self.position.params_at_entry = None
                 self.position.realized_pnl = 0.0
 
+            if self.trend_sleeve and self.position.size > 0:
+                self._sleeve_sized_day = self._sleeve_today()
             trade = Trade(
                 action="SELL",
                 asset=self.asset,
@@ -2471,7 +2753,35 @@ class HydraEngine:
         # circuit-breaker HALT FLATTEN SELL into HOLD — a halted engine in a
         # local TREND_UP would trap inventory on the brain path because
         # tick()'s flatten signal gets re-railed here.
-        if self.hold_through and not self.halted:
+        if self.trend_sleeve:
+            # The sleeve is its own rail and the 1h hold-through rails never
+            # apply. An external BUY (brain, cached replay, coordinator)
+            # enters only while the completed-day ensemble is long. An
+            # external SELL is refused only while the ensemble positively
+            # wants long: a 1h exit (coordinator) would re-couple the sleeve
+            # to the 1h exits trend_entry_gate.json rejected. The halt
+            # flatten and the sleeve's own exit always pass, and a warming
+            # sleeve fails open for exits.
+            want = self.sleeve_wants_long()
+            price = self.prices[-1] if self.prices else 0.0
+            if signal.action == SignalAction.BUY:
+                # Entry when flat; when held, only the sleeve's own due top-up.
+                if want is not True:
+                    return None
+                if self.position.size > 0:
+                    rebalance = self._sleeve_rebalance(price)
+                    if rebalance is None or rebalance[0] != "topup":
+                        return None
+                signal.strategy = Strategy.TREND
+            elif (signal.action == SignalAction.SELL and want is True
+                    and not self.halted
+                    and not is_protected_flatten_reason(signal.reason)):
+                rebalance = self._sleeve_rebalance(price)
+                if not (is_sleeve_trim_reason(signal.reason)
+                        and rebalance is not None and rebalance[0] == "trim"):
+                    return None
+                signal.strategy = Strategy.TREND
+        elif self.hold_through and not self.halted:
             if self.candles and self.prices:
                 regime = RegimeDetector.detect(
                     self.candles, self.prices,
@@ -2599,6 +2909,8 @@ class HydraEngine:
             # Persisted so --resume doesn't silently re-enable a pair whose
             # quote currency the user no longer holds.
             "tradable": self.tradable,
+            # A cancelled sleeve re-size must not count as done.
+            "sleeve_sized_day": getattr(self, "_sleeve_sized_day", None),
         }
 
     def restore_position(self, snap: Dict[str, Any]) -> None:
@@ -2622,6 +2934,8 @@ class HydraEngine:
         # "tradable" field; default to True so resumed sessions behave
         # identically to pre-flag behavior until the agent refreshes.
         self.tradable = snap.get("tradable", True)
+        if "sleeve_sized_day" in snap:
+            self._sleeve_sized_day = snap["sleeve_sized_day"]
 
     def true_up_fill(
         self,
@@ -2799,6 +3113,8 @@ class HydraEngine:
             self.position.avg_entry = price
             self.position.params_at_entry = self.snapshot_params()
         self.balance -= cost
+        if getattr(self, "trend_sleeve", False):
+            self._sleeve_sized_day = self._sleeve_today()
         self.trades.append(Trade(
             action="BUY", asset=self.asset, price=price, amount=amount,
             value=cost, reason=reason, confidence=confidence,
@@ -2841,6 +3157,8 @@ class HydraEngine:
                 self.gross_loss += abs(total_profit)
             self.position.params_at_entry = None
             self.position.realized_pnl = 0.0
+        elif getattr(self, "trend_sleeve", False):
+            self._sleeve_sized_day = self._sleeve_today()  # a filled trim
         self.trades.append(Trade(
             action="SELL", asset=self.asset, price=price, amount=amount,
             value=revenue, reason=reason, confidence=confidence,
@@ -2906,6 +3224,7 @@ class HydraEngine:
             # would need 200 live days to re-warm.
             "daily_closes": [[d, c] for d, c in self._daily_closes],
             "don_state": self._don_state,
+            "sleeve_sized_day": getattr(self, "_sleeve_sized_day", None),
         }
 
     def restore_runtime(self, snapshot: Dict[str, Any]):
@@ -2928,6 +3247,11 @@ class HydraEngine:
             self._don_state = 1 if int(snapshot.get("don_state") or 0) == 1 else 0
         except (TypeError, ValueError):
             self._don_state = 0
+        try:
+            raw_sized = snapshot.get("sleeve_sized_day")
+            self._sleeve_sized_day = None if raw_sized is None else int(raw_sized)
+        except (TypeError, ValueError):
+            self._sleeve_sized_day = None
         self.initial_balance = float(snapshot.get("initial_balance", self.initial_balance))
         self.balance = float(snapshot.get("balance", self.balance))
         p = snapshot.get("position", {})
@@ -3114,6 +3438,9 @@ class HydraEngine:
                 "equity": round(equity, value_decimals),
                 "pnl_pct": round(pnl_pct, 4),
                 "max_drawdown_pct": round(self.max_drawdown, 4),
+                # Drawdown NOW (equity vs peak). Every risk mandate keys off
+                # this; max_drawdown_pct is a monotone record nothing lowers.
+                "current_drawdown_pct": round(self.current_drawdown_pct(), 4),
                 "peak_equity": round(self.peak_equity, value_decimals),
             },
             "performance": {
@@ -3127,6 +3454,7 @@ class HydraEngine:
                 "ema20": round(ema20, 8),
                 "ema50": round(ema50, 8),
             },
+            "trend_sleeve": self._sleeve_state(current_price),
             "volatility": {
                 "atr": round(atr_val, 8),
                 "atr_pct": round(atr_pct, 4),

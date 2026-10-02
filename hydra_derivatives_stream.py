@@ -103,6 +103,16 @@ SPOT_TO_DERIVATIVES: Dict[str, Dict[str, object]] = {
 # headroom. Past that, null + warn rather than feed R1/R2 a poisoned input.
 FUNDING_BPS_SANITY_MAX = 500.0
 
+# Kraken Futures multi-collateral perps (PF_*) settle funding every HOUR, so
+# (fundingRate / markPrice) is a per-hour rate. The repo's real-data tooling
+# already reads this feed as hourly (tools/carry_backtest.py: relativeFundingRate
+# is "fraction of mark price per hour"; hydra_flywheel.funding_apr_pct
+# annualizes x24x365). `funding_bps_8h` and R1/R2's FUNDING_EXTREME_BPS are
+# 8h-denominated, but the per-hour value was stored unscaled, so R1/R2 needed
+# 80 bps PER HOUR (~7000% APR) to fire — never. Scale per-period bps to 8h.
+FUNDING_PERIOD_HOURS = 1.0
+FUNDING_PERIODS_PER_8H = 8.0 / FUNDING_PERIOD_HOURS
+
 
 def _absolute_to_relative_bps(
     fr: Optional[float], mark_price: Optional[float],
@@ -129,6 +139,29 @@ def _absolute_to_relative_bps(
             f"  [DerivativesStream] {pair} funding {bps:+.1f} bps from {source} "
             f"exceeds sanity bound ±{FUNDING_BPS_SANITY_MAX:.0f}; nulling. "
             f"Investigate Kraken Futures API units or WSL bridge.",
+            file=sys.stderr,
+        )
+        return None
+    return bps
+
+
+def _funding_bps_8h(
+    fr: Optional[float], mark_price: Optional[float],
+    pair: str, source: str,
+) -> Optional[float]:
+    """Kraken absolute fundingRate -> markPrice-relative bps per 8h.
+
+    Per-period bps from `_absolute_to_relative_bps`, scaled by
+    FUNDING_PERIODS_PER_8H, then held to the ±FUNDING_BPS_SANITY_MAX bound
+    the 8h thresholds were written against. None on any missing input."""
+    per_period = _absolute_to_relative_bps(fr, mark_price, pair, source)
+    if per_period is None:
+        return None
+    bps = round(per_period * FUNDING_PERIODS_PER_8H, 2)
+    if abs(bps) > FUNDING_BPS_SANITY_MAX:
+        print(
+            f"  [DerivativesStream] {pair} funding {bps:+.1f} bps/8h from {source} "
+            f"exceeds sanity bound ±{FUNDING_BPS_SANITY_MAX:.0f}; nulling.",
             file=sys.stderr,
         )
         return None
@@ -475,10 +508,10 @@ class DerivativesStream:
         # (helper may return None). Reason: a stale funding bps anchored to a
         # markPrice that didn't refresh this tick would silently mislead R1/R2.
         # Nulling forces R10 to flag staleness via its missing-field count.
-        snap.funding_bps_8h = _absolute_to_relative_bps(
+        snap.funding_bps_8h = _funding_bps_8h(
             fr, mark, snap.pair, "fundingRate"
         )
-        snap.funding_predicted_bps = _absolute_to_relative_bps(
+        snap.funding_predicted_bps = _funding_bps_8h(
             fr_pred, mark, snap.pair, "fundingRatePrediction"
         )
         if oi is not None:
@@ -536,10 +569,10 @@ class DerivativesStream:
         # share a denominator. Normalize each by its own markPrice before the
         # subtraction. If either leg lacks markPrice, the synthetic signal is
         # undefined; null it rather than emit garbage.
-        sol_rel = _absolute_to_relative_bps(
+        sol_rel = _funding_bps_8h(
             sol_fr, sol_mark, snap.pair, "synthetic.sol"
         )
-        btc_rel = _absolute_to_relative_bps(
+        btc_rel = _funding_bps_8h(
             btc_fr, btc_mark, snap.pair, "synthetic.btc"
         )
         if sol_rel is not None and btc_rel is not None:
