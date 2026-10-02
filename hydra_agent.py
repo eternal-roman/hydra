@@ -490,6 +490,24 @@ class HydraAgent:
                 print(f"  [TUNER] Reset learned params for {pair}")
             self.trackers[pair] = tracker
 
+        # Which pairs trade the daily trend sleeve: only those whose base
+        # asset passed the pre-registered gate on this operator's own data,
+        # unless HYDRA_TREND_SLEEVE forces it on or off. Any failure here
+        # keeps every pair on the current engine.
+        try:
+            from hydra_strategy_gate import resolve_trend_sleeve
+            self.sleeve_decisions = resolve_trend_sleeve(pairs)
+        except Exception as e:
+            from hydra_strategy_gate import SleeveDecision
+            self.sleeve_decisions = {
+                p: SleeveDecision(False, f"gate check failed ({type(e).__name__}: {e})")
+                for p in pairs
+            }
+        for pair in pairs:
+            decision = self.sleeve_decisions[pair]
+            label = "daily trend sleeve" if decision.enabled else "1h rails engine"
+            print(f"  [STRATEGY] {pair}: {label} — {decision.reason}")
+
         # One engine per pair — apply tuned params if available
         self.engines: Dict[str, HydraEngine] = {}
         for pair in pairs:
@@ -501,6 +519,7 @@ class HydraAgent:
                 asset=pair,
                 sizing=sizing,
                 candle_interval=candle_interval,
+                trend_sleeve=self.sleeve_decisions[pair].enabled,
             )
             # Apply any previously learned tuned params
             tuned = self.trackers[pair].get_tunable_params()
@@ -5769,6 +5788,13 @@ class HydraAgent:
             if state is not None:
                 state["tradable"] = bool(getattr(engine, "tradable", True)) if engine else True
                 state["exit_only"] = bool(getattr(engine, "exit_only", False)) if engine else False
+                decision = (getattr(self, "sleeve_decisions", None) or {}).get(pair)
+                if decision is not None:
+                    state["strategy_gate"] = {
+                        "sleeve": bool(decision.enabled),
+                        "reason": decision.reason,
+                        "gate_generated_at": decision.gate_generated_at,
+                    }
 
         # Journal-derived stats — wrapped in try/except so a malformed journal
         # entry can never crash the broadcast and blank the dashboard.

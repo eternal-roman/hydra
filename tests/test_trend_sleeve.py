@@ -490,3 +490,92 @@ def test_the_llm_cannot_veto_a_trim_but_can_veto_a_topup(monkeypatch):
     topup = _state("BUY", reason="TREND_SLEEVE:topup|score=1.0", size=1.0, ts=4000.0)
     agent._apply_brain("BTC/USD", topup, {})
     assert topup["signal"]["action"] == "HOLD"
+
+
+def _next_close_score(eng, close):
+    """Score the engine reports once `close` is a completed day."""
+    probe = HydraEngine(initial_balance=1000.0, asset="BTC/USD", trend_sleeve=True)
+    probe.restore_runtime(eng.snapshot_runtime())
+    probe.candles, probe.prices = list(eng.candles), list(eng.prices)
+    today = eng._sleeve_today()
+    probe.ingest_candle({"open": close, "high": close, "low": close, "close": close,
+                         "volume": 1.0, "timestamp": today * DAY + 23 * 3600})
+    probe.ingest_candle({"open": close, "high": close, "low": close, "close": close,
+                         "volume": 1.0, "timestamp": (today + 1) * DAY})
+    return probe.sleeve_trend_score()
+
+
+def test_plan_exit_level_is_exact_for_a_held_sleeve():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    plan = eng.sleeve_plan(daily[-1])
+    assert plan["state"] == "long" and plan["enter_above"] is None
+    level = plan["exit_below"]
+    assert level is not None and 0 < level < daily[-1]
+    assert _next_close_score(eng, level * 0.999) < 0.6   # a close below it exits
+    assert _next_close_score(eng, level * 1.001) >= 0.6  # a close above it holds
+
+
+def test_plan_entry_level_is_exact_for_a_flat_sleeve():
+    flat_daily = _then_down(_uptrend())
+    eng = _engine(flat_daily)
+    _bar(eng, len(flat_daily), 0, flat_daily[-1])
+    plan = eng.sleeve_plan(flat_daily[-1])
+    assert plan["state"] == "flat" and plan["wants_long"] is False
+    level = plan["enter_above"]
+    assert level is not None and level > flat_daily[-1]
+    assert _next_close_score(eng, level * 1.001) >= 0.6
+    assert _next_close_score(eng, level * 0.999) < 0.6
+
+
+def test_plan_component_levels_match_the_score_terms():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    lv = eng.sleeve_plan(daily[-1])["levels"]
+    closes = eng._completed_daily_closes()
+    assert lv["sma200"] == pytest.approx(sum(closes[-199:]) / 199)
+    assert lv["donchian_55d_high"] == pytest.approx(max(closes[-55:]))
+    assert lv["donchian_20d_low"] == pytest.approx(min(closes[-20:]))
+    from hydra_engine import Indicators
+    level = lv["ema20_over_ema100"]
+    step = abs(level) * 1e-4
+    for c, expect in ((level + step, True), (level - step, False)):
+        seq = closes + [c]
+        assert (Indicators.ema(seq, 20) > Indicators.ema(seq, 100)) is expect
+    if level <= 0:  # EMA20 far above EMA100: no positive close breaks the term
+        seq = closes + [1e-6]
+        assert Indicators.ema(seq, 20) > Indicators.ema(seq, 100)
+
+
+def test_plan_breaker_price_is_where_equity_is_15pct_under_peak():
+    daily = _uptrend(amp=0.01)  # low vol: full 0.30 exposure, breaker reachable
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    plan = eng.sleeve_plan(daily[-1])
+    assert plan["breaker_reachable"] is True
+    equity = eng.balance + eng.position.size * plan["breaker_price"]
+    assert equity == pytest.approx(0.85 * eng.peak_equity, rel=1e-6)
+
+
+def test_plan_says_when_price_alone_cannot_trip_the_breaker():
+    daily = _uptrend()  # ~13% exposure: cash alone is above 85% of peak
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    plan = eng.sleeve_plan(daily[-1])
+    assert plan["breaker_price"] is None and plan["breaker_reachable"] is False
+
+
+def test_plan_is_none_while_warming_and_reported_in_state():
+    eng = _engine(_uptrend(150))
+    _bar(eng, 150, 0, 100.0)
+    assert eng.sleeve_plan() is None
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    state = eng.tick(generate_only=True)
+    assert state["trend_sleeve"]["plan"]["decides_at_utc"] == (START_DAY + len(daily) + 1) * DAY

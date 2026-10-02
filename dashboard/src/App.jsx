@@ -184,6 +184,87 @@ function QuantumIcon({ active = true, size = 14, color }) {
   );
 }
 
+// Distance from the current price to a level, as a signed percent of price.
+function pctFrom(price, level) {
+  if (!price || level == null || !Number.isFinite(level)) return null;
+  return ((level - price) / price) * 100;
+}
+
+function fmtUtcDay(epochSec) {
+  if (!epochSec) return "—";
+  return new Date(epochSec * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+
+// The plan the trend sleeve trades, from state.trend_sleeve.plan
+// (hydra_engine.sleeve_plan): the daily close that flips the decision,
+// each ensemble term's level, the re-size, and where the breaker sits.
+function TradePlan({ pair, ps }) {
+  const sleeve = ps.trend_sleeve || {};
+  const gate = ps.strategy_gate || null;
+  const prefix = pairPrefix(pair);
+  const row = { display: "flex", justifyContent: "space-between", gap: 12, fontSize: 11, fontFamily: mono, padding: "2px 0" };
+  const dim = { color: COLORS.textDim };
+  const box = { border: `1px solid ${COLORS.panelBorder}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10, background: "#0d0d0f" };
+  if (!sleeve.enabled) {
+    return (
+      <div style={{ ...box, ...row }} title="Which strategy trades this pair, and why (hydra_strategy_gate).">
+        <span style={dim}>STRATEGY</span>
+        <span style={{ color: COLORS.textMuted, textAlign: "right" }}>
+          1h rails engine{gate?.reason ? ` — ${gate.reason}` : ""}
+        </span>
+      </div>
+    );
+  }
+  const plan = sleeve.plan;
+  if (!plan) {
+    return (
+      <div style={{ ...box, ...row }}>
+        <span style={dim}>TREND SLEEVE</span>
+        <span style={{ color: COLORS.textMuted }}>warming up — needs 210 completed daily closes</span>
+      </div>
+    );
+  }
+  const price = ps.price || 0;
+  const held = plan.state === "long";
+  const trigger = held ? plan.exit_below : plan.enter_above;
+  const dist = pctFrom(price, trigger);
+  const lv = plan.levels || {};
+  const pct = (v) => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
+  return (
+    <div style={box} aria-label={`${pair} trade plan`}>
+      <div style={{ ...row, fontSize: 12, fontWeight: 700 }}>
+        <span style={{ color: held ? COLORS.buy : COLORS.textMuted }}>
+          TREND SLEEVE · {held ? "LONG" : "FLAT"} · score {plan.score ?? "—"}
+        </span>
+        <span style={dim}>decides {fmtUtcDay(plan.decides_at_utc)}</span>
+      </div>
+      <div style={{ ...row, fontSize: 12 }}>
+        <span>{held ? "Exits if a daily close is below" : "Enters if a daily close is above"}</span>
+        <span style={{ color: held ? COLORS.sell : COLORS.buy, fontWeight: 700 }}>
+          {trigger == null ? "no level in range" : fmtPrice(trigger, prefix)}
+          {dist != null && <span style={dim}> ({dist >= 0 ? "+" : ""}{dist.toFixed(1)}%)</span>}
+        </span>
+      </div>
+      <div style={row}>
+        <span style={dim}>Terms</span>
+        <span style={{ textAlign: "right" }}>
+          SMA200 {fmtPrice(lv.sma200, prefix)} · EMA cross {lv.ema20_over_ema100 > 0 ? fmtPrice(lv.ema20_over_ema100, prefix) : "holds"} · 55d high {fmtPrice(lv.donchian_55d_high, prefix)} / 20d low {fmtPrice(lv.donchian_20d_low, prefix)}{lv.donchian_long ? " (in)" : " (out)"}
+        </span>
+      </div>
+      <div style={row}>
+        <span style={dim}>Exposure / target</span>
+        <span>{pct(sleeve.exposure)} / {pct(sleeve.target_exposure)}{sleeve.next_resize_day ? ` · re-size ${fmtUtcDay(sleeve.next_resize_day * 86400).slice(0, 10)}` : ""}</span>
+      </div>
+      <div style={row}>
+        <span style={dim}>15% breaker</span>
+        <span style={{ color: plan.breaker_reachable ? COLORS.warn : COLORS.textMuted }}>
+          {plan.breaker_reachable ? `fires below ${fmtPrice(plan.breaker_price, prefix)}` : held ? "price alone cannot trip it" : "flat"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function StatCard({ label, value, unit, color = COLORS.text }) {
   return (
     <div style={{ padding: "12px 16px", background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`, borderRadius: 8, flex: "1 1 0" }}>
@@ -2294,6 +2375,9 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                         )}
                       </div>
                     </div>
+
+                    {/* Trade plan: what the next daily close must do, or which engine runs and why */}
+                    <TradePlan pair={pair} ps={ps} />
 
                     {/* Candlestick Chart */}
                     {(ps.candles && ps.candles.length >= 1) && (
