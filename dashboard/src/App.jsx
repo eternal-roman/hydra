@@ -2333,6 +2333,9 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                 const port = ps.portfolio || {};
                 const pos = ps.position || {};
                 const ind = ps.indicators || {};
+                // A sleeve pair decides on completed daily closes; the 1h
+                // indicator tiles and research meters drive none of it.
+                const sleeveOn = !!(ps.trend_sleeve && ps.trend_sleeve.enabled);
 
                 return (
                   <div key={pair} style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`, borderRadius: 10, padding: 16 }}>
@@ -2389,6 +2392,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                     {/* Research surfaces — display/shadow only; never order path (thesis).
                         Same meter row as ConfidenceMeter: mono label left, value right. */}
                     {(() => {
+                      if (sleeveOn) return null;
                       const qi = ps.quant_indicators
                         || ps.ai_decision?.quant_indicators
                         || null;
@@ -2541,10 +2545,12 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                     {/* Indicators */}
                     {ind.rsi !== undefined && (
                       <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 11, fontFamily: mono, color: COLORS.textDim, flexWrap: "wrap" }}>
+                        {!sleeveOn && (<>
                         <span>RSI <span style={{ color: ind.rsi > 70 ? COLORS.sell : ind.rsi < 30 ? COLORS.buy : COLORS.text, fontWeight: 600 }}>{ind.rsi}</span></span>
                         <span>MACD <span style={{ color: (ind.macd_histogram || 0) > 0 ? COLORS.buy : COLORS.sell, fontWeight: 600 }}>{fmtInd(ind.macd_histogram)}</span></span>
                         <span>BB <span style={{ color: COLORS.text }}>[{fmtInd(ind.bb_lower)} — {fmtInd(ind.bb_upper)}]</span></span>
                         <span>Width <span style={{ color: (ind.bb_width || 0) > 0.06 ? COLORS.volatile : COLORS.text, fontWeight: 600 }}>{((ind.bb_width || 0) * 100).toFixed(2)}%</span></span>
+                        </>)}
                         {(() => {
                           const fees = state?.fee_tier?.pair_fees?.[pair];
                           if (!fees) return null;

@@ -10,6 +10,12 @@
 
 ## Highlights
 
+- **Evidence-gated daily trend sleeve** (the strategy with the best evidence here): long while
+  the daily trend ensemble (SMA200, EMA20/100, Donchian 55/20) holds on completed closes, flat
+  otherwise, sized to a volatility target and re-sized monthly. A pair trades it only after a
+  pre-registered gate passes on **your own** history (`run_strategy_gate.bat`); every pair card
+  shows its trade plan — the exact daily close that flips it, and where the breaker sits.
+  See [`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md)
 - **Regime switching** on pure-Python indicators (Wilder RSI/ATR, Bollinger, MACD, EMAs)
 - **Spot-only** execution — default `BTC/USD` + `ETH/USD` + `ZEC/USD` (v2.29, independent pairs;
   explicit SOL pairs restore the legacy triangle, bridge signal-only). `--pairs auto` seeds the
@@ -105,6 +111,29 @@ start_all.bat              # agent + dashboard
 start_hydra.bat            # production: --pairs auto --mode competition --resume
 ```
 
+### What Hydra trades, and how to prove it
+
+Each pair runs one of two strategies, decided by evidence at start-up:
+
+| Strategy | When | What it does |
+|---|---|---|
+| Daily trend sleeve | its pre-registered gate PASSED, significantly, on your data for that asset | Long-or-flat on the daily trend, vol-targeted, re-sized every 30 days; no LLM or rule vetoes |
+| 1h rails engine | otherwise (the default with no gate result) | Capital preservation; in practice it almost never trades |
+
+```bash
+run_strategy_gate.bat                             # Windows: refresh history, run the gate, show the result
+# or step by step:
+python -m tools.refresh_history                   # update hydra_history.sqlite
+python tools/trend_sleeve_gate.py --engine        # the pre-registered test (minutes)
+python -m hydra_strategy_gate                     # what Hydra will trade, per pair
+```
+
+Restart the agent to apply. `HYDRA_TREND_SLEEVE=1` / `0` overrides the evidence.
+Re-run the gate quarterly: results older than 180 days switch `auto` back off.
+The rules, the evidence behind each one, and the per-session routine are in
+[`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md). It is not a money machine: the sleeve
+earns when crypto trends up and holds cash otherwise.
+
 ### Config
 
 | Source | Purpose |
@@ -119,7 +148,9 @@ Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`]
 ## Architecture (short)
 
 ```
-Candle/Ticker WS → indicators → regime → strategy signal
+Candle/Ticker WS → per pair, one of:
+   trend sleeve (gate PASS): completed daily closes → ensemble → long/flat → vol-target size
+   1h rails engine:          indicators → regime → strategy signal
         → hold-through + daily trend overlay (default on)
         → friction (entries) → 15% CB (BUY only)
         → (optional) AI brain + R1–R11 / QFE
@@ -186,6 +217,7 @@ Harness: `smoke` · `mock` (**36** scenarios in CI) · `validate` · `live` (exp
 | [`docs/BACKTEST.md`](docs/BACKTEST.md) | Backtest runbook |
 | [`docs/BACKTEST_SPEC.md`](docs/BACKTEST_SPEC.md) | Backtest design archive (defaults: code wins) |
 | [`docs/COMPANION_SPEC.md`](docs/COMPANION_SPEC.md) | Companion system |
+| [`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md) | The plan Hydra trades, the evidence behind each rule, the per-session routine |
 | [`docs/HOLD_THROUGH.md`](docs/HOLD_THROUGH.md) | Hold-through rails (default on) |
 | [`heartbeat/README.md`](heartbeat/README.md) · [`HONEST_FINDINGS.md`](heartbeat/HONEST_FINDINGS.md) | Order-flow posterior + evidence ledger |
 | [`research/`](research/) | Formal papers + promoted study data |
@@ -195,6 +227,7 @@ Harness: `smoke` · `mock` (**36** scenarios in CI) · `validate` · `live` (exp
 | Issue | Fix |
 |-------|-----|
 | Want a no-keys smoke test | `python hydra_agent.py --demo --duration 30` |
+| A pair never trades | It is on the 1h rails engine; the `[STRATEGY]` boot line and the pair card say why. Run `run_strategy_gate.bat` |
 | `kraken: command not found` | Install kraken-cli in WSL; `source ~/.cargo/env` — or use `--demo` |
 | Wrong WSL distro | `wsl -l -v` → set `HYDRA_WSL_DISTRO` |
 | Port 3000 taken | Vite uses `strictPort` — free the port |
