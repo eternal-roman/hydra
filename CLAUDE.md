@@ -253,7 +253,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | `HYDRA_TAX_FRICTION_FLOOR_USD` | brain | Tax/fee friction floor in USD (default `50.0`; `hydra_brain.TAX_FRICTION_FLOOR_USD`). On a SELL that would realize a gain below the floor, the analyst prompt gets a soft advisory line — **advisory only, never a gate**. `=0` suppresses it; cutting a loss or banking a gain ≥ floor never triggers it. |
 | `HYDRA_COMPANION_DISABLED` | companion | kill (no orb) |
 | `HYDRA_COMPANION_PROPOSALS_ENABLED` | companion | default on; `=0` for no trade cards |
-| `HYDRA_COMPANION_NUDGES` | companion | default on; `=0` for no proactive messages |
+| `HYDRA_COMPANION_NUDGES` | companion | **default OFF**; `=1` opts in. Nudges fire on 1h regime flips (no measured edge) and each costs an LLM call; `start_hydra_companion.bat` (paper) turns them on |
 | `HYDRA_COMPANION_LIVE_EXECUTION` | companion | **opt-in** real-order execution; **default OFF for money safety** |
 | `HYDRA_POSTEDIT_HOOK_DISABLED` | tooling | silence hook during heavy refactors |
 | `HYDRA_RM_FEATURES_DISABLED` | rm_features | `=1` skips engine-internal feature computation in `_build_quant_indicators`; instant rollback without redeploy. Default off (features enabled). |
@@ -277,6 +277,7 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 | `HYDRA_S3_DISABLED` | s3 | `=1` removes the S3 signal surface entirely (no daily tracking, no `quant_indicators["s3"]`, no shadow). Read per call — live-flippable. Default unset (signal ON). |
 | `HYDRA_S3_STRATEGY` | s3 | **Default OFF.** `=1` enables the S3 shadow strategy: gated entryable-b1 signals are logged as proposals with per-exit-arm paper positions in `.hydra-s3/`. Structurally shadow-only — this flag has NO code path to an order; live enablement is a future, gate-pending PR (needs the shadow window + `/bakeoff` to clear). |
 | `HYDRA_S3_HEARTBEAT_STATUS_DIR` | s3 + heartbeat surface | Directory of heartbeat status files (`heartbeat_status_<PAIR>.json`). Default `heartbeat/data`. Missing/stale(>300s)/tainted ⇒ `no_opinion` (never fabricate 0.5). Used by S3 shadow confirmer and dashboard surface. |
+| `HYDRA_START_HEARTBEAT` | launcher | `=1` makes `start_hydra.bat` start the heartbeat research process. **Default off**: no order path, and its committed AUCs predate the 2026-10 label leak fix. |
 | `HYDRA_HEARTBEAT_SURFACE` | agent/dashboard | **Default ON.** `=0` removes `quant_indicators["heartbeat"]` (P(up) display). Read-only — no order path. Requires separate `heartbeat run` process for live values. |
 | `HYDRA_FEE_DEDUCTION_DISABLED` | agent | `=1` reverts fee-true accounting (v2.27): confirmed fills debit `lifecycle.fee_quote` from the engine's quote balance exactly once (idempotent via `lifecycle.fee_applied`). Default off (fees deducted) — pre-v2.27 live P&L was overstated ~16 bps/fill vs the backtest, which always deducted fees. |
 | `HYDRA_WS_HOST` | dashboard | Dashboard WS bind address. Default **`127.0.0.1`** (v2.32.1). Auth, not the bind, protects account state (WS auth invariant). `=0.0.0.0` only behind an auth-terminating proxy. |
@@ -302,8 +303,8 @@ shutdown) lives in the `hydra_engine.py` / `hydra_agent.py` docstrings and `SKIL
 - Engine demo (no keys): `python hydra_engine.py`
 
 **Launchers:**
-- `start_hydra.bat` — production watchdog (`--pairs auto --mode competition --resume` — **do not remove these flags**). Starts `start_heartbeat.bat` once before the restart loop (idempotent if heartbeat.exe is already up).
-- `start_all.bat` — full stack: dashboard + agent watchdog (heartbeat starts from `start_hydra.bat`)
+- `start_hydra.bat` — production watchdog (`--pairs auto --mode competition --resume` — **do not remove these flags**). Starts `start_heartbeat.bat` once before the restart loop only when `HYDRA_START_HEARTBEAT=1` (research, no order path, AUCs pending the leak-fix re-run).
+- `start_all.bat` — full stack: dashboard + agent watchdog (heartbeat only via `HYDRA_START_HEARTBEAT=1` in `start_hydra.bat`)
 - `start_dashboard.bat` — dashboard only
 - `start_heartbeat.bat` — `heartbeat run` for BTC/USD + ETH/USD (research P(up) status files; **no order path**). USDC-quoted cores read the USD tape via `status_path_candidates`. ZEC is flow-FAIL and is not started.
 - `start_hydra_companion.bat` — paper-mode companion testing (no real money); same `--pairs auto` as production

@@ -16,6 +16,21 @@ from hydra_companions.nudge_scheduler import (
 )
 
 
+def test_nudges_are_opt_in(monkeypatch):
+    """Nudges fire on 1h regime flips (no measured edge) and cost an LLM
+    call each, so they stay off unless HYDRA_COMPANION_NUDGES=1."""
+    from hydra_companions.config import nudges_enabled
+    monkeypatch.delenv("HYDRA_COMPANION_DISABLED", raising=False)
+    monkeypatch.delenv("HYDRA_COMPANION_NUDGES", raising=False)
+    assert nudges_enabled() is False
+    monkeypatch.setenv("HYDRA_COMPANION_NUDGES", "0")
+    assert nudges_enabled() is False
+    monkeypatch.setenv("HYDRA_COMPANION_NUDGES", "1")
+    assert nudges_enabled() is True
+    monkeypatch.setenv("HYDRA_COMPANION_DISABLED", "1")
+    assert nudges_enabled() is False
+
+
 class StubBroadcaster:
     def __init__(self, state):
         self.latest_state = state
