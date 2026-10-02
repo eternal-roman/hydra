@@ -25,8 +25,10 @@ REM ═════════════════════════�
 echo ========================================
 echo  HYDRA - Companion Mode (Paper)
 echo ========================================
-set "HYDRA_COMPANION_NUDGES=1"
-echo   Chat + proposals + nudges: ON (nudges on for this paper session)
+REM Nudges default on for this paper session; an operator-set value wins.
+if not defined HYDRA_COMPANION_NUDGES set "HYDRA_COMPANION_NUDGES=1"
+echo   Chat + proposals:          ON
+echo   Nudges:                    HYDRA_COMPANION_NUDGES=%HYDRA_COMPANION_NUDGES%
 echo   Live execution:            OFF
 echo   Trade mode:                --paper
 echo ========================================
