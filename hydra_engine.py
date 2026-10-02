@@ -1562,14 +1562,17 @@ class HydraEngine:
         # closes the score is None and behavior is identical to pre-overlay.
         # Kill: HYDRA_TREND_OVERLAY=0 (or trend_overlay=False).
         self.trend_overlay = _env_default_on("HYDRA_TREND_OVERLAY")
-        # Daily trend sleeve (default OFF; HYDRA_TREND_SLEEVE=1). The engine
+        # Daily trend sleeve. Off here unless HYDRA_TREND_SLEEVE=1; the live
+        # agent passes trend_sleeve= from its per-pair evidence gate
+        # (hydra_strategy_gate, HYDRA_TREND_SLEEVE=auto). The engine
         # cited the daily ensemble as its only validated edge but traded it
         # only as a filter on rare 1h entries and exited on 1h noise: 11
         # trades and +1.0% in 3 years. The sleeve holds the ensemble itself:
         # long while the score on COMPLETED daily closes is >= 0.6, flat
-        # otherwise, vol-targeted at entry. It never consults the 1h signal
-        # generator or the 1h hold-through rails (daily entry with 1h exits
-        # was tested and rejected: trend_entry_gate.json). Evidence gate:
+        # otherwise, vol-targeted and re-sized every 30 days. It never
+        # consults the 1h signal generator or the 1h hold-through rails
+        # (daily entry with 1h exits was tested and rejected:
+        # trend_entry_gate.json). Evidence gate:
         # tools/trend_sleeve_gate.py, research/data/trend_sleeve_REGISTRATION.md.
         self.trend_sleeve = (_env_flag_on("HYDRA_TREND_SLEEVE")
                              if trend_sleeve is None else bool(trend_sleeve))

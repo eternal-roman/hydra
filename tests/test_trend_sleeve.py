@@ -1,4 +1,4 @@
-"""Daily trend sleeve (HYDRA_TREND_SLEEVE=1, default OFF).
+"""Daily trend sleeve (HYDRA_TREND_SLEEVE=1, or auto with a passing gate).
 
 The sleeve holds the daily ensemble itself: long while the score on
 COMPLETED daily closes is >= 0.6, flat otherwise, vol-targeted at entry.
