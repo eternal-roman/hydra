@@ -301,6 +301,16 @@ export default function LabPane({
           real history. Sliders show live current values; drag to set
           candidate, then run.
         </p>
+        <p style={{ color: COLORS.textMuted, fontSize: 11, marginTop: 6,
+                    marginBottom: 0, lineHeight: 1.5, maxWidth: 720 }}>
+          These sliders tune the 1h rails engine only. The daily trend
+          sleeve&apos;s rules are fixed in advance and tested by
+          run_strategy_gate.bat (docs/TRADE_PLAN.md), which decides what each
+          pair trades. Each run here is a fresh test at α=0.05 per metric:
+          with no real effect, up to 1 run in 20 still reads BETTER or WORSE
+          on a given metric, and more often on at least one of them. Try a few
+          settings, not many, and confirm a BETTER on data the run never saw.
+        </p>
       </div>
 
       {/* Lab-run failure banner */}
