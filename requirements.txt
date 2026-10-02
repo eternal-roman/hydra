@@ -6,7 +6,7 @@
 # replacing passlib. (On bcrypt 4.x passlib also logs a trapped
 # "error reading bcrypt version" from the removed __about__ attribute; that
 # one is harmless and is NOT the reason for the pin.)
-anthropic>=1.6.0,<2.0
+anthropic>=1.9.0,<2.0
 openai>=3.14.0,<4.0
 pytest>=9.1.1
 PyJWT>=2.14.0
