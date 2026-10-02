@@ -113,3 +113,46 @@ def test_the_agent_builds_engines_from_the_decisions(tmp_path, monkeypatch):
     assert agent.engines["BTC/USD"].trend_sleeve is True
     assert agent.engines["ZEC/USD"].trend_sleeve is False
     assert agent.sleeve_decisions["ZEC/USD"].reason.startswith("ZEC gate")
+
+
+def _demo_agent(monkeypatch, pairs, sleeve_env):
+    monkeypatch.setenv("HYDRA_TREND_SLEEVE", sleeve_env)
+    from hydra_agent import HydraAgent
+    return HydraAgent(pairs=pairs, initial_balance=1000.0, interval_seconds=1,
+                      duration_seconds=1, ws_port=0, demo=True)
+
+
+def _buy_state(reason):
+    return {"signal": {"action": "BUY", "confidence": 1.0, "reason": reason},
+            "position": {"size": 0.0, "avg_entry": 0.0}, "price": 100.0}
+
+
+def test_sleeve_pairs_bypass_the_brain_and_the_rules(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    agent = _demo_agent(monkeypatch, ["BTC/USD"], "1")
+    agent.brain = object()  # any configured brain
+    guardrail_calls = []
+    agent._apply_quant_guardrails = lambda pair, state, **kw: guardrail_calls.append(pair)
+    states = {"BTC/USD": _buy_state("TREND_SLEEVE:enter|score=1.0")}
+    all_states, brain_pairs = agent._route_phase2(states)
+    assert brain_pairs == []
+    assert all_states["BTC/USD"]["signal"]["action"] == "BUY"
+    assert all_states["BTC/USD"]["decision_layer"] == "trend_sleeve"
+    agent.brain = None
+    all_states, brain_pairs = agent._route_phase2(
+        {"BTC/USD": _buy_state("TREND_SLEEVE:enter|score=1.0")})
+    assert guardrail_calls == [] and "BTC/USD" in all_states
+
+
+def test_rails_pairs_still_get_the_brain_or_the_rules(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    agent = _demo_agent(monkeypatch, ["BTC/USD"], "0")
+    agent.brain = object()
+    states = {"BTC/USD": _buy_state("Momentum entry")}
+    all_states, brain_pairs = agent._route_phase2(states)
+    assert [p for p, _ in brain_pairs] == ["BTC/USD"] and "BTC/USD" in all_states
+    agent.brain = None
+    calls = []
+    agent._apply_quant_guardrails = lambda pair, state, **kw: calls.append(pair)
+    all_states, brain_pairs = agent._route_phase2({"BTC/USD": _buy_state("Momentum entry")})
+    assert calls == ["BTC/USD"] and brain_pairs == [] and "BTC/USD" in all_states

@@ -2206,48 +2206,7 @@ class HydraAgent:
                     }
 
                 # Phase 2: Run brain with full cross-pair context (parallel across pairs)
-                all_states = {}
-                brain_pairs = []
-                for pair in self.pairs:
-                    state = engine_states.get(pair)
-                    if state:
-                        if state["signal"]["action"] != "HOLD" and self.brain:
-                            brain_pairs.append((pair, state))
-                        elif state["signal"]["action"] != "HOLD":
-                            # Actionable signal but NO brain configured. The
-                            # deterministic guardrails still have to run —
-                            # they are the layer that is supposed to hold when
-                            # the LLMs are unavailable, not the layer that
-                            # disappears with them. Previously this branch fell
-                            # through to the cached-decision replay below and
-                            # R1-R11/QFE never executed at all.
-                            try:
-                                self._apply_quant_guardrails(pair, state)
-                            except Exception as e:
-                                print(f"  [QUANT RULES] guardrail pass failed for "
-                                      f"{pair}: {type(e).__name__}: {e}")
-                        else:
-                            # Inject cached brain decision for dashboard persistence.
-                            # v2.14.1: tag the replay with cached_at_tick so the
-                            # dashboard can distinguish a live decision from a
-                            # stale one replayed across a HOLD tick. Shallow-copy
-                            # so we don't mutate the cached payload in place.
-                            cached = self._last_ai_decision.get(pair)
-                            if cached and self.brain:
-                                replay = dict(cached)
-                                replay["cached"] = True
-                                replay["cached_at_tick"] = state.get("tick", 0)
-                                state["ai_decision"] = replay
-                        # Every pair with a state enters Phase 2.5. This assignment
-                        # MUST stay outside the if/elif/else above: v2.32.0 added the
-                        # brain-free guardrail branch and left this inside the HOLD
-                        # arm, so an actionable signal with self.brain is None ran the
-                        # guardrails and was then dropped from all_states entirely —
-                        # Phase 2.5 skipped the pair and NO order was ever placed, not
-                        # entries and not exits. Brain pairs overwrite this below with
-                        # the future's result; the plain state is the fallback when a
-                        # brain future fails.
-                        all_states[pair] = state
+                all_states, brain_pairs = self._route_phase2(engine_states)
 
                 if brain_pairs:
                     # Snapshots are the pre-brain states. A timed-out call
@@ -2533,6 +2492,66 @@ class HydraAgent:
 
         # Final report
         self._print_final_report()
+
+    def _route_phase2(self, engine_states: dict):
+        """Phase 2 routing: which pairs the brain deliberates, which run the
+        brain-free guardrails, and which pass through untouched.
+
+        Returns (all_states, brain_pairs). Every pair with a state lands in
+        all_states; brain pairs are overwritten later by the future's result.
+        """
+        all_states = {}
+        brain_pairs = []
+        for pair in self.pairs:
+            state = engine_states.get(pair)
+            if state:
+                if getattr(self.engines.get(pair), "trend_sleeve", False):
+                    # The gated sleeve trades exactly what its gate
+                    # tested: no LLM and no R1-R11 vetoes on its
+                    # entries and top-ups (its exits and trims were
+                    # already protected). A veto layer that was not
+                    # in the test would make live trading differ from
+                    # the evidence that enabled it. The breakers,
+                    # caps and post-only execution still apply.
+                    state["decision_layer"] = "trend_sleeve"
+                elif state["signal"]["action"] != "HOLD" and self.brain:
+                    brain_pairs.append((pair, state))
+                elif state["signal"]["action"] != "HOLD":
+                    # Actionable signal but NO brain configured. The
+                    # deterministic guardrails still have to run —
+                    # they are the layer that is supposed to hold when
+                    # the LLMs are unavailable, not the layer that
+                    # disappears with them. Previously this branch fell
+                    # through to the cached-decision replay below and
+                    # R1-R11/QFE never executed at all.
+                    try:
+                        self._apply_quant_guardrails(pair, state)
+                    except Exception as e:
+                        print(f"  [QUANT RULES] guardrail pass failed for "
+                              f"{pair}: {type(e).__name__}: {e}")
+                else:
+                    # Inject cached brain decision for dashboard persistence.
+                    # v2.14.1: tag the replay with cached_at_tick so the
+                    # dashboard can distinguish a live decision from a
+                    # stale one replayed across a HOLD tick. Shallow-copy
+                    # so we don't mutate the cached payload in place.
+                    cached = self._last_ai_decision.get(pair)
+                    if cached and self.brain:
+                        replay = dict(cached)
+                        replay["cached"] = True
+                        replay["cached_at_tick"] = state.get("tick", 0)
+                        state["ai_decision"] = replay
+                # Every pair with a state enters Phase 2.5. This assignment
+                # MUST stay outside the if/elif/else above: v2.32.0 added the
+                # brain-free guardrail branch and left this inside the HOLD
+                # arm, so an actionable signal with self.brain is None ran the
+                # guardrails and was then dropped from all_states entirely —
+                # Phase 2.5 skipped the pair and NO order was ever placed, not
+                # entries and not exits. Brain pairs overwrite this below with
+                # the future's result; the plain state is the fallback when a
+                # brain future fails.
+                all_states[pair] = state
+        return all_states, brain_pairs
 
     @staticmethod
     def _apply_cross_pair_overrides(engine_states: Dict[str, Any],

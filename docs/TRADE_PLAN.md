@@ -33,7 +33,7 @@ and cut the position when the trend breaks.**
 | Pyramid into winners (Livermore, Turtles) | indirectly (as above) | Growing exposure into a rally is what blew the drawdown up | **Not used** — deliberate deviation |
 | Few, patient trades (Livermore: "the big money is in the sitting") | yes: engine history | The 1h engine traded 11 times in 3 years and earned +1%. Its patience was not the problem; it never held the trend | Daily decisions only, ~2–4 round trips/yr per asset |
 | Never risk ruin (Jones: "defense first") | n/a (risk rule) | — | Spot only, no leverage, 40% cap, sticky 15% breaker |
-| Systematic, no discretionary overrides (the Turtle experiment; Dunn, Henry) | n/a | Overrides make live trading differ from what was tested | The sleeve's exits and trims are protected from the LLM, rules and coordinator; LLM vetoes are not part of the tested system |
+| Systematic, no discretionary overrides (the Turtle experiment; Dunn, Henry) | n/a | Overrides make live trading differ from what was tested | Sleeve pairs bypass the LLM and the R1–R11 rules entirely; only the breakers, caps and execution hygiene apply |
 | Predict the next candle (quant / HFT) | yes: quantum kernel + classical models on real Kraken bars | AUC 0.50–0.51: no information | **Killed** |
 | Buy the dip / mean reversion (S3) | yes: 69-trade ledger | Positive but not significant (BTC t = 0.74, ETH t = 1.59) | Shadow only, no orders |
 | Concentrate when conviction is high (Druckenmiller, Soros) | no | No measure of conviction survived testing here | Not used |
