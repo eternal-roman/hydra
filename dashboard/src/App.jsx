@@ -259,8 +259,15 @@ function TradePlan({ pair, ps, buyHalt }) {
   const signedPct = (d) => (d == null ? "" : ` (${d >= 0 ? "+" : ""}${d.toFixed(1)}%)`);
   // Status that overrides the trigger line, most binding first.
   let status = null;
-  if (ps.halted) {
-    status = [`15% breaker halted: ${held ? "selling, " : ""}no new buys until HYDRA_RESET_CIRCUIT_BREAKER=1 and a restart`, COLORS.danger];
+  const ddNow = Number(ps.portfolio?.current_drawdown_pct);
+  if (ps.halted && held) {
+    status = ["15% breaker halted: selling this pair, no new buys", COLORS.danger];
+  } else if (ps.halted && Number.isFinite(ddNow) && ddNow >= 15) {
+    // Cash cannot recover on its own, so the breaker re-arms right after a
+    // reset; the gate's backtest never re-enters after a trip either.
+    status = [`15% breaker halted: in cash ${ddNow.toFixed(1)}% under its peak, which a reset does not clear`, COLORS.danger];
+  } else if (ps.halted) {
+    status = ["15% breaker halted: no new buys until HYDRA_RESET_CIRCUIT_BREAKER=1 and a restart", COLORS.danger];
   } else if (due && held) {
     status = ["Exit due: the last daily close took the score under 0.6, selling", COLORS.sell];
   } else if (due && buyHalt) {

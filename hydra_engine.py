@@ -3155,6 +3155,14 @@ class HydraEngine:
                 strategy=strategy,
                 confidence=confidence,
             )
+            # A partly filled sleeve entry, top-up or trim is not a finished
+            # re-size: the fill appliers stamped today, which deferred the
+            # remainder for 30 days. Owe it again: outside the band the next
+            # tick re-sends it, inside it the HOLD path stamps the day.
+            if (getattr(self, "trend_sleeve", False)
+                    and vol_exec < placed_amount * 0.999999
+                    and "sleeve_sized_day" in pre_trade_snapshot):
+                self._sleeve_sized_day = pre_trade_snapshot["sleeve_sized_day"]
             return
 
         # Full fill without snapshot — nothing arithmetic to reverse

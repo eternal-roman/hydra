@@ -1578,6 +1578,10 @@ class HydraAgent:
             # funded-stable switch dropped every engine on --resume.
             engines_raw = snapshot.get("engines", {})
             engines = {self._normalize_pair_name(k): v for k, v in engines_raw.items()}
+            # Which books came from the snapshot: _set_engine_balances keeps
+            # their cash; a pair new this session holds only the
+            # constructor placeholder.
+            self._snapshot_restored_pairs = set()
             for pair in self.engines:
                 src_key = self._same_base_stable_key(engines, pair)
                 if src_key is None:
@@ -1591,6 +1595,7 @@ class HydraAgent:
                     eng_snap.pop("candles", None)
                     eng_snap.pop("prices", None)
                 self.engines[pair].restore_runtime(eng_snap)
+                self._snapshot_restored_pairs.add(pair)
                 if src_key != pair:
                     # Inventory is the base; keep the live pair identity
                     # so the next snapshot does not write BTC/USD under a
@@ -5121,7 +5126,9 @@ class HydraAgent:
         ``restore_position(pre_trade_snapshot)`` would also put one
         engine's pre-split cash back. Engines that are flat and have no
         working order are still seeded, from the free pool minus cash
-        already sitting on a locked book.
+        already sitting on a locked book, but each keeps its own prior
+        cash: a surplus in the pool is split equally and a shortfall
+        shrinks every flat book by the same factor (``_seed_cash``).
         """
         prices = self._get_asset_prices()
 
@@ -5143,7 +5150,6 @@ class HydraAgent:
         # resting buy's hold is not). Splitting the whole pool again would
         # hand a flat sibling those same dollars.
         locked_cash: Dict[str, float] = {}
-        seed_counts: Dict[str, int] = {}
         for p in self.pairs:
             q = p.split("/")[1]
             if q not in STABLE_QUOTES:
@@ -5156,24 +5162,51 @@ class HydraAgent:
                     kept = 0.0
                 if kept > 0.0:
                     locked_cash[q] = locked_cash.get(q, 0.0) + kept
-            else:
-                seed_counts[q] = seed_counts.get(q, 0) + 1
 
-        def _stable_slice(q: str) -> float:
-            n_seed = seed_counts.get(q, 0)
+        # Flat books restored from the snapshot keep their own cash. An
+        # equal split moved a banked gain from one flat engine to its
+        # siblings at every restart and left the winner under its own peak:
+        # a trend sleeve that banked ~29% over two flat siblings came back
+        # 15% "down" and its breaker halted it, again after every reset.
+        # Live, the real pool still sets the total: a surplus (a deposit,
+        # or every book on a fresh start) is shared equally, a shortfall
+        # (fees, a withdrawal) shrinks every restored book by the same
+        # factor. Paper has no exchange balance: a restored book is the
+        # truth and a book new this session gets the constructor split.
+        restored_pairs = getattr(self, "_snapshot_restored_pairs", None) or set()
+        prior_cash: Dict[str, Dict[str, Optional[float]]] = {}
+        for p in self.pairs:
+            q = p.split("/")[1]
+            if q not in STABLE_QUOTES or self._restored_quote_book(p, self.engines[p]):
+                continue
+            prior: Optional[float] = None
+            if p in restored_pairs:
+                try:
+                    prior = float(self.engines[p].balance or 0.0)
+                except (TypeError, ValueError):
+                    prior = 0.0
+                prior = prior if math.isfinite(prior) and prior > 0.0 else 0.0
+            prior_cash.setdefault(q, {})[p] = prior
+
+        def _seed_cash(q: str, pair: str) -> float:
+            flats = prior_cash.get(q) or {}
+            n_seed = len(flats)
             if n_seed <= 0:
                 return 0.0
-            n_all = stable_quote_counts.get(q, 1) or 1
             if self.paper:
-                pool: Optional[float] = per_pair_usd * n_all
-            else:
-                pool = self._get_real_quote_balance(q)
-                if pool is None:
-                    pool = per_pair_usd * n_all  # no balance data yet
-            remain = float(pool) - locked_cash.get(q, 0.0)
-            if remain < 0.0:
-                remain = 0.0
-            return remain / n_seed
+                restored = flats.get(pair)
+                return per_pair_usd if restored is None else restored
+            pool = self._get_real_quote_balance(q)
+            if pool is None:
+                pool = per_pair_usd * (stable_quote_counts.get(q, 1) or 1)  # no data yet
+            remain = max(0.0, float(pool) - locked_cash.get(q, 0.0))
+            prior_total = sum(b for b in flats.values() if b)
+            if prior_total <= 0.0:
+                return remain / n_seed
+            prior = flats.get(pair) or 0.0
+            if remain >= prior_total:
+                return prior + (remain - prior_total) / n_seed
+            return prior * remain / prior_total
 
         for pair in self.pairs:
             engine = self.engines[pair]
@@ -5190,7 +5223,7 @@ class HydraAgent:
                         f"{slice_quote:.8f} (open position or working order)"
                     )
                 else:
-                    slice_quote = _stable_slice(quote)
+                    slice_quote = _seed_cash(quote, pair)
                 equity = slice_quote + engine.position.size * current_price
                 old_peak = float(engine.peak_equity or 0.0)
                 dummy_split = float(

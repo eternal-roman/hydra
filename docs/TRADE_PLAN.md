@@ -144,6 +144,10 @@ the 1h engine then manages them under its own exit rules.
    healthy, and the dashboard is authenticated.
 2. Check the breaker on every engine and on the portfolio. If one is halted,
    read why before setting `HYDRA_RESET_CIRCUIT_BREAKER=1` for one restart.
+   The reset cannot restart a pair the breaker already sold out of: its
+   cash sits 15% or more under its peak and never recovers on its own, so
+   the breaker re-arms on the next tick. The gate's test never re-enters
+   after a trip either. The pair card says which case you are in.
 3. Check for resting orders: no `PLACED` row older than the reprice window
    without a reason.
 4. Read the plan for each pair: state, the trigger level, and the distance

@@ -430,6 +430,55 @@ def test_a_filled_trim_true_up_keeps_the_new_clock():
     assert eng._sleeve_sized_day == START_DAY + len(daily) + 30
 
 
+def test_a_partly_filled_trim_is_owed_again():
+    """A trim that fills 10% and is then cancelled (post-only re-price) is
+    not a finished re-size; the remainder used to wait 30 days."""
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    rally = _continue(daily + [daily[-1]], 30, drift=0.012)
+    _run_days(eng, len(daily) + 1, rally[:-1])
+    _bar(eng, len(daily) + 30, 0, rally[-1])
+    before_clock = eng._sleeve_sized_day
+    snap = eng.snapshot_position()
+    state = eng.tick(generate_only=True)
+    trade = eng.execute_signal("SELL", 1.0, state["signal"]["reason"], "TREND")
+    eng.reconcile_partial_fill("SELL", trade.amount, trade.amount * 0.1,
+                               trade.price, pre_trade_snapshot=snap)
+    assert eng._sleeve_sized_day == before_clock
+    assert eng._sleeve_rebalance(eng.prices[-1])[0] == "trim"
+
+
+def test_a_partly_filled_entry_tops_up_on_the_next_tick():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    snap = eng.snapshot_position()
+    state = eng.tick(generate_only=True)
+    assert state["signal"]["reason"].startswith("TREND_SLEEVE:enter")
+    trade = eng.execute_signal("BUY", 1.0, state["signal"]["reason"], "TREND")
+    eng.reconcile_partial_fill("BUY", trade.amount, trade.amount * 0.1,
+                               trade.price, pre_trade_snapshot=snap)
+    assert eng.position.size == pytest.approx(trade.amount * 0.1)
+    assert eng._sleeve_sized_day is None             # never fully sized
+    _bar(eng, len(daily), 1, daily[-1])
+    nxt = eng.tick()["signal"]
+    assert nxt["action"] == "BUY" and "topup" in nxt["reason"]
+
+
+def test_a_full_fill_through_reconcile_keeps_the_new_clock():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    snap = eng.snapshot_position()
+    state = eng.tick(generate_only=True)
+    trade = eng.execute_signal("BUY", 1.0, state["signal"]["reason"], "TREND")
+    eng.reconcile_partial_fill("BUY", trade.amount, trade.amount, trade.price,
+                               pre_trade_snapshot=snap)
+    assert eng._sleeve_sized_day == START_DAY + len(daily)
+
+
 def test_trim_reason_is_refused_when_no_resize_is_due():
     daily = _uptrend()
     eng = _engine(daily)
