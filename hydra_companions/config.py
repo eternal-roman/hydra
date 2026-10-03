@@ -1,13 +1,14 @@
 """Companion subsystem configuration + env-flag gating.
 
-Chat / proposals / nudges are default ON (the orb is visible on launch
-and clicking it IS activation). LIVE_EXECUTION stays explicit-opt-in
+Chat and proposals are default ON (the orb is visible on launch and
+clicking it IS activation). Proactive nudges are opt-in. LIVE_EXECUTION
+stays explicit-opt-in
 because it places real money at risk.
 
 Flag composition:
     HYDRA_COMPANION_DISABLED=1           -> master kill switch (wins over all)
     HYDRA_COMPANION_PROPOSALS_ENABLED=0  -> opt OUT of trade cards
-    HYDRA_COMPANION_NUDGES=0             -> opt OUT of proactive messages
+    HYDRA_COMPANION_NUDGES=1             -> opt IN to proactive messages
     HYDRA_COMPANION_LIVE_EXECUTION=1     -> opt IN to real-order placement
 """
 from __future__ import annotations
@@ -96,13 +97,17 @@ def live_execution_enabled() -> bool:
 
 
 def nudges_enabled() -> bool:
-    """Phase 6 proactive nudge gate. Default ON once chat is on \u2014
-    opt-out via env if the user finds them noisy."""
+    """Phase 6 proactive nudge gate. Default OFF; HYDRA_COMPANION_NUDGES=1
+    opts in.
+
+    A nudge fires on any 1h regime flip and costs an LLM call. The 1h
+    regime carries no measured edge (the 1h engine made +1.0% in 3 years;
+    next-bar prediction scored AUC 0.50), and an unprompted message about
+    intraday noise invites the discretionary reaction a once-a-day plan
+    exists to prevent (docs/TRADE_PLAN.md)."""
     if not is_enabled():
         return False
-    if os.environ.get("HYDRA_COMPANION_NUDGES") == "0":
-        return False
-    return True
+    return os.environ.get("HYDRA_COMPANION_NUDGES") == "1"
 
 
 def ensure_runtime_dirs() -> None:

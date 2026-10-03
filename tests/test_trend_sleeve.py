@@ -1,4 +1,4 @@
-"""Daily trend sleeve (HYDRA_TREND_SLEEVE=1, default OFF).
+"""Daily trend sleeve (HYDRA_TREND_SLEEVE=1, or auto with a passing gate).
 
 The sleeve holds the daily ensemble itself: long while the score on
 COMPLETED daily closes is >= 0.6, flat otherwise, vol-targeted at entry.
@@ -430,6 +430,55 @@ def test_a_filled_trim_true_up_keeps_the_new_clock():
     assert eng._sleeve_sized_day == START_DAY + len(daily) + 30
 
 
+def test_a_partly_filled_trim_is_owed_again():
+    """A trim that fills 10% and is then cancelled (post-only re-price) is
+    not a finished re-size; the remainder used to wait 30 days."""
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    rally = _continue(daily + [daily[-1]], 30, drift=0.012)
+    _run_days(eng, len(daily) + 1, rally[:-1])
+    _bar(eng, len(daily) + 30, 0, rally[-1])
+    before_clock = eng._sleeve_sized_day
+    snap = eng.snapshot_position()
+    state = eng.tick(generate_only=True)
+    trade = eng.execute_signal("SELL", 1.0, state["signal"]["reason"], "TREND")
+    eng.reconcile_partial_fill("SELL", trade.amount, trade.amount * 0.1,
+                               trade.price, pre_trade_snapshot=snap)
+    assert eng._sleeve_sized_day == before_clock
+    assert eng._sleeve_rebalance(eng.prices[-1])[0] == "trim"
+
+
+def test_a_partly_filled_entry_tops_up_on_the_next_tick():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    snap = eng.snapshot_position()
+    state = eng.tick(generate_only=True)
+    assert state["signal"]["reason"].startswith("TREND_SLEEVE:enter")
+    trade = eng.execute_signal("BUY", 1.0, state["signal"]["reason"], "TREND")
+    eng.reconcile_partial_fill("BUY", trade.amount, trade.amount * 0.1,
+                               trade.price, pre_trade_snapshot=snap)
+    assert eng.position.size == pytest.approx(trade.amount * 0.1)
+    assert eng._sleeve_sized_day is None             # never fully sized
+    _bar(eng, len(daily), 1, daily[-1])
+    nxt = eng.tick()["signal"]
+    assert nxt["action"] == "BUY" and "topup" in nxt["reason"]
+
+
+def test_a_full_fill_through_reconcile_keeps_the_new_clock():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    snap = eng.snapshot_position()
+    state = eng.tick(generate_only=True)
+    trade = eng.execute_signal("BUY", 1.0, state["signal"]["reason"], "TREND")
+    eng.reconcile_partial_fill("BUY", trade.amount, trade.amount, trade.price,
+                               pre_trade_snapshot=snap)
+    assert eng._sleeve_sized_day == START_DAY + len(daily)
+
+
 def test_trim_reason_is_refused_when_no_resize_is_due():
     daily = _uptrend()
     eng = _engine(daily)
@@ -490,3 +539,105 @@ def test_the_llm_cannot_veto_a_trim_but_can_veto_a_topup(monkeypatch):
     topup = _state("BUY", reason="TREND_SLEEVE:topup|score=1.0", size=1.0, ts=4000.0)
     agent._apply_brain("BTC/USD", topup, {})
     assert topup["signal"]["action"] == "HOLD"
+
+
+def _next_close_score(eng, close):
+    """Score the engine reports once `close` is a completed day."""
+    probe = HydraEngine(initial_balance=1000.0, asset="BTC/USD", trend_sleeve=True)
+    probe.restore_runtime(eng.snapshot_runtime())
+    probe.candles, probe.prices = list(eng.candles), list(eng.prices)
+    today = eng._sleeve_today()
+    probe.ingest_candle({"open": close, "high": close, "low": close, "close": close,
+                         "volume": 1.0, "timestamp": today * DAY + 23 * 3600})
+    probe.ingest_candle({"open": close, "high": close, "low": close, "close": close,
+                         "volume": 1.0, "timestamp": (today + 1) * DAY})
+    return probe.sleeve_trend_score()
+
+
+def test_plan_exit_level_is_exact_for_a_held_sleeve():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    plan = eng.sleeve_plan(daily[-1])
+    assert plan["state"] == "long" and plan["enter_above"] is None
+    level = plan["exit_below"]
+    assert level is not None and 0 < level < daily[-1]
+    assert _next_close_score(eng, level * (1 - 1e-6)) < 0.6   # a close below it exits
+    assert _next_close_score(eng, level * (1 + 1e-6)) >= 0.6  # a close above it holds
+
+
+def test_plan_entry_level_is_exact_for_a_flat_sleeve():
+    flat_daily = _then_down(_uptrend())
+    eng = _engine(flat_daily)
+    _bar(eng, len(flat_daily), 0, flat_daily[-1])
+    plan = eng.sleeve_plan(flat_daily[-1])
+    assert plan["state"] == "flat" and plan["wants_long"] is False
+    level = plan["enter_above"]
+    assert level is not None and level > flat_daily[-1]
+    assert _next_close_score(eng, level * (1 + 1e-6)) >= 0.6
+    assert _next_close_score(eng, level * (1 - 1e-6)) < 0.6
+
+
+def test_plan_component_levels_match_the_score_terms():
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    lv = eng.sleeve_plan(daily[-1])["levels"]
+    closes = eng._completed_daily_closes()
+    assert lv["sma200"] == pytest.approx(sum(closes[-199:]) / 199)
+    assert lv["donchian_55d_high"] == pytest.approx(max(closes[-55:]))
+    assert lv["donchian_20d_low"] == pytest.approx(min(closes[-20:]))
+    from hydra_engine import Indicators
+    level = lv["ema20_over_ema100"]
+    step = abs(level) * 1e-7
+    for c, expect in ((level + step, True), (level - step, False)):
+        seq = closes + [c]
+        assert (Indicators.ema(seq, 20) > Indicators.ema(seq, 100)) is expect
+    if level <= 0:  # EMA20 far above EMA100: no positive close breaks the term
+        seq = closes + [1e-6]
+        assert Indicators.ema(seq, 20) > Indicators.ema(seq, 100)
+
+
+def _halts_at(eng, price):
+    """Whether the engine's own tick halts once the next 1h bar prints `price`."""
+    probe = HydraEngine(initial_balance=1000.0, asset="BTC/USD", trend_sleeve=True)
+    probe.restore_runtime(eng.snapshot_runtime())
+    probe.candles, probe.prices = list(eng.candles), list(eng.prices)
+    ts = eng.candles[-1].timestamp + 3600   # same UTC day: no new daily decision
+    probe.ingest_candle({"open": price, "high": price, "low": price, "close": price,
+                         "volume": 1.0, "timestamp": ts})
+    probe.tick()
+    return probe.halted
+
+
+def test_plan_breaker_price_is_where_the_engine_halts():
+    daily = _uptrend(amp=0.01)  # low vol: full 0.30 exposure, breaker reachable
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    plan = eng.sleeve_plan(daily[-1])
+    assert plan["breaker_reachable"] is True
+    level = plan["breaker_price"]
+    assert not _halts_at(eng, level * (1 + 1e-6))
+    assert _halts_at(eng, level * (1 - 1e-6))
+
+
+def test_plan_says_when_price_alone_cannot_trip_the_breaker():
+    daily = _uptrend()  # ~13% exposure: cash alone is above 85% of peak
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    eng.tick()
+    plan = eng.sleeve_plan(daily[-1])
+    assert plan["breaker_price"] is None and plan["breaker_reachable"] is False
+
+
+def test_plan_is_none_while_warming_and_reported_in_state():
+    eng = _engine(_uptrend(150))
+    _bar(eng, 150, 0, 100.0)
+    assert eng.sleeve_plan() is None
+    daily = _uptrend()
+    eng = _engine(daily)
+    _bar(eng, len(daily), 0, daily[-1])
+    state = eng.tick(generate_only=True)
+    assert state["trend_sleeve"]["plan"]["decides_at_utc"] == (START_DAY + len(daily) + 1) * DAY

@@ -2,3 +2,9 @@
 # with `core.autocrlf=true` would silently rewrite the shebang to CRLF
 # and break the hook on Git Bash / WSL. See .claude/hooks/post-edit.sh.
 *.sh text eol=lf
+
+# Windows batch files check out with CRLF. cmd.exe reads them in blocks and
+# can miss a `goto` / `call :label` target in an LF-only file, so a clone
+# made with core.autocrlf=false would break the launchers' error paths.
+*.bat text eol=crlf
+*.cmd text eol=crlf
