@@ -9,7 +9,7 @@
 anthropic>=1.6.0,<2.0
 openai>=3.14.0,<4.0
 pytest>=9.1.1
-PyJWT>=2.14.0
+PyJWT>=2.15.1
 cryptography>=50.0.1
 passlib[bcrypt]>=1.7.4
 bcrypt<5.0
