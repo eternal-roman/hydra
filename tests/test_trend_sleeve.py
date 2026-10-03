@@ -514,8 +514,8 @@ def test_plan_exit_level_is_exact_for_a_held_sleeve():
     assert plan["state"] == "long" and plan["enter_above"] is None
     level = plan["exit_below"]
     assert level is not None and 0 < level < daily[-1]
-    assert _next_close_score(eng, level * 0.999) < 0.6   # a close below it exits
-    assert _next_close_score(eng, level * 1.001) >= 0.6  # a close above it holds
+    assert _next_close_score(eng, level * (1 - 1e-6)) < 0.6   # a close below it exits
+    assert _next_close_score(eng, level * (1 + 1e-6)) >= 0.6  # a close above it holds
 
 
 def test_plan_entry_level_is_exact_for_a_flat_sleeve():
@@ -526,8 +526,8 @@ def test_plan_entry_level_is_exact_for_a_flat_sleeve():
     assert plan["state"] == "flat" and plan["wants_long"] is False
     level = plan["enter_above"]
     assert level is not None and level > flat_daily[-1]
-    assert _next_close_score(eng, level * 1.001) >= 0.6
-    assert _next_close_score(eng, level * 0.999) < 0.6
+    assert _next_close_score(eng, level * (1 + 1e-6)) >= 0.6
+    assert _next_close_score(eng, level * (1 - 1e-6)) < 0.6
 
 
 def test_plan_component_levels_match_the_score_terms():
@@ -541,7 +541,7 @@ def test_plan_component_levels_match_the_score_terms():
     assert lv["donchian_20d_low"] == pytest.approx(min(closes[-20:]))
     from hydra_engine import Indicators
     level = lv["ema20_over_ema100"]
-    step = abs(level) * 1e-4
+    step = abs(level) * 1e-7
     for c, expect in ((level + step, True), (level - step, False)):
         seq = closes + [c]
         assert (Indicators.ema(seq, 20) > Indicators.ema(seq, 100)) is expect
@@ -550,15 +550,28 @@ def test_plan_component_levels_match_the_score_terms():
         assert Indicators.ema(seq, 20) > Indicators.ema(seq, 100)
 
 
-def test_plan_breaker_price_is_where_equity_is_15pct_under_peak():
+def _halts_at(eng, price):
+    """Whether the engine's own tick halts once the next 1h bar prints `price`."""
+    probe = HydraEngine(initial_balance=1000.0, asset="BTC/USD", trend_sleeve=True)
+    probe.restore_runtime(eng.snapshot_runtime())
+    probe.candles, probe.prices = list(eng.candles), list(eng.prices)
+    ts = eng.candles[-1].timestamp + 3600   # same UTC day: no new daily decision
+    probe.ingest_candle({"open": price, "high": price, "low": price, "close": price,
+                         "volume": 1.0, "timestamp": ts})
+    probe.tick()
+    return probe.halted
+
+
+def test_plan_breaker_price_is_where_the_engine_halts():
     daily = _uptrend(amp=0.01)  # low vol: full 0.30 exposure, breaker reachable
     eng = _engine(daily)
     _bar(eng, len(daily), 0, daily[-1])
     eng.tick()
     plan = eng.sleeve_plan(daily[-1])
     assert plan["breaker_reachable"] is True
-    equity = eng.balance + eng.position.size * plan["breaker_price"]
-    assert equity == pytest.approx(0.85 * eng.peak_equity, rel=1e-6)
+    level = plan["breaker_price"]
+    assert not _halts_at(eng, level * (1 + 1e-6))
+    assert _halts_at(eng, level * (1 - 1e-6))
 
 
 def test_plan_says_when_price_alone_cannot_trip_the_breaker():

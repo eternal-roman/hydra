@@ -12,12 +12,20 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from hydra_engine import HydraEngine  # noqa: E402
+import hydra_strategy_gate  # noqa: E402
+from hydra_engine import HydraEngine, SIZING_COMPETITION  # noqa: E402
 from hydra_strategy_gate import resolve_trend_sleeve, sleeve_mode  # noqa: E402
 
 NOW = calendar.timegm((2026, 10, 2, 0, 0, 0, 0, 0, 0))
-PASS_ASSET = {"verdict": "PASS",
-              "engine_check": {"complete": True, "G_beats_F": True, "fidelity": True}}
+
+
+def _pass_asset(end_ts=NOW - 86400):
+    return {"verdict": "PASS",
+            "window": {"start_ts": end_ts - 6 * 365 * 86400, "end_ts": end_ts},
+            "engine_check": {"complete": True, "G_beats_F": True, "fidelity": True}}
+
+
+PASS_ASSET = _pass_asset()
 
 
 def _report(**overrides):
@@ -27,7 +35,9 @@ def _report(**overrides):
         "significant": True,
         "params": {"resize_days": HydraEngine.SLEEVE_RESIZE_DAYS,
                    "resize_tol": HydraEngine.SLEEVE_RESIZE_TOL,
-                   "long_at": HydraEngine.TREND_SCORE_LONG},
+                   "long_at": HydraEngine.TREND_SCORE_LONG,
+                   "cap": SIZING_COMPETITION["max_position_pct"],
+                   "target_vol": 30.0},
         "assets": {"BTC/USD": dict(PASS_ASSET), "ETH/USD": dict(PASS_ASSET),
                    "ZEC/USD": {"verdict": "FAIL"}},
     }
@@ -43,6 +53,14 @@ def test_mode_parsing():
     assert sleeve_mode("1") == sleeve_mode(" ON ") == "on"
     assert sleeve_mode("0") == sleeve_mode("false") == "off"
     assert sleeve_mode(None) == sleeve_mode("") == sleeve_mode("auto") == "auto"
+    # A typo is not auto: auto could switch the sleeve on.
+    assert sleeve_mode("disabled") == sleeve_mode("fasle") == "invalid"
+
+
+def test_an_unrecognised_mode_keeps_the_sleeve_off():
+    out = _resolve(["BTC/USD"], _report(), {"HYDRA_TREND_SLEEVE": "disabled"})
+    assert not out["BTC/USD"].enabled
+    assert "'disabled'" in out["BTC/USD"].reason
 
 
 def test_explicit_switches_override_the_evidence():
@@ -75,6 +93,7 @@ def test_every_refusal_condition_keeps_the_pair_off():
         "undated": _report(generated_at=None),
         "other rules": _report(params={"resize_days": 0, "resize_tol": 0.10, "long_at": 0.6}),
         "old report": _report(params={}),
+        "insufficient data": _report(verdict="INSUFFICIENT_DATA"),
     }
     for name, report in cases.items():
         assert not _resolve(["BTC/USD"], report)["BTC/USD"].enabled, name
@@ -91,6 +110,74 @@ def test_the_age_limit_is_configurable():
     assert not _resolve(["BTC/USD"], report)["BTC/USD"].enabled
     env = {"HYDRA_TREND_SLEEVE_GATE_MAX_AGE_DAYS": "365"}
     assert _resolve(["BTC/USD"], report, env)["BTC/USD"].enabled
+    # A limit that is not a positive number falls back to the default.
+    for bad in ("nan", "inf", "-5", "soon"):
+        env = {"HYDRA_TREND_SLEEVE_GATE_MAX_AGE_DAYS": bad}
+        assert not _resolve(["BTC/USD"], report, env)["BTC/USD"].enabled, bad
+
+
+def test_a_fresh_run_on_stale_data_is_not_fresh_evidence():
+    # Run yesterday, but the store stopped a year ago (a failed refresh).
+    report = _report(assets={"BTC/USD": _pass_asset(end_ts=NOW - 365 * 86400)})
+    decision = _resolve(["BTC/USD"], report)["BTC/USD"]
+    assert not decision.enabled and "data ends 365 days ago" in decision.reason
+    undated = dict(PASS_ASSET)
+    undated.pop("window")
+    assert not _resolve(["BTC/USD"], _report(assets={"BTC/USD": undated}))["BTC/USD"].enabled
+
+
+def test_only_stable_quoted_pairs_use_a_result():
+    out = _resolve(["ETH/BTC", "BTC/EUR", "XBT/USDC"], _report())
+    assert not out["ETH/BTC"].enabled and "stable" in out["ETH/BTC"].reason
+    assert not out["BTC/EUR"].enabled
+    assert out["XBT/USDC"].enabled           # Kraken alias of BTC, stable quote
+    # A result measured against BTC is not evidence for ETH in dollars.
+    report = _report(assets={"ETH/BTC": dict(PASS_ASSET)})
+    assert not _resolve(["ETH/USD"], report)["ETH/USD"].enabled
+
+
+def test_every_entry_for_an_asset_must_pass():
+    report = _report(assets={"BTC/USDC": dict(PASS_ASSET), "BTC/USD": {"verdict": "FAIL"}})
+    decision = _resolve(["BTC/USD"], report)["BTC/USD"]
+    assert not decision.enabled and "BTC/USD gate FAIL" in decision.reason
+
+
+def test_the_report_must_match_the_cap_and_vol_target():
+    params = dict(_report()["params"])
+    for key, value in (("cap", 0.8), ("target_vol", 60.0), ("target_vol", None),
+                       ("resize_days", float("nan")), ("long_at", True)):
+        changed = dict(params)
+        changed[key] = value
+        decision = _resolve(["BTC/USD"], _report(params=changed))["BTC/USD"]
+        assert not decision.enabled and key in decision.reason, (key, value)
+    # The operator changing the vol target after the run also refuses it.
+    env = {"HYDRA_TREND_TARGET_VOL": "45"}
+    assert not _resolve(["BTC/USD"], _report(), env)["BTC/USD"].enabled
+
+
+def test_wrong_shapes_refuse_instead_of_raising():
+    cases = [_report(params=[1, 2]), _report(assets=["BTC/USD"]),
+             _report(assets={"BTC/USD": "PASS"}),
+             _report(assets={"BTC/USD": dict(PASS_ASSET, engine_check=[True])}),
+             _report(assets={"BTC/USD": dict(PASS_ASSET, window="2026")}),
+             _report(generated_at=20260920)]
+    for report in cases:
+        assert not _resolve(["BTC/USD"], report)["BTC/USD"].enabled
+
+
+def test_the_cli_reads_the_same_dotenv_as_the_agent(tmp_path, monkeypatch, capsys):
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("# operator settings\nHYDRA_TREND_SLEEVE='1'\n", encoding="utf-8")
+    monkeypatch.setattr(hydra_strategy_gate, "DOTENV_PATH", str(dotenv))
+    monkeypatch.delenv("HYDRA_TREND_SLEEVE", raising=False)
+    assert hydra_strategy_gate.main(["--pairs", "BTC/USD"]) == 0
+    printed = capsys.readouterr().out
+    assert "(from .env) -> on" in printed and "trend sleeve" in printed
+    # The environment wins over .env, as in hydra_agent.
+    monkeypatch.setenv("HYDRA_TREND_SLEEVE", "0")
+    hydra_strategy_gate.main(["--pairs", "BTC/USD"])
+    printed = capsys.readouterr().out
+    assert "(from environment) -> off" in printed and "1h rails engine" in printed
 
 
 def test_a_malformed_file_is_ignored(tmp_path):
@@ -102,7 +189,9 @@ def test_a_malformed_file_is_ignored(tmp_path):
 
 def test_the_agent_builds_engines_from_the_decisions(tmp_path, monkeypatch):
     path = tmp_path / "gate.json"
-    report = _report(generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    fresh = _pass_asset(end_ts=time.time() - 86400)
+    report = _report(generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                     assets={"BTC/USD": fresh, "ZEC/USD": {"verdict": "FAIL"}})
     path.write_text(json.dumps(report), encoding="utf-8")
     monkeypatch.delenv("HYDRA_TREND_SLEEVE", raising=False)
     monkeypatch.setenv("HYDRA_TREND_SLEEVE_GATE", str(path))

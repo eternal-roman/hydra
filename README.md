@@ -130,6 +130,9 @@ python -m hydra_strategy_gate                     # what Hydra will trade, per p
 
 Restart the agent to apply. `HYDRA_TREND_SLEEVE=1` / `0` overrides the evidence.
 Re-run the gate quarterly: results older than 180 days switch `auto` back off.
+The gate needs 5+ years of daily history per asset; build the store once from
+Kraken's trade-history archive (`python -m tools.bootstrap_history --zip <archive.zip>`),
+or every pair reports `INSUFFICIENT_DATA` and stays on the 1h engine.
 The rules, the evidence behind each one, and the per-session routine are in
 [`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md). It is not a money machine: the sleeve
 earns when crypto trends up and holds cash otherwise.

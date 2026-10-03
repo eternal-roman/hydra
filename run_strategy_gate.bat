@@ -11,6 +11,9 @@ echo  shows which pairs Hydra will trade with the daily trend sleeve.
 echo  Criteria: research\data\trend_sleeve_REGISTRATION.md
 echo  Result:   research\data\trend_sleeve_gate.json
 echo  No orders are placed. Takes a few minutes.
+echo  First run: the gate needs 5+ years of daily history. Build the store
+echo  once from Kraken's trade archive:
+echo    python -m tools.bootstrap_history --zip KRAKEN_ARCHIVE.zip
 echo.
 
 where python >nul 2>&1
@@ -32,10 +35,13 @@ if errorlevel 1 (
 )
 echo.
 
-echo [3/3] What Hydra will trade at its next start, HYDRA_TREND_SLEEVE=auto:
+echo [3/3] What Hydra will trade at its next start:
 python -m hydra_strategy_gate
 echo.
 echo  Restart start_hydra.bat to apply. HYDRA_TREND_SLEEVE=1 or 0 overrides.
+echo  After the restart, a pair that newly qualifies buys on its first tick
+echo  if its score is already 0.6 or more. A pair that stops qualifying keeps
+echo  its coins, and the 1h engine manages them.
 
 :end
 echo.

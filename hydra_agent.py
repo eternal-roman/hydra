@@ -33,6 +33,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from collections import deque
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -498,9 +499,11 @@ class HydraAgent:
             from hydra_strategy_gate import resolve_trend_sleeve
             self.sleeve_decisions = resolve_trend_sleeve(pairs)
         except Exception as e:
-            from hydra_strategy_gate import SleeveDecision
+            # No re-import here: if the module itself failed to import, a
+            # second import would raise out of __init__ and stop the boot.
+            reason = f"gate check failed ({type(e).__name__}: {e})"
             self.sleeve_decisions = {
-                p: SleeveDecision(False, f"gate check failed ({type(e).__name__}: {e})")
+                p: SimpleNamespace(enabled=False, reason=reason, gate_generated_at=None)
                 for p in pairs
             }
         for pair in pairs:

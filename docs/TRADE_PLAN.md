@@ -60,7 +60,7 @@ and cut the position when the trend breaks.**
 | Size | `equity × max_position_pct (0.40 in competition) × vm`, capped by the gross-inventory limit |
 | Re-size | Every 30 days back to the target, unless within 10%. The trim is a partial SELL. |
 | Exit | Full close when the score drops below 0.6 |
-| Catastrophe stop | 15% drawdown on an engine, or on the portfolio: flatten, no new BUYs until the operator resets |
+| Catastrophe stop | 15% drawdown on an engine: it sells that pair and blocks its BUYs until the operator resets. 15% on the portfolio: new BUYs are blocked until reset; held positions keep their own exits. |
 | Not part of the plan | Intraday signals, LLM opinions, dip buying, pyramiding, leverage, discretionary entries |
 
 The engine publishes the plan for every sleeve pair in its state,
@@ -73,7 +73,8 @@ The engine publishes the plan for every sleeve pair in its state,
 - **When it decides:** `decides_at_utc`.
 - **The breaker:** `breaker_price`, the price where this engine's breaker
   would fire, with `breaker_reachable: false` when cash alone keeps equity
-  above 85% of peak.
+  above 85% of peak. The portfolio breaker measures the whole account, so
+  it fires at a different price.
 
 These are exact. Tests feed the engine a close just past each level and
 confirm the decision flips.
@@ -87,14 +88,21 @@ The variable is `HYDRA_TREND_SLEEVE`:
 | unset / `auto` (default) | A pair runs the sleeve only if `research/data/trend_sleeve_gate.json` (or `HYDRA_TREND_SLEEVE_GATE`) shows the conditions below. Otherwise it stays on the 1h rails engine, which in practice holds cash. |
 | `1` | The operator's call, every pair (e.g. after a PASS that was not significant). |
 | `0` | Off everywhere. |
+| anything else | Off everywhere, and the reason names the value: a typo never switches the sleeve on. |
 
 The conditions for `auto`:
 
 - an overall verdict **PASS**;
 - **significant**;
-- built for the current rules;
-- less than 180 days old (`HYDRA_TREND_SLEEVE_GATE_MAX_AGE_DAYS`);
-- a PASS for that pair's base asset, with the engine check passing.
+- built for the current rules: re-size period and band, long threshold,
+  the 0.40 competition cap, and the vol target (`HYDRA_TREND_TARGET_VOL`;
+  changing it switches `auto` off until the gate is re-run);
+- recent: both the run and the last day of data it tested less than 180
+  days old (`HYDRA_TREND_SLEEVE_GATE_MAX_AGE_DAYS`);
+- a PASS for that pair's base asset, with the engine check passing, on
+  every stable-quoted entry for that asset;
+- a stable-quoted pair. BTC/USDC uses BTC/USD's result; ETH/BTC never
+  runs the sleeve, because the gate tested ETH in dollars, not in BTC.
 
 Boot prints one `[STRATEGY]` line per pair saying which strategy runs and
 why. The dashboard receives the same decision as `strategy_gate`.
@@ -107,9 +115,26 @@ python tools/trend_sleeve_gate.py --engine      # pre-registered gate, ~minutes
 python -m hydra_strategy_gate                   # what Hydra will trade, per pair
 ```
 
+On Windows, `run_strategy_gate.bat` runs all three. Every step reads the
+store named by `HYDRA_HISTORY_DB` (default `hydra_history.sqlite`).
+
+The gate needs at least five years of daily history per asset plus a
+210-day warm-up. `refresh_history` only extends pairs already in the
+store, and Kraken's OHLC endpoint serves recent bars only. To build a store
+the first time, download Kraken's trade-history archive and run
+`python -m tools.bootstrap_history --zip <archive.zip>` once; with less
+history the verdict is `INSUFFICIENT_DATA` and every pair stays on the 1h
+engine.
+
 The criteria are fixed in `research/data/trend_sleeve_REGISTRATION.md`, so a
 result cannot be argued with after the fact. Re-run the gate every quarter.
 Evidence older than 180 days switches `auto` back off.
+
+**What a restart does.** Hydra reads the gate only at start-up. A pair that
+newly qualifies buys on its first tick after the restart if its score is
+already 0.6 or more; it does not wait for 00:00 UTC. A pair that stops
+qualifying (evidence expired, a FAIL, a rule change) keeps its coins, and
+the 1h engine then manages them under its own exit rules.
 
 ## The trade cycle
 

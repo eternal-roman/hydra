@@ -310,6 +310,10 @@ export default function LabPane({
           with no real effect, up to 1 run in 20 still reads BETTER or WORSE
           on a given metric, and more often on at least one of them. Try a few
           settings, not many, and confirm a BETTER on data the run never saw.
+          A pair on the trend sleeve ignores these sliders. The 1h engine
+          trades so rarely that many folds are skipped for too few trades, so
+          EQUIVOCAL is the expected verdict, not a reason to loosen the
+          engine.
         </p>
       </div>
 

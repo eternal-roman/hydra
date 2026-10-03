@@ -396,6 +396,22 @@ def _env_flag_on(name: str) -> bool:
     return raw is not None and raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def trend_target_vol_setting(environ=None) -> float:
+    """HYDRA_TREND_TARGET_VOL (annualized %, default 30) as the engine reads it.
+
+    One parser for the engine, the trend sleeve gate (which records the value
+    it tested) and hydra_strategy_gate (which refuses a report built for
+    another target). A non-finite or unparseable value is the default: NaN
+    would otherwise pass every comparison and size the sleeve at the cap.
+    """
+    env = os.environ if environ is None else environ
+    try:
+        value = float(env.get("HYDRA_TREND_TARGET_VOL") or 30.0)
+    except (TypeError, ValueError):
+        return 30.0
+    return value if math.isfinite(value) else 30.0
+
+
 def is_rules_force_hold_reason(reason: str) -> bool:
     """Quant-rules HOLD. Hold-through must not turn it back into a sell."""
     return str(reason or "").startswith("[QUANT RULES FORCE_HOLD]")
@@ -1581,12 +1597,7 @@ class HydraEngine:
         # UTC day of the sleeve's last sizing (entry, trim, top-up or a
         # within-tolerance check); None = never sized.
         self._sleeve_sized_day: Optional[int] = None
-        try:
-            self.trend_target_vol = float(
-                os.environ.get("HYDRA_TREND_TARGET_VOL") or 30.0
-            )
-        except (TypeError, ValueError):
-            self.trend_target_vol = 30.0
+        self.trend_target_vol = trend_target_vol_setting()
 
         self.position = Position(asset=asset)
         cfg = sizing or SIZING_CONSERVATIVE
