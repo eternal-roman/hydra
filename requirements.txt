@@ -7,7 +7,7 @@
 # "error reading bcrypt version" from the removed __about__ attribute; that
 # one is harmless and is NOT the reason for the pin.)
 anthropic>=1.10.0,<2.0
-openai>=3.22.1,<4.0
+openai>=3.25.0,<4.0
 pytest>=9.1.1
 PyJWT>=2.15.1
 cryptography>=50.0.1
