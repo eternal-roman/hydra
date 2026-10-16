@@ -505,3 +505,78 @@ def test_filled_journal_row_does_not_lock_resume_cash():
     agent._set_engine_balances(9999.0)
     assert agent.engines["SOL/USD"].balance == pytest.approx(45.0)
     assert agent.engines["BTC/USD"].balance == pytest.approx(45.0)
+
+
+def _usd_agent(cash_by_pair, pool, restored=None, paper=False):
+    """Flat USD engines whose cash came from a snapshot (``restored``)."""
+    agent = object.__new__(HydraAgent)
+    agent.paper = paper
+    agent.initial_balance = 3000.0
+    agent.balance_stream = _NullBalanceStream()
+    agent._cached_balance = {"ZUSD": pool}
+    agent.pairs = list(cash_by_pair)
+    agent.engines = {}
+    for pair, cash in cash_by_pair.items():
+        eng = HydraEngine(initial_balance=1000.0, asset=pair)
+        eng.prices = [100.0]
+        eng.balance = cash
+        eng.peak_equity = cash
+        agent.engines[pair] = eng
+    agent._snapshot_restored_pairs = set(cash_by_pair if restored is None else restored)
+    return agent
+
+
+def _cash(agent):
+    return {p: round(e.balance, 6) for p, e in agent.engines.items()}
+
+
+def test_a_restart_keeps_each_restored_flat_books_cash():
+    """A sleeve that banked gains while its siblings sat flat keeps them.
+
+    The equal re-split gave each engine 1100: BTC came back 15.4% under its
+    own 1300 peak, its breaker halted it, and the reset could not clear it
+    because the next boot split the same way.
+    """
+    agent = _usd_agent({"BTC/USD": 1300.0, "ETH/USD": 1000.0, "ZEC/USD": 1000.0}, 3300.0)
+    agent._set_engine_balances(per_pair_usd=1100.0)
+    assert _cash(agent) == {"BTC/USD": 1300.0, "ETH/USD": 1000.0, "ZEC/USD": 1000.0}
+    btc = agent.engines["BTC/USD"]
+    assert btc.peak_equity == pytest.approx(1300.0)
+    assert btc.balance == pytest.approx(btc.peak_equity)   # no fake drawdown
+
+
+def test_the_real_pool_still_sets_the_total():
+    books = {"BTC/USD": 1300.0, "ETH/USD": 1000.0, "ZEC/USD": 1000.0}
+    deposit = _usd_agent(books, 3600.0)      # +300 is shared equally
+    deposit._set_engine_balances(per_pair_usd=1200.0)
+    assert _cash(deposit) == {"BTC/USD": 1400.0, "ETH/USD": 1100.0, "ZEC/USD": 1100.0}
+    shortfall = _usd_agent(books, 2970.0)    # 10% less shrinks every book by 10%
+    shortfall._set_engine_balances(per_pair_usd=990.0)
+    assert _cash(shortfall) == {"BTC/USD": 1170.0, "ETH/USD": 900.0, "ZEC/USD": 900.0}
+
+
+def test_a_pair_new_this_session_shares_only_the_surplus():
+    books = {"BTC/USD": 1300.0, "ETH/USD": 1000.0, "ZEC/USD": 1000.0}
+    restored = ["BTC/USD", "ETH/USD"]        # ZEC holds the constructor placeholder
+    agent = _usd_agent(books, 2300.0, restored=restored)
+    agent._set_engine_balances(per_pair_usd=766.0)
+    assert _cash(agent) == {"BTC/USD": 1300.0, "ETH/USD": 1000.0, "ZEC/USD": 0.0}
+    agent = _usd_agent(books, 2600.0, restored=restored)
+    agent._set_engine_balances(per_pair_usd=866.0)
+    assert _cash(agent) == {"BTC/USD": 1400.0, "ETH/USD": 1100.0, "ZEC/USD": 100.0}
+
+
+def test_a_fresh_start_still_splits_the_pool_equally():
+    agent = _usd_agent({"BTC/USD": 1000.0, "ETH/USD": 1000.0, "ZEC/USD": 1000.0},
+                       3300.0, restored=[])
+    agent._set_engine_balances(per_pair_usd=1100.0)
+    assert _cash(agent) == {"BTC/USD": 1100.0, "ETH/USD": 1100.0, "ZEC/USD": 1100.0}
+
+
+def test_paper_resume_keeps_its_books():
+    """Paper has no exchange balance: the restored books are the truth, so a
+    resume no longer resets every flat book to the constructor split."""
+    books = {"BTC/USD": 1300.0, "ETH/USD": 950.0, "ZEC/USD": 1000.0}
+    agent = _usd_agent(books, 0.0, restored=["BTC/USD", "ETH/USD"], paper=True)
+    agent._set_engine_balances(per_pair_usd=1000.0)
+    assert _cash(agent) == {"BTC/USD": 1300.0, "ETH/USD": 950.0, "ZEC/USD": 1000.0}

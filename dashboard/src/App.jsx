@@ -184,6 +184,154 @@ function QuantumIcon({ active = true, size = 14, color }) {
   );
 }
 
+// Distance from the current price to a level, as a signed percent of price.
+function pctFrom(price, level) {
+  if (!price || level == null || !Number.isFinite(level)) return null;
+  return ((level - price) / price) * 100;
+}
+
+function fmtUtcDay(epochSec) {
+  if (!epochSec) return "—";
+  return new Date(epochSec * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+
+// The plan the trend sleeve trades, from state.trend_sleeve.plan
+// (hydra_engine.sleeve_plan): the daily close that flips the decision,
+// each ensemble term's level, the re-size, and where the breaker sits.
+// What stops the plan from acting (a halt, a blocked or unfilled entry,
+// a pending exit) replaces the trigger line, so the card never shows an
+// entry level the engine cannot act on.
+function TradePlan({ pair, ps, buyHalt }) {
+  const sleeve = ps.trend_sleeve || {};
+  const gate = ps.strategy_gate || null;
+  const prefix = pairPrefix(pair);
+  const quote = String(pair).split("/")[1] || "quote";
+  const row = { display: "flex", justifyContent: "space-between", gap: 12, fontSize: 11, fontFamily: mono, padding: "2px 0" };
+  const right = { textAlign: "right", overflowWrap: "anywhere", minWidth: 0 };
+  const dim = { color: COLORS.textDim, flexShrink: 0 };
+  const box = { border: `1px solid ${COLORS.panelBorder}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10, background: "#0d0d0f" };
+  if (!sleeve.enabled) {
+    return (
+      <div style={{ ...box, ...row }} title="Which strategy trades this pair, and why (hydra_strategy_gate).">
+        <span style={dim}>STRATEGY</span>
+        <span style={{ ...right, color: COLORS.textMuted }}>
+          1h rails engine: capital preservation, rarely trades by design{gate?.reason ? ` — ${gate.reason}` : ""}
+        </span>
+      </div>
+    );
+  }
+  const evidence = (() => {
+    const at = gate?.gate_generated_at ? Date.parse(gate.gate_generated_at) : NaN;
+    if (!Number.isFinite(at)) return "";
+    const days = Math.max(0, Math.floor((Date.now() - at) / 86400000));
+    return ` · ${days}d old, re-run the gate quarterly`;
+  })();
+  const why = gate?.reason ? (
+    <div style={row}>
+      <span style={dim}>Why</span>
+      <span style={{ ...right, color: COLORS.textMuted }}>{gate.reason}{evidence}</span>
+    </div>
+  ) : null;
+  const fmtScore = (v) => (v == null || !Number.isFinite(Number(v)) ? "—" : Number(v).toFixed(1));
+  const plan = sleeve.plan;
+  if (!plan) {
+    return (
+      <div style={box}>
+        <div style={row}>
+          <span style={dim}>TREND SLEEVE</span>
+          <span style={{ ...right, color: COLORS.textMuted }}>
+            {sleeve.score == null
+              ? "warming up — needs 210 completed daily closes"
+              : `score ${fmtScore(sleeve.score)} (long ≥ 0.6) · this agent version does not publish the plan`}
+          </span>
+        </div>
+        {why}
+      </div>
+    );
+  }
+  const price = ps.price || 0;
+  const held = plan.state === "long";
+  const due = plan.wants_long != null && plan.wants_long !== held;
+  const trigger = held ? plan.exit_below : plan.enter_above;
+  const dist = pctFrom(price, trigger);
+  const lv = plan.levels || {};
+  const pct = (v) => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
+  const signedPct = (d) => (d == null ? "" : ` (${d >= 0 ? "+" : ""}${d.toFixed(1)}%)`);
+  // Status that overrides the trigger line, most binding first.
+  let status = null;
+  const ddNow = Number(ps.portfolio?.current_drawdown_pct);
+  if (ps.halted && held) {
+    status = ["15% breaker halted: selling this pair, no new buys", COLORS.danger];
+  } else if (ps.halted && Number.isFinite(ddNow) && ddNow >= 15) {
+    // Cash cannot recover on its own, so the breaker re-arms right after a
+    // reset; the gate's backtest never re-enters after a trip either.
+    status = [`15% breaker halted: in cash ${ddNow.toFixed(1)}% under its peak, which a reset does not clear`, COLORS.danger];
+  } else if (ps.halted) {
+    status = ["15% breaker halted: no new buys until HYDRA_RESET_CIRCUIT_BREAKER=1 and a restart", COLORS.danger];
+  } else if (due && held) {
+    status = ["Exit due: the last daily close took the score under 0.6, selling", COLORS.sell];
+  } else if (due && buyHalt) {
+    status = ["Wants long, but the portfolio 15% halt blocks new buys", COLORS.warn];
+  } else if (due && ps.exit_only) {
+    status = ["Wants long, but this pair is exit-only", COLORS.warn];
+  } else if (due && ps.tradable === false) {
+    status = [`Wants long, but there is no ${quote} to buy with`, COLORS.warn];
+  } else if (due) {
+    status = ["Wants long: entry not filled yet", COLORS.buy];
+  }
+  const ema = lv.ema20_over_ema100;
+  const breakerDist = pctFrom(price, plan.breaker_price);
+  return (
+    <div style={box} aria-label={`${pair} trade plan`}>
+      <div style={{ ...row, fontSize: 12, fontWeight: 700, flexWrap: "wrap", rowGap: 0 }}>
+        <span style={{ color: held ? COLORS.buy : COLORS.textMuted }}
+              title="The sleeve is long while the daily trend score is 0.6 or more.">
+          TREND SLEEVE · {held ? "LONG" : "FLAT"} · score {fmtScore(plan.score)} (long ≥ 0.6)
+        </span>
+        <span style={{ ...dim, fontWeight: 400 }}>decides {fmtUtcDay(plan.decides_at_utc)}</span>
+      </div>
+      {status ? (
+        <div style={{ ...row, fontSize: 12 }}>
+          <span style={{ ...right, textAlign: "left", color: status[1], fontWeight: 700 }}>{status[0]}</span>
+        </div>
+      ) : (
+        <div style={{ ...row, fontSize: 12 }}>
+          <span>{held ? "Exits if a daily close is below" : "Enters if a daily close is above"}</span>
+          <span style={{ ...right, color: held ? COLORS.sell : COLORS.buy, fontWeight: 700 }}>
+            {trigger == null ? "no level in range" : fmtPrice(trigger, prefix)}
+            {trigger != null && <span style={dim}>{signedPct(dist)}</span>}
+          </span>
+        </div>
+      )}
+      <div style={row}>
+        <span style={dim}>Terms</span>
+        <span style={right}>
+          SMA200 {fmtPrice(lv.sma200, prefix)} · EMA20&gt;EMA100 {ema > 0 ? `above ${fmtPrice(ema, prefix)}` : "at any close"} · {lv.donchian_long
+            ? `Donchian holds while ≥ 20d low ${fmtPrice(lv.donchian_20d_low, prefix)}`
+            : `Donchian breakout above 55d high ${fmtPrice(lv.donchian_55d_high, prefix)}`}
+        </span>
+      </div>
+      <div style={row}>
+        <span style={dim}>Size</span>
+        <span style={right}>
+          {held
+            ? `${pct(sleeve.exposure)} of equity · target ${pct(sleeve.target_exposure)}${sleeve.next_resize_day ? ` · re-size ${fmtUtcDay(sleeve.next_resize_day * 86400).slice(0, 10)}` : ""}`
+            : `flat · ${pct(sleeve.target_exposure)} of equity if it enters`}
+        </span>
+      </div>
+      <div style={row}>
+        <span style={dim}>Engine 15% stop</span>
+        <span style={{ ...right, color: plan.breaker_reachable ? COLORS.warn : COLORS.textMuted }}>
+          {plan.breaker_reachable
+            ? `below ${fmtPrice(plan.breaker_price, prefix)}${signedPct(breakerDist)}: sells this pair, blocks its buys`
+            : held ? "price alone cannot trip it" : "flat, nothing at risk"}
+        </span>
+      </div>
+      {why}
+    </div>
+  );
+}
+
 function StatCard({ label, value, unit, color = COLORS.text }) {
   return (
     <div style={{ padding: "12px 16px", background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`, borderRadius: 8, flex: "1 1 0" }}>
@@ -2252,6 +2400,9 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                 const port = ps.portfolio || {};
                 const pos = ps.position || {};
                 const ind = ps.indicators || {};
+                // A sleeve pair decides on completed daily closes; the 1h
+                // indicator tiles and research meters drive none of it.
+                const sleeveOn = !!(ps.trend_sleeve && ps.trend_sleeve.enabled);
 
                 return (
                   <div key={pair} style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`, borderRadius: 10, padding: 16 }}>
@@ -2280,9 +2431,11 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <div style={{ width: 7, height: 7, borderRadius: "50%", background: regimeColor(ps.regime),
                                       boxShadow: `0 0 12px ${regimeColor(ps.regime)}cc, 0 0 4px ${regimeColor(ps.regime)}` }} />
-                        <span style={{ fontSize: 11, fontWeight: 700, color: regimeColor(ps.regime), fontFamily: mono,
-                                       textTransform: "uppercase", textShadow: `0 0 10px ${regimeColor(ps.regime)}80` }}>
-                          {(ps.regime || "").replace("_", " ")}
+                        <span title={sleeveOn ? "1h regime: shown for context; the trend sleeve decides on daily closes" : undefined}
+                              style={{ fontSize: 11, fontWeight: 700, color: regimeColor(ps.regime), fontFamily: mono,
+                                       textTransform: "uppercase", textShadow: `0 0 10px ${regimeColor(ps.regime)}80`,
+                                       opacity: sleeveOn ? 0.55 : 1 }}>
+                          {sleeveOn ? "1h " : ""}{(ps.regime || "").replace("_", " ")}
                         </span>
                         {ps.strategy && (
                           <span style={{ fontSize: 9, fontFamily: mono, color: COLORS.textMuted,
@@ -2295,6 +2448,9 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                       </div>
                     </div>
 
+                    {/* Trade plan: what the next daily close must do, or which engine runs and why */}
+                    <TradePlan pair={pair} ps={ps} buyHalt={state?.portfolio_drawdown?.buy_halted === true} />
+
                     {/* Candlestick Chart */}
                     {(ps.candles && ps.candles.length >= 1) && (
                       <div style={{ background: "#0d0d0f", borderRadius: 8, border: `1px solid ${COLORS.panelBorder}`, overflow: "hidden", margin: "0 -4px" }}>
@@ -2305,6 +2461,7 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                     {/* Research surfaces — display/shadow only; never order path (thesis).
                         Same meter row as ConfidenceMeter: mono label left, value right. */}
                     {(() => {
+                      if (sleeveOn) return null;
                       const qi = ps.quant_indicators
                         || ps.ai_decision?.quant_indicators
                         || null;
@@ -2416,7 +2573,13 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                     <div style={{ display: "flex", gap: 16, marginTop: 10 }}>
                       {/* Signal */}
                       <div style={{ flex: 1 }}>
-                        <ConfidenceMeter confidence={sig.confidence || 0} signal={sig.action || "HOLD"} />
+                        {sleeveOn ? (
+                          <div style={{ fontSize: 10, fontFamily: mono, color: COLORS.textDim, letterSpacing: "0.06em" }}>
+                            SIGNAL · daily trend sleeve, see the plan above
+                          </div>
+                        ) : (
+                          <ConfidenceMeter confidence={sig.confidence || 0} signal={sig.action || "HOLD"} />
+                        )}
                         {ps.cross_pair_override && ps.cross_pair_override.confluence_source && (
                           <div style={{ marginTop: 4, display: "inline-flex", alignItems: "center", gap: 6,
                                         fontSize: 10, fontFamily: mono, color: COLORS.accent,
@@ -2457,10 +2620,12 @@ export function HydraDashboard({ jwtToken, onLogout }) {
                     {/* Indicators */}
                     {ind.rsi !== undefined && (
                       <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 11, fontFamily: mono, color: COLORS.textDim, flexWrap: "wrap" }}>
+                        {!sleeveOn && (<>
                         <span>RSI <span style={{ color: ind.rsi > 70 ? COLORS.sell : ind.rsi < 30 ? COLORS.buy : COLORS.text, fontWeight: 600 }}>{ind.rsi}</span></span>
                         <span>MACD <span style={{ color: (ind.macd_histogram || 0) > 0 ? COLORS.buy : COLORS.sell, fontWeight: 600 }}>{fmtInd(ind.macd_histogram)}</span></span>
                         <span>BB <span style={{ color: COLORS.text }}>[{fmtInd(ind.bb_lower)} — {fmtInd(ind.bb_upper)}]</span></span>
                         <span>Width <span style={{ color: (ind.bb_width || 0) > 0.06 ? COLORS.volatile : COLORS.text, fontWeight: 600 }}>{((ind.bb_width || 0) * 100).toFixed(2)}%</span></span>
+                        </>)}
                         {(() => {
                           const fees = state?.fee_tier?.pair_fees?.[pair];
                           if (!fees) return null;

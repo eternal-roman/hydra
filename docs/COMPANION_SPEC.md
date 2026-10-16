@@ -35,7 +35,7 @@ Everything else — market commentary, teaching, strategy ideation, honesty-keep
 | Questionnaire → custom soul | Deferred to Phase 7 |
 | Intent classifier | Heuristic-first, LLM fallback |
 | Companion switch memory | Isolated per-companion (no shared transcript) |
-| Proactive nudges | ON by default, max 1/10min, suppressed if user active in last 90s |
+| Proactive nudges | **OFF by default** (`HYDRA_COMPANION_NUDGES=1` opts in; they fire on 1h regime flips, which carry no measured edge, and each costs an LLM call), max 1/10min, suppressed if user active in last 90s |
 | Brain output visibility | Companions read AI Brain analyst/risk output read-only |
 | Slash commands | Direct-to-TradeCard shortcuts, Phase 2 |
 | Default companion on first login | Apex |

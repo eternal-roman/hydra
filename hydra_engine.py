@@ -396,6 +396,22 @@ def _env_flag_on(name: str) -> bool:
     return raw is not None and raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def trend_target_vol_setting(environ=None) -> float:
+    """HYDRA_TREND_TARGET_VOL (annualized %, default 30) as the engine reads it.
+
+    One parser for the engine, the trend sleeve gate (which records the value
+    it tested) and hydra_strategy_gate (which refuses a report built for
+    another target). A non-finite or unparseable value is the default: NaN
+    would otherwise pass every comparison and size the sleeve at the cap.
+    """
+    env = os.environ if environ is None else environ
+    try:
+        value = float(env.get("HYDRA_TREND_TARGET_VOL") or 30.0)
+    except (TypeError, ValueError):
+        return 30.0
+    return value if math.isfinite(value) else 30.0
+
+
 def is_rules_force_hold_reason(reason: str) -> bool:
     """Quant-rules HOLD. Hold-through must not turn it back into a sell."""
     return str(reason or "").startswith("[QUANT RULES FORCE_HOLD]")
@@ -1562,14 +1578,17 @@ class HydraEngine:
         # closes the score is None and behavior is identical to pre-overlay.
         # Kill: HYDRA_TREND_OVERLAY=0 (or trend_overlay=False).
         self.trend_overlay = _env_default_on("HYDRA_TREND_OVERLAY")
-        # Daily trend sleeve (default OFF; HYDRA_TREND_SLEEVE=1). The engine
+        # Daily trend sleeve. Off here unless HYDRA_TREND_SLEEVE=1; the live
+        # agent passes trend_sleeve= from its per-pair evidence gate
+        # (hydra_strategy_gate, HYDRA_TREND_SLEEVE=auto). The engine
         # cited the daily ensemble as its only validated edge but traded it
         # only as a filter on rare 1h entries and exited on 1h noise: 11
         # trades and +1.0% in 3 years. The sleeve holds the ensemble itself:
         # long while the score on COMPLETED daily closes is >= 0.6, flat
-        # otherwise, vol-targeted at entry. It never consults the 1h signal
-        # generator or the 1h hold-through rails (daily entry with 1h exits
-        # was tested and rejected: trend_entry_gate.json). Evidence gate:
+        # otherwise, vol-targeted and re-sized every 30 days. It never
+        # consults the 1h signal generator or the 1h hold-through rails
+        # (daily entry with 1h exits was tested and rejected:
+        # trend_entry_gate.json). Evidence gate:
         # tools/trend_sleeve_gate.py, research/data/trend_sleeve_REGISTRATION.md.
         self.trend_sleeve = (_env_flag_on("HYDRA_TREND_SLEEVE")
                              if trend_sleeve is None else bool(trend_sleeve))
@@ -1578,12 +1597,7 @@ class HydraEngine:
         # UTC day of the sleeve's last sizing (entry, trim, top-up or a
         # within-tolerance check); None = never sized.
         self._sleeve_sized_day: Optional[int] = None
-        try:
-            self.trend_target_vol = float(
-                os.environ.get("HYDRA_TREND_TARGET_VOL") or 30.0
-            )
-        except (TypeError, ValueError):
-            self.trend_target_vol = 30.0
+        self.trend_target_vol = trend_target_vol_setting()
 
         self.position = Position(asset=asset)
         cfg = sizing or SIZING_CONSERVATIVE
@@ -1933,6 +1947,76 @@ class HydraEngine:
             "target_exposure": (round(self._sleeve_target_notional(price) / equity, 4)
                                 if equity > 0 and price > 0 else 0.0),
             "next_resize_day": None if sized is None else sized + self.SLEEVE_RESIZE_DAYS,
+            "plan": self.sleeve_plan(price),
+        }
+
+    def sleeve_plan(self, price: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """What the next completed daily close must do to change the sleeve.
+
+        Every ensemble term is monotone in that close, so each has one
+        trigger price, computed in closed form from the same window the
+        engine will score (the 420-day cap included):
+          close > SMA200      <=>  c > mean(last 199 completed closes)
+          EMA20 > EMA100      <=>  c > ((1-k100)E100 - (1-k20)E20) / (k20-k100)
+          Donchian long       <=>  c > 55-day high (from flat), c >= 20-day low (held)
+        `enter_above` / `exit_below` is where the score crosses 0.6. The
+        breaker price is where this engine's equity would be 15% under its
+        peak. None while warming.
+        """
+        closes = self._completed_daily_closes()
+        if len(closes) < self.TREND_SMA_DAYS + 10:
+            return None
+        base = closes[-(self.MAX_DAILY_CLOSES - 2):]
+        sma_level = sum(base[-(self.TREND_SMA_DAYS - 1):]) / float(self.TREND_SMA_DAYS - 1)
+        kf = 2.0 / (self.TREND_EMA_FAST_DAYS + 1)
+        ks = 2.0 / (self.TREND_EMA_SLOW_DAYS + 1)
+        ef = Indicators.ema(base, self.TREND_EMA_FAST_DAYS)
+        es = Indicators.ema(base, self.TREND_EMA_SLOW_DAYS)
+        ema_level = ((1.0 - ks) * es - (1.0 - kf) * ef) / (kf - ks)
+        don_high = max(closes[-self.TREND_DON_ENTRY_DAYS:])
+        don_low = min(closes[-self.TREND_DON_EXIT_DAYS:])
+
+        def score_at(c: float) -> float:
+            s = 0.4 if c > sma_level else 0.0
+            s += 0.4 if c > ema_level else 0.0
+            long_don = (c > don_high) if self._don_state == 0 else (c >= don_low)
+            return round(s + (0.2 if long_don else 0.0), 2)
+
+        # The score only steps at these levels; probe just above each. A
+        # non-positive level (EMA20 far above EMA100) holds for every close.
+        don_level = don_high if self._don_state == 0 else don_low
+        steps = sorted(level for level in {sma_level, ema_level, don_level} if level > 0)
+        trigger = None
+        if steps and score_at(steps[0] * 0.5) < self.TREND_SCORE_LONG:
+            for level in steps:
+                if score_at(level + max(abs(level), 1e-12) * 1e-9) >= self.TREND_SCORE_LONG:
+                    trigger = level
+                    break
+        score = self.sleeve_trend_score()
+        held = self.position.size > 0
+        mark = price if price and price > 0 else (self.prices[-1] if self.prices else 0.0)
+        breaker = None
+        if held and mark > 0:
+            level = (0.85 * self.peak_equity - self.balance) / self.position.size
+            breaker = level if level > 0 else None
+        today = self._sleeve_today()
+        return {
+            "state": "long" if held else "flat",
+            "wants_long": None if score is None else score >= self.TREND_SCORE_LONG,
+            "score": score,
+            "decides_at_utc": None if today is None else (today + 1) * 86400,
+            "enter_above": None if held or trigger is None else round(trigger, 8),
+            "exit_below": None if not held or trigger is None else round(trigger, 8),
+            "levels": {
+                "sma200": round(sma_level, 8),
+                "ema20_over_ema100": round(ema_level, 8),
+                "donchian_55d_high": round(don_high, 8),
+                "donchian_20d_low": round(don_low, 8),
+                "donchian_long": self._don_state == 1,
+            },
+            # None + not reachable: cash alone keeps equity above 85% of peak.
+            "breaker_price": None if breaker is None else round(breaker, 8),
+            "breaker_reachable": breaker is not None,
         }
 
     def cvd_divergence_sigma(self) -> Optional[float]:
@@ -3071,6 +3155,14 @@ class HydraEngine:
                 strategy=strategy,
                 confidence=confidence,
             )
+            # A partly filled sleeve entry, top-up or trim is not a finished
+            # re-size: the fill appliers stamped today, which deferred the
+            # remainder for 30 days. Owe it again: outside the band the next
+            # tick re-sends it, inside it the HOLD path stamps the day.
+            if (getattr(self, "trend_sleeve", False)
+                    and vol_exec < placed_amount * 0.999999
+                    and "sleeve_sized_day" in pre_trade_snapshot):
+                self._sleeve_sized_day = pre_trade_snapshot["sleeve_sized_day"]
             return
 
         # Full fill without snapshot — nothing arithmetic to reverse

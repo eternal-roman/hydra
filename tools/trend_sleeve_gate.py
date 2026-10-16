@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hydra_engine import HydraEngine, SIZING_COMPETITION  # noqa: E402
+from hydra_engine import HydraEngine, SIZING_COMPETITION, trend_target_vol_setting  # noqa: E402
 
 REGISTRATION = "research/data/trend_sleeve_REGISTRATION.md"
 DEFAULT_OUT = ROOT / "research" / "data" / "trend_sleeve_gate.json"
@@ -537,7 +537,9 @@ def _git_sha() -> str:
 
 def main(argv: Optional[List[str]] = None) -> dict:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--db", default=str(DEFAULT_DB))
+    # Same store the agent and tools/refresh_history.py use.
+    ap.add_argument("--db", default=os.environ.get("HYDRA_HISTORY_DB") or str(DEFAULT_DB),
+                    help="SQLite path (env: HYDRA_HISTORY_DB)")
     ap.add_argument("--pairs", default=",".join(DEFAULT_PAIRS))
     ap.add_argument("--csv", action="append", default=[], metavar="PAIR=PATH",
                     help="daily closes from a CSV instead of the store")
@@ -613,6 +615,8 @@ def main(argv: Optional[List[str]] = None) -> dict:
                    "stress_cost_per_side": STRESS_COST, "rebalance_days": REBALANCE_DAYS,
                    "min_eval_years": MIN_EVAL_YEARS, "dd_ratio": DD_RATIO,
                    "resize_days": RESIZE_DAYS, "resize_tol": RESIZE_TOL,
+                   # The vol target every engine in this run sized with.
+                   "target_vol": trend_target_vol_setting(),
                    "boot_n": args.boot, "boot_seed": BOOT_SEED,
                    "engine_balance": ENGINE_BALANCE, "engine_fee_bps": ENGINE_FEE_BPS},
         "assets": assets,

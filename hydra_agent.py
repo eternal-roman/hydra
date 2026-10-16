@@ -33,6 +33,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from collections import deque
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -490,6 +491,26 @@ class HydraAgent:
                 print(f"  [TUNER] Reset learned params for {pair}")
             self.trackers[pair] = tracker
 
+        # Which pairs trade the daily trend sleeve: only those whose base
+        # asset passed the pre-registered gate on this operator's own data,
+        # unless HYDRA_TREND_SLEEVE forces it on or off. Any failure here
+        # keeps every pair on the current engine.
+        try:
+            from hydra_strategy_gate import resolve_trend_sleeve
+            self.sleeve_decisions = resolve_trend_sleeve(pairs)
+        except Exception as e:
+            # No re-import here: if the module itself failed to import, a
+            # second import would raise out of __init__ and stop the boot.
+            reason = f"gate check failed ({type(e).__name__}: {e})"
+            self.sleeve_decisions = {
+                p: SimpleNamespace(enabled=False, reason=reason, gate_generated_at=None)
+                for p in pairs
+            }
+        for pair in pairs:
+            decision = self.sleeve_decisions[pair]
+            label = "daily trend sleeve" if decision.enabled else "1h rails engine"
+            print(f"  [STRATEGY] {pair}: {label} — {decision.reason}")
+
         # One engine per pair — apply tuned params if available
         self.engines: Dict[str, HydraEngine] = {}
         for pair in pairs:
@@ -501,6 +522,7 @@ class HydraAgent:
                 asset=pair,
                 sizing=sizing,
                 candle_interval=candle_interval,
+                trend_sleeve=self.sleeve_decisions[pair].enabled,
             )
             # Apply any previously learned tuned params
             tuned = self.trackers[pair].get_tunable_params()
@@ -1556,6 +1578,10 @@ class HydraAgent:
             # funded-stable switch dropped every engine on --resume.
             engines_raw = snapshot.get("engines", {})
             engines = {self._normalize_pair_name(k): v for k, v in engines_raw.items()}
+            # Which books came from the snapshot: _set_engine_balances keeps
+            # their cash; a pair new this session holds only the
+            # constructor placeholder.
+            self._snapshot_restored_pairs = set()
             for pair in self.engines:
                 src_key = self._same_base_stable_key(engines, pair)
                 if src_key is None:
@@ -1569,6 +1595,7 @@ class HydraAgent:
                     eng_snap.pop("candles", None)
                     eng_snap.pop("prices", None)
                 self.engines[pair].restore_runtime(eng_snap)
+                self._snapshot_restored_pairs.add(pair)
                 if src_key != pair:
                     # Inventory is the base; keep the live pair identity
                     # so the next snapshot does not write BTC/USD under a
@@ -2187,48 +2214,7 @@ class HydraAgent:
                     }
 
                 # Phase 2: Run brain with full cross-pair context (parallel across pairs)
-                all_states = {}
-                brain_pairs = []
-                for pair in self.pairs:
-                    state = engine_states.get(pair)
-                    if state:
-                        if state["signal"]["action"] != "HOLD" and self.brain:
-                            brain_pairs.append((pair, state))
-                        elif state["signal"]["action"] != "HOLD":
-                            # Actionable signal but NO brain configured. The
-                            # deterministic guardrails still have to run —
-                            # they are the layer that is supposed to hold when
-                            # the LLMs are unavailable, not the layer that
-                            # disappears with them. Previously this branch fell
-                            # through to the cached-decision replay below and
-                            # R1-R11/QFE never executed at all.
-                            try:
-                                self._apply_quant_guardrails(pair, state)
-                            except Exception as e:
-                                print(f"  [QUANT RULES] guardrail pass failed for "
-                                      f"{pair}: {type(e).__name__}: {e}")
-                        else:
-                            # Inject cached brain decision for dashboard persistence.
-                            # v2.14.1: tag the replay with cached_at_tick so the
-                            # dashboard can distinguish a live decision from a
-                            # stale one replayed across a HOLD tick. Shallow-copy
-                            # so we don't mutate the cached payload in place.
-                            cached = self._last_ai_decision.get(pair)
-                            if cached and self.brain:
-                                replay = dict(cached)
-                                replay["cached"] = True
-                                replay["cached_at_tick"] = state.get("tick", 0)
-                                state["ai_decision"] = replay
-                        # Every pair with a state enters Phase 2.5. This assignment
-                        # MUST stay outside the if/elif/else above: v2.32.0 added the
-                        # brain-free guardrail branch and left this inside the HOLD
-                        # arm, so an actionable signal with self.brain is None ran the
-                        # guardrails and was then dropped from all_states entirely —
-                        # Phase 2.5 skipped the pair and NO order was ever placed, not
-                        # entries and not exits. Brain pairs overwrite this below with
-                        # the future's result; the plain state is the fallback when a
-                        # brain future fails.
-                        all_states[pair] = state
+                all_states, brain_pairs = self._route_phase2(engine_states)
 
                 if brain_pairs:
                     # Snapshots are the pre-brain states. A timed-out call
@@ -2514,6 +2500,66 @@ class HydraAgent:
 
         # Final report
         self._print_final_report()
+
+    def _route_phase2(self, engine_states: dict):
+        """Phase 2 routing: which pairs the brain deliberates, which run the
+        brain-free guardrails, and which pass through untouched.
+
+        Returns (all_states, brain_pairs). Every pair with a state lands in
+        all_states; brain pairs are overwritten later by the future's result.
+        """
+        all_states = {}
+        brain_pairs = []
+        for pair in self.pairs:
+            state = engine_states.get(pair)
+            if state:
+                if getattr(self.engines.get(pair), "trend_sleeve", False):
+                    # The gated sleeve trades exactly what its gate
+                    # tested: no LLM and no R1-R11 vetoes on its
+                    # entries and top-ups (its exits and trims were
+                    # already protected). A veto layer that was not
+                    # in the test would make live trading differ from
+                    # the evidence that enabled it. The breakers,
+                    # caps and post-only execution still apply.
+                    state["decision_layer"] = "trend_sleeve"
+                elif state["signal"]["action"] != "HOLD" and self.brain:
+                    brain_pairs.append((pair, state))
+                elif state["signal"]["action"] != "HOLD":
+                    # Actionable signal but NO brain configured. The
+                    # deterministic guardrails still have to run —
+                    # they are the layer that is supposed to hold when
+                    # the LLMs are unavailable, not the layer that
+                    # disappears with them. Previously this branch fell
+                    # through to the cached-decision replay below and
+                    # R1-R11/QFE never executed at all.
+                    try:
+                        self._apply_quant_guardrails(pair, state)
+                    except Exception as e:
+                        print(f"  [QUANT RULES] guardrail pass failed for "
+                              f"{pair}: {type(e).__name__}: {e}")
+                else:
+                    # Inject cached brain decision for dashboard persistence.
+                    # v2.14.1: tag the replay with cached_at_tick so the
+                    # dashboard can distinguish a live decision from a
+                    # stale one replayed across a HOLD tick. Shallow-copy
+                    # so we don't mutate the cached payload in place.
+                    cached = self._last_ai_decision.get(pair)
+                    if cached and self.brain:
+                        replay = dict(cached)
+                        replay["cached"] = True
+                        replay["cached_at_tick"] = state.get("tick", 0)
+                        state["ai_decision"] = replay
+                # Every pair with a state enters Phase 2.5. This assignment
+                # MUST stay outside the if/elif/else above: v2.32.0 added the
+                # brain-free guardrail branch and left this inside the HOLD
+                # arm, so an actionable signal with self.brain is None ran the
+                # guardrails and was then dropped from all_states entirely —
+                # Phase 2.5 skipped the pair and NO order was ever placed, not
+                # entries and not exits. Brain pairs overwrite this below with
+                # the future's result; the plain state is the fallback when a
+                # brain future fails.
+                all_states[pair] = state
+        return all_states, brain_pairs
 
     @staticmethod
     def _apply_cross_pair_overrides(engine_states: Dict[str, Any],
@@ -5080,7 +5126,9 @@ class HydraAgent:
         ``restore_position(pre_trade_snapshot)`` would also put one
         engine's pre-split cash back. Engines that are flat and have no
         working order are still seeded, from the free pool minus cash
-        already sitting on a locked book.
+        already sitting on a locked book, but each keeps its own prior
+        cash: a surplus in the pool is split equally and a shortfall
+        shrinks every flat book by the same factor (``_seed_cash``).
         """
         prices = self._get_asset_prices()
 
@@ -5102,7 +5150,6 @@ class HydraAgent:
         # resting buy's hold is not). Splitting the whole pool again would
         # hand a flat sibling those same dollars.
         locked_cash: Dict[str, float] = {}
-        seed_counts: Dict[str, int] = {}
         for p in self.pairs:
             q = p.split("/")[1]
             if q not in STABLE_QUOTES:
@@ -5115,24 +5162,51 @@ class HydraAgent:
                     kept = 0.0
                 if kept > 0.0:
                     locked_cash[q] = locked_cash.get(q, 0.0) + kept
-            else:
-                seed_counts[q] = seed_counts.get(q, 0) + 1
 
-        def _stable_slice(q: str) -> float:
-            n_seed = seed_counts.get(q, 0)
+        # Flat books restored from the snapshot keep their own cash. An
+        # equal split moved a banked gain from one flat engine to its
+        # siblings at every restart and left the winner under its own peak:
+        # a trend sleeve that banked ~29% over two flat siblings came back
+        # 15% "down" and its breaker halted it, again after every reset.
+        # Live, the real pool still sets the total: a surplus (a deposit,
+        # or every book on a fresh start) is shared equally, a shortfall
+        # (fees, a withdrawal) shrinks every restored book by the same
+        # factor. Paper has no exchange balance: a restored book is the
+        # truth and a book new this session gets the constructor split.
+        restored_pairs = getattr(self, "_snapshot_restored_pairs", None) or set()
+        prior_cash: Dict[str, Dict[str, Optional[float]]] = {}
+        for p in self.pairs:
+            q = p.split("/")[1]
+            if q not in STABLE_QUOTES or self._restored_quote_book(p, self.engines[p]):
+                continue
+            prior: Optional[float] = None
+            if p in restored_pairs:
+                try:
+                    prior = float(self.engines[p].balance or 0.0)
+                except (TypeError, ValueError):
+                    prior = 0.0
+                prior = prior if math.isfinite(prior) and prior > 0.0 else 0.0
+            prior_cash.setdefault(q, {})[p] = prior
+
+        def _seed_cash(q: str, pair: str) -> float:
+            flats = prior_cash.get(q) or {}
+            n_seed = len(flats)
             if n_seed <= 0:
                 return 0.0
-            n_all = stable_quote_counts.get(q, 1) or 1
             if self.paper:
-                pool: Optional[float] = per_pair_usd * n_all
-            else:
-                pool = self._get_real_quote_balance(q)
-                if pool is None:
-                    pool = per_pair_usd * n_all  # no balance data yet
-            remain = float(pool) - locked_cash.get(q, 0.0)
-            if remain < 0.0:
-                remain = 0.0
-            return remain / n_seed
+                restored = flats.get(pair)
+                return per_pair_usd if restored is None else restored
+            pool = self._get_real_quote_balance(q)
+            if pool is None:
+                pool = per_pair_usd * (stable_quote_counts.get(q, 1) or 1)  # no data yet
+            remain = max(0.0, float(pool) - locked_cash.get(q, 0.0))
+            prior_total = sum(b for b in flats.values() if b)
+            if prior_total <= 0.0:
+                return remain / n_seed
+            prior = flats.get(pair) or 0.0
+            if remain >= prior_total:
+                return prior + (remain - prior_total) / n_seed
+            return prior * remain / prior_total
 
         for pair in self.pairs:
             engine = self.engines[pair]
@@ -5149,7 +5223,7 @@ class HydraAgent:
                         f"{slice_quote:.8f} (open position or working order)"
                     )
                 else:
-                    slice_quote = _stable_slice(quote)
+                    slice_quote = _seed_cash(quote, pair)
                 equity = slice_quote + engine.position.size * current_price
                 old_peak = float(engine.peak_equity or 0.0)
                 dummy_split = float(
@@ -5769,6 +5843,13 @@ class HydraAgent:
             if state is not None:
                 state["tradable"] = bool(getattr(engine, "tradable", True)) if engine else True
                 state["exit_only"] = bool(getattr(engine, "exit_only", False)) if engine else False
+                decision = (getattr(self, "sleeve_decisions", None) or {}).get(pair)
+                if decision is not None:
+                    state["strategy_gate"] = {
+                        "sleeve": bool(decision.enabled),
+                        "reason": decision.reason,
+                        "gate_generated_at": decision.gate_generated_at,
+                    }
 
         # Journal-derived stats — wrapped in try/except so a malformed journal
         # entry can never crash the broadcast and blank the dashboard.
