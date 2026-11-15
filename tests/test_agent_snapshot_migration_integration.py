@@ -137,16 +137,39 @@ def test_load_snapshot_preserves_journal_audit_trail(tmp_path):
 
 
 def test_load_snapshot_preserves_drawdown_and_userref(tmp_path):
-    """Non-pair-keyed fields survive intact."""
+    """Non-pair-keyed fields survive intact.
+
+    This snapshot predates the saved basis mark, so its portfolio peak is
+    whole-account dollars. That one field is not carried: against engine
+    books it would read as a breach. The drawdown record is.
+    """
     agent = _build_test_agent(tmp_path, quote="USD")
     snap_path = os.path.join(str(tmp_path), "hydra_session_snapshot.json")
     _write_legacy_usdc_snapshot(snap_path)
 
     agent._load_snapshot()
-    assert agent._portfolio_peak_usd == 110.0
+    assert agent._portfolio_peak_usd == 0.0
     assert agent._portfolio_max_drawdown_pct == 0.04
+    assert agent._portfolio_buy_halted is False
     assert agent._userref_counter == 42
     assert agent._competition_start_balance == 100.0
+
+
+def test_load_snapshot_keeps_engine_book_peak_and_halt_across_quote_migration(tmp_path):
+    """A peak measured on engine books, and the halt flag, survive the
+    USDC to USD key migration like every other non-pair-keyed field."""
+    agent = _build_test_agent(tmp_path, quote="USD")
+    snap_path = os.path.join(str(tmp_path), "hydra_session_snapshot.json")
+    snap = _write_legacy_usdc_snapshot(snap_path)
+    snap["portfolio_drawdown"] = {"peak_usd": 110.0, "max_pct": 16.5,
+                                  "buy_halted": True, "basis": "engine_books"}
+    with open(snap_path, "w") as f:
+        json.dump(snap, f)
+
+    agent._load_snapshot()
+    assert agent._portfolio_peak_usd == 110.0
+    assert agent._portfolio_max_drawdown_pct == 16.5
+    assert agent._portfolio_buy_halted is True
 
 
 def test_load_snapshot_idempotent_across_reboots(tmp_path):

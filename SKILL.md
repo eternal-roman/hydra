@@ -206,7 +206,7 @@ END LOOP
 
 ## Risk Management Rules
 
-1. **Circuit Breaker (per engine)**: Halt **new BUYs** when the *current* drawdown (equity vs peak this tick) reaches 15%; **SELL still allowed** (flatten inventory). Sticky across `--resume`; only `HYDRA_RESET_CIRCUIT_BREAKER=1` clears the flag (`max_drawdown` stays as the record). Constructor `--balance` is not a peak on an unfunded live quote. Portfolio 15% max DD also sticky-blocks BUYs.
+1. **Circuit Breaker (per engine)**: Halt **new BUYs** when the *current* drawdown (equity vs peak this tick) reaches 15%; **SELL still allowed** (flatten inventory). Sticky across `--resume`; only `HYDRA_RESET_CIRCUIT_BREAKER=1` clears it. The reset starts a new drawdown epoch: the peak moves to the equity at the first tick after it, `max_drawdown` stays as the record, and the breaker arms again 15% below the new peak. A balance seed is a capital flow, not a result: the peak is rescaled so the drawdown fraction carries over, so a withdrawal is not a loss and a deposit does not erase one. The portfolio breaker applies the same 15% to the engine books (quote cash plus positions the engines hold), not to the whole Kraken account, and also sticky-blocks BUYs.
 2. **Dead Man's Switch**: Always run `kraken order cancel-after 60` before live orders
 3. **Position Limits**: No single position notional > max_position_pct of equity (30%/40%), applied after brain size_multiplier
 4. **Trade Threshold**: Entries only when confidence ≥ 0.65; exits do not use this floor
