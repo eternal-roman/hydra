@@ -5921,6 +5921,7 @@ class HydraAgent:
                 "equity": round(equity, vd),
                 "pnl_pct": round(pnl_pct, 4),
                 "max_drawdown_pct": round(engine.max_drawdown, 4),
+                "current_drawdown_pct": round(engine.current_drawdown_pct(), 4),
                 "peak_equity": round(engine.peak_equity, vd),
             }
             state["position"] = {

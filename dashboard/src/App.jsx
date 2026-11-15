@@ -263,9 +263,7 @@ function TradePlan({ pair, ps, buyHalt }) {
   if (ps.halted && held) {
     status = ["15% breaker halted: selling this pair, no new buys", COLORS.danger];
   } else if (ps.halted && Number.isFinite(ddNow) && ddNow >= 15) {
-    // Cash cannot recover on its own, so the breaker re-arms right after a
-    // reset; the gate's backtest never re-enters after a trip either.
-    status = [`15% breaker halted: in cash ${ddNow.toFixed(1)}% under its peak, which a reset does not clear`, COLORS.danger];
+    status = [`15% breaker halted: in cash ${ddNow.toFixed(1)}% under its peak. A reset starts a new drawdown epoch here`, COLORS.danger];
   } else if (ps.halted) {
     status = ["15% breaker halted: no new buys until HYDRA_RESET_CIRCUIT_BREAKER=1 and a restart", COLORS.danger];
   } else if (due && held) {
