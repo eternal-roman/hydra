@@ -300,8 +300,13 @@ def test_unfunded_usd_pool_clears_constructor_dummy_peak():
         assert dd == 0.0
 
 
-def test_unfunded_usd_pool_preserves_snapshot_peak():
-    """A --resume peak above the constructor dummy is still never lowered."""
+def test_emptied_usd_pool_is_not_a_drawdown():
+    """A resumed engine whose quote cash has left the account lost nothing.
+
+    This used to keep the snapshot peak over $0 of cash. That is a 100%
+    drawdown on a flat engine: the breaker armed on the first tick and
+    stayed armed after the cash came back.
+    """
     agent = object.__new__(HydraAgent)
     agent.paper = False
     agent.initial_balance = 100.0
@@ -309,13 +314,45 @@ def test_unfunded_usd_pool_preserves_snapshot_peak():
     agent._cached_balance = {"XXBT": 0.01}
     agent.pairs = ["BTC/USD"]
     eng = HydraEngine(initial_balance=100.0, asset="BTC/USD")
-    eng.prices = [63000.0]
+    for i in range(60):
+        eng.ingest_candle({"open": 63000.0, "high": 63000.0, "low": 63000.0,
+                           "close": 63000.0, "volume": 1.0,
+                           "timestamp": 1_700_000_000 + i * 3600})
+    eng.balance = 5000.0
     eng.peak_equity = 5000.0
     eng.initial_balance = 5000.0
     agent.engines = {"BTC/USD": eng}
     agent._set_engine_balances(per_pair_usd=100.0)
     assert eng.balance == 0.0
-    assert eng.peak_equity == 5000.0
+    assert eng.peak_equity == 0.0
+    eng.tick()
+    assert eng.halted is False
+
+    agent._cached_balance = {"ZUSD": 3000.0}
+    agent._set_engine_balances(per_pair_usd=3000.0)
+    assert eng.balance == 3000.0
+    assert eng.peak_equity == 3000.0
+    eng.tick()
+    assert eng.halted is False
+
+
+def test_restart_with_unchanged_cash_keeps_a_real_drawdown():
+    """PR-B B3: a restart must not erase a loss. With no cash moving, the
+    peak stays exactly where it was."""
+    agent = object.__new__(HydraAgent)
+    agent.paper = False
+    agent.initial_balance = 100.0
+    agent.balance_stream = _NullBalanceStream()
+    agent._cached_balance = {"ZUSD": 4400.0}
+    agent.pairs = ["BTC/USD"]
+    eng = HydraEngine(initial_balance=100.0, asset="BTC/USD")
+    eng.prices = [63000.0]
+    eng.balance = 4400.0          # lost 12% trading; flat
+    eng.peak_equity = 5000.0
+    agent.engines = {"BTC/USD": eng}
+    agent._set_engine_balances(per_pair_usd=4400.0)
+    assert eng.balance == 4400.0
+    assert eng.peak_equity == pytest.approx(5000.0)
 
 
 def test_get_real_quote_balance_error_envelope_fails_open():
