@@ -138,6 +138,12 @@ class Harness:
         self._hold_through_prev = os.environ.get("HYDRA_HOLD_THROUGH")
         os.environ["HYDRA_HOLD_THROUGH"] = "0"
 
+        # The scenarios pin the 1h engine's plumbing. With the default
+        # HYDRA_TREND_SLEEVE=auto, an operator's passing gate report in
+        # research/data/ would put the harness pairs on the trend sleeve.
+        self._trend_sleeve_prev = os.environ.get("HYDRA_TREND_SLEEVE")
+        os.environ["HYDRA_TREND_SLEEVE"] = "0"
+
         # Stash real on-disk state files so they don't leak into the harness.
         # HydraAgent.__init__ runs the legacy journal migrator AND merges
         # the rolling order journal, either of which would otherwise pull
@@ -197,6 +203,11 @@ class Harness:
             os.environ.pop("HYDRA_HOLD_THROUGH", None)
         else:
             os.environ["HYDRA_HOLD_THROUGH"] = prev
+        prev = getattr(self, "_trend_sleeve_prev", None)
+        if prev is None:
+            os.environ.pop("HYDRA_TREND_SLEEVE", None)
+        else:
+            os.environ["HYDRA_TREND_SLEEVE"] = prev
         # Restore real time.sleep if we patched it
         if hasattr(self, "_original_time_sleep"):
             time.sleep = self._original_time_sleep

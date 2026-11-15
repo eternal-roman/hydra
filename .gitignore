@@ -52,6 +52,10 @@ hydra_params_*.json
 hydra_session_snapshot.json
 hydra_session_snapshot.json.tmp
 hydra_session_snapshot.json.harness_stash
+# The operator's trend-sleeve gate result. HYDRA_TREND_SLEEVE=auto reads it
+# at start-up, so a committed copy would switch every checkout that pulls it
+# (CLAUDE.md: never commit a gate report built on other data).
+research/data/trend_sleeve_gate.json
 
 # Claude Code — per-user / runtime files only.
 # .claude/settings.json, .claude/skills/, and .claude/hooks/ are committed.
