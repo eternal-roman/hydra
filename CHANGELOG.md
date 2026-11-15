@@ -6,6 +6,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.34.5] — 2026-11-14
+
+### Fixed
+
+- **The 15% breakers measure trading losses on Hydra's own books.** The portfolio BUY halt was measured on the whole Kraken account. A fall in coins no engine held, or a withdrawal, read as drawdown and blocked every BUY. It now reads the engine books (quote cash plus positions the engines hold), the same sum the backtest uses. A held position with no price yet is skipped for that tick instead of being counted as worth nothing.
+- **A deposit, a withdrawal, or the re-split of the quote pool at boot is not a gain or a loss.** A flat engine re-seeded with a smaller slice kept its old peak and halted on the next tick, including the engine that had made money before an equal re-split. A larger slice lifted equity past the peak and erased a real drawdown. Seeding now rescales the peak so the drawdown fraction is the same before and after, for each engine and for the portfolio. With no cash moving the peak stays exactly where it was.
+- **The operator reset works, and one reset is enough.** `HYDRA_RESET_CIRCUIT_BREAKER=1` used to clear the flag and keep the peak. A breaker halt flattens the book, so what is left is cash 15% under that peak: the next tick halted again, every time. The reset now starts a new drawdown epoch at the equity on the first tick after it. The maximum drawdown stays as the record, and the breaker arms again 15% below the new peak. An order placed before the reset no longer brings the old peak back when it is rolled back.
+- **The portfolio halt is saved as a flag.** Resume re-derived it from the recorded maximum drawdown, which never falls, so every later start halted again after a reset, even with the account at a new high. The snapshot now carries the halt itself.
+
+### Changed
+
+- **Upgrading.** A snapshot written before this release holds a whole-account portfolio peak. That peak is dropped and restarts at the first tick. A breach it recorded stays halted until the operator reset, as before. An engine that was halted by a withdrawal under the old rule also stays halted until the reset.
+- **`HYDRA_RESET_CIRCUIT_BREAKER=1` acts on every start while it is set.** Boot prints a warning. Unset it after the start that cleared the halt.
+- **Paper sessions.** The portfolio halt in `--paper` was measured on the real account balance. It is now measured on the paper books.
+
+### Also in this release
+
+Merged in #245 after v2.34.4 and not released until now. Each has a regression test.
+
+- **Paper never touches live state.** Paper and demo persist under `.hydra-paper/`. Live resume refuses a paper snapshot and drops paper rows from the journal merge.
+- **An ambiguous placement is not rolled back.** A placement whose reply was lost stays `PLACED` as unconfirmed and is adopted from the execution stream by userref. Rolling it back let the next tick place a duplicate order. Rows the stream cannot finalize are re-queried in session.
+- **A working order the market left behind is re-priced.** After 15 minutes and 15 bps it is cancelled so the engine decides again at the touch. `HYDRA_ORDER_REPRICE_S` and `HYDRA_ORDER_REPRICE_BPS` tune or disable it.
+- **The LLM may veto or exit, never open.** One rule applies its verdict on fresh and cached ticks. A SELL with no inventory no longer calls it.
+- **Funding is scaled to the 8-hour basis R1 and R2 are written in.** Kraken PF funding settles hourly, so unscaled the rules could not fire.
+- **Finished bars reach the engine in final form**, and a live pair with no pushed candle ticks from `kraken ohlc` instead of being skipped.
+- **Engine.** The hold-through flatten fires when a dump is labelled VOLATILE. CVD divergence is normalised by window volume. The trend vol multiplier fails open until the overlay can score. One equity point per candle.
+- **Evidence tooling.** The Monte Carlo trade bootstrap is circular with a short block. Walk-forward slices pairs on one clock. Synthetic bars use a fixed epoch. Heartbeat evaluation skips resolved checkpoints. A filled backtest order keeps the strategy, confidence and reason of its decision.
+
+---
+
 ## [2.34.4] — 2026-09-27
 
 ### Fixed

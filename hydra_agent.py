@@ -104,6 +104,10 @@ UNCONFIRMED_PLACEMENT_GRACE_S = 180.0
 # Working orders whose terminal event never arrived are re-queried by txid.
 STALE_PLACED_REQUERY_S = 1800.0
 REQUERY_EVERY_TICKS = 6
+# What the saved portfolio drawdown peak measures: the engine books (quote
+# cash plus positions the engines hold). Snapshots without this mark hold a
+# whole-account peak, which is not comparable.
+PORTFOLIO_DD_BASIS = "engine_books"
 
 
 def merge_llm_verdict(engine_action: Any, final_signal: Any) -> str:
@@ -403,15 +407,16 @@ class HydraAgent:
         # overwritten to exchange tradable USD and must not be the yardstick.
         self._constructor_balance_split = float(initial_balance) / max(1, len(pairs))
         self._competition_start_balance = None  # Set once on first start, persisted across resumes
-        # Portfolio-level drawdown (v2.16.2): per-pair engine.max_drawdown is a
-        # pinned running max across tiny dips; it does not reflect exchange-wide
-        # equity. Track here using total_usd from _compute_balance_usd so the
-        # dashboard's "Max DD" widget is meaningful. Persisted across --resume.
+        # Portfolio-level drawdown: a coordinated dip across every pair, which
+        # the per-engine breakers each see only a share of. Measured on the
+        # engine books (_books_equity_usd), the same thing the backtest sums.
+        # Persisted across --resume.
         self._portfolio_peak_usd: float = 0.0
         self._portfolio_max_drawdown_pct: float = 0.0
         self._portfolio_current_drawdown_pct: float = 0.0
-        # PR-B / B4: portfolio-level BUY halt when max DD ≥ 15%. SELL always
-        # allowed (exit guarantee). Sticky for the session once tripped.
+        # PR-B / B4: portfolio-level BUY halt when current DD ≥ 15%. SELL
+        # always allowed (exit guarantee). Sticky until the operator reset;
+        # the flag itself is saved with the snapshot.
         self._portfolio_buy_halted: bool = False
         self.PORTFOLIO_CIRCUIT_BREAKER_PCT: float = 15.0
         self.interval = interval_seconds
@@ -1337,6 +1342,13 @@ class HydraAgent:
             "portfolio_drawdown": {
                 "peak_usd": getattr(self, "_portfolio_peak_usd", 0.0),
                 "max_pct": getattr(self, "_portfolio_max_drawdown_pct", 0.0),
+                # The halt itself. `max_pct` is a record that never falls,
+                # so reading the halt back from it re-armed on every resume
+                # after an operator reset.
+                "buy_halted": bool(getattr(self, "_portfolio_buy_halted", False)),
+                # What `peak_usd` measures. Without it the peak is from the
+                # whole-account era and cannot be compared to engine books.
+                "basis": PORTFOLIO_DD_BASIS,
             },
             # v2.18.0: persist DerivativesStream OI + mark-price history
             # so `oi_delta_1h_pct` / `oi_price_regime` are live within
@@ -1590,38 +1602,59 @@ class HydraAgent:
                 self._competition_start_balance = float(snapshot["competition_start_balance"])
             # Restore portfolio-level drawdown so weeks-long peak is preserved
             # across --resume. Fresh start (no key) leaves the zeros set in __init__.
-            pdd = snapshot.get("portfolio_drawdown") or {}
-            try:
-                self._portfolio_peak_usd = float(pdd.get("peak_usd", 0.0))
-                self._portfolio_max_drawdown_pct = float(pdd.get("max_pct", 0.0))
-                # Re-arm sticky portfolio BUY halt if session already breached 15%.
-                # getattr: tests may construct via __new__ without __init__.
-                #
-                # `_portfolio_max_drawdown_pct` is MONOTONE (a running max), so
-                # once it crosses the breaker it can never fall back below it —
-                # this re-arm therefore fires on every future resume forever.
-                # Same one-way ratchet as the per-engine halt; same escape hatch,
-                # read once here. The drawdown record itself is never reset, so
-                # the breaker re-arms on the next real breach.
-                cb = float(getattr(self, "PORTFOLIO_CIRCUIT_BREAKER_PCT", 15.0))
-                if self._portfolio_max_drawdown_pct >= cb:
-                    if os.environ.get("HYDRA_RESET_CIRCUIT_BREAKER") == "1":
-                        print(f"  [HYDRA] Portfolio circuit breaker CLEARED by "
-                              f"HYDRA_RESET_CIRCUIT_BREAKER=1 (recorded max DD "
-                              f"{self._portfolio_max_drawdown_pct:.2f}% >= {cb:.1f}%). "
-                              f"Drawdown history preserved.")
-                        self._portfolio_buy_halted = False
-                    else:
-                        self._portfolio_buy_halted = True
-                        print(f"  [HYDRA] RESUMED WITH PORTFOLIO BUY HALT ACTIVE — "
-                              f"recorded max DD {self._portfolio_max_drawdown_pct:.2f}% "
-                              f">= {cb:.1f}%. New BUYs blocked portfolio-wide; SELL "
-                              f"still allowed. Set HYDRA_RESET_CIRCUIT_BREAKER=1 to "
-                              f"clear once reviewed.")
-            except (TypeError, ValueError):
+            pdd = snapshot.get("portfolio_drawdown")
+            if not isinstance(pdd, dict):
+                pdd = {}
+
+            def _pdd_number(key: str) -> float:
+                # An unreadable number is 0. It must not raise past the halt
+                # flag below and drop a saved halt.
+                try:
+                    value = float(pdd.get(key, 0.0))
+                except (TypeError, ValueError):
+                    return 0.0
+                return value if math.isfinite(value) and value > 0 else 0.0
+
+            reset_asked = os.environ.get("HYDRA_RESET_CIRCUIT_BREAKER") == "1"
+            if reset_asked:
+                print("  [HYDRA] HYDRA_RESET_CIRCUIT_BREAKER=1 is set: every saved "
+                      "halt is cleared on this start AND on each later start while "
+                      "it stays set. Unset it once this start has cleared the halt.")
+            cb = float(getattr(self, "PORTFOLIO_CIRCUIT_BREAKER_PCT", 15.0))
+            self._portfolio_max_drawdown_pct = _pdd_number("max_pct")
+            if pdd.get("basis") == PORTFOLIO_DD_BASIS:
+                self._portfolio_peak_usd = _pdd_number("peak_usd")
+                halted = pdd.get("buy_halted") is True
+            else:
+                # Written before the halt flag and the basis were saved.
+                # That peak is whole-account dollars: against engine books
+                # it reads as an instant breach, so the peak restarts at the
+                # first equity note. The halt is read the old way, from the
+                # record, and stays until the operator reset; an upgrade
+                # never clears a halt by itself.
                 self._portfolio_peak_usd = 0.0
-                self._portfolio_max_drawdown_pct = 0.0
-                self._portfolio_buy_halted = False
+                halted = self._portfolio_max_drawdown_pct >= cb
+            # `max_pct` is a record that never falls. Arming resume on it
+            # re-halted every later start after a reset, even at a new
+            # equity peak; the saved flag is what carries the halt now.
+            if halted and reset_asked:
+                print(f"  [HYDRA] Portfolio circuit breaker CLEARED by "
+                      f"HYDRA_RESET_CIRCUIT_BREAKER=1 (recorded max DD "
+                      f"{self._portfolio_max_drawdown_pct:.2f}%). New drawdown "
+                      f"epoch: the peak restarts at current engine-book equity; "
+                      f"the recorded max stays. BUYs are blocked again 15% "
+                      f"below the new peak.")
+                halted = False
+                # Kept, the old peak re-armed on the first tick: the books
+                # are still 15% under it and blocked BUYs cannot recover.
+                self._portfolio_peak_usd = 0.0
+            elif halted:
+                print(f"  [HYDRA] RESUMED WITH PORTFOLIO BUY HALT ACTIVE — "
+                      f"recorded max DD {self._portfolio_max_drawdown_pct:.2f}%. "
+                      f"New BUYs blocked portfolio-wide; SELL "
+                      f"still allowed. Set HYDRA_RESET_CIRCUIT_BREAKER=1 to "
+                      f"clear once reviewed.")
+            self._portfolio_buy_halted = halted
             # Carry the persisted userref floor into _userref_counter. The
             # _reseed_userref_from_history() call in __init__ will raise it
             # further if the journal reveals higher values.
@@ -5081,7 +5114,141 @@ class HydraAgent:
         engine's pre-split cash back. Engines that are flat and have no
         working order are still seeded, from the free pool minus cash
         already sitting on a locked book.
+
+        Seeding moves capital; it is not a trading result. Every write of
+        engine cash here goes through ``_reseed_engine_cash``, which keeps
+        the engine's drawdown fraction, and the portfolio peak is rescaled
+        by the same net flow.
         """
+        books_before = self._books_equity_usd(strict=False, real_only=True)
+        self._seed_engine_cash(per_pair_usd)
+        self._rebase_portfolio_peak_for_flow(
+            books_before, self._books_equity_usd(strict=False))
+
+    @staticmethod
+    def _reseed_engine_cash(engine, cash: float, price: float) -> float:
+        """Replace an engine's quote cash with a seeded amount; return equity.
+
+        The difference between the cash an engine had and the cash it is
+        given is a capital flow: a deposit, a withdrawal, a manual trade,
+        or the equal re-split of the quote pool across flat engines at
+        boot. None of it is that engine's trading result. The peak is
+        rescaled so the drawdown fraction is the same before and after.
+
+        Keeping the old peak (``max(old_peak, equity)``) did both wrong
+        things. A smaller slice read as a loss and armed the 15% breaker
+        on the next tick, on a flat engine that had lost nothing. A larger
+        slice lifted equity to or past the peak and erased a real
+        drawdown. With no flow, this leaves the peak where it was.
+
+        A book seeded to nothing has no peak, and one seeded from nothing
+        starts its peak at the new equity.
+        """
+        held = float(engine.position.size or 0.0) * float(price or 0.0)
+        old_equity = float(engine.balance or 0.0) + held
+        old_peak = float(engine.peak_equity or 0.0)
+        new_equity = float(cash) + held
+        engine.balance = cash
+        engine.initial_balance = new_equity if new_equity > 0 else 0.0
+        if new_equity <= 0:
+            engine.peak_equity = 0.0
+        elif old_equity > 0 and old_peak > old_equity:
+            engine.peak_equity = new_equity * (old_peak / old_equity)
+        else:
+            engine.peak_equity = new_equity
+        return new_equity
+
+    def _is_placeholder_book(self, engine) -> bool:
+        """True for a live engine still holding the constructor's --balance split.
+
+        That cash was never on the exchange, so it is not part of the
+        books a seed is compared against.
+        """
+        if getattr(self, "paper", False):
+            return False
+        split = getattr(self, "_constructor_balance_split", None)
+        if split is None:
+            return False
+        try:
+            return (
+                float(engine.position.size or 0.0) <= 0
+                and int(getattr(engine, "total_trades", 0) or 0) == 0
+                and abs(float(engine.balance or 0.0) - float(split)) <= 1e-9
+                and float(engine.peak_equity or 0.0) <= float(split) + 1e-9
+            )
+        except (TypeError, ValueError, AttributeError):
+            return False
+
+    def _books_equity_usd(self, strict: bool = True,
+                          real_only: bool = False) -> Optional[float]:
+        """USD value of the engine books: quote cash plus held positions.
+
+        This is what the portfolio breaker measures, and what the backtest
+        sums. Coins the operator holds outside the engine books are not in
+        it, and neither is a deposit or withdrawal until a seed puts it on
+        a book (where it is handled as a flow, not a result).
+
+        strict: None when a held position has no price yet, or a non-stable
+        quote has no USD rate. Valued at zero, either would read as a loss.
+        Not strict: an unpriced position is valued at its entry price, for
+        a before/after comparison that uses the same value on both sides.
+        real_only: leave out live engines still on the constructor's
+        --balance placeholder.
+        """
+        usd = self._get_asset_prices()
+        total = 0.0
+        for pair, engine in self.engines.items():
+            if real_only and self._is_placeholder_book(engine):
+                continue
+            quote = pair.split("/")[1] if "/" in pair else ""
+            try:
+                cash = float(engine.balance or 0.0)
+                size = float(engine.position.size or 0.0)
+                price = float(engine.prices[-1]) if engine.prices else 0.0
+            except (TypeError, ValueError, AttributeError):
+                return None
+            if size > 0 and not (math.isfinite(price) and price > 0):
+                if strict:
+                    return None
+                try:
+                    price = float(engine.position.avg_entry or 0.0)
+                except (TypeError, ValueError):
+                    price = 0.0
+            value = cash + size * price
+            if quote in STABLE_QUOTES:
+                total += value
+                continue
+            rate = float(usd.get(quote, 0.0) or 0.0)
+            if not (math.isfinite(rate) and rate > 0):
+                if strict and value > 0:
+                    return None
+                continue
+            total += value * rate
+        return total if math.isfinite(total) else None
+
+    def _rebase_portfolio_peak_for_flow(self, before: Optional[float],
+                                        after: Optional[float]) -> None:
+        """Capital moved onto or off the engine books: keep the drawdown fraction.
+
+        The portfolio half of ``_reseed_engine_cash``. A withdrawal used to
+        sit under the saved peak as a permanent drawdown that no reset
+        could clear, and a deposit lifted equity past the peak and erased
+        a real one.
+        """
+        peak = float(getattr(self, "_portfolio_peak_usd", 0.0) or 0.0)
+        if peak <= 0 or before is None or after is None:
+            return
+        if before <= 0 or after <= 0:
+            # Nothing on the books on one side: no fraction to carry. The
+            # next equity note starts the peak.
+            self._portfolio_peak_usd = 0.0
+            return
+        if abs(after - before) <= 1e-9 * max(before, 1.0):
+            return
+        self._portfolio_peak_usd = peak * (after / before)
+
+    def _seed_engine_cash(self, per_pair_usd: float) -> None:
+        """Write each engine's quote cash and `tradable` flag (see caller)."""
         prices = self._get_asset_prices()
 
         # Per-quote pools (live only): each stable-quoted engine is funded
@@ -5150,35 +5317,15 @@ class HydraAgent:
                     )
                 else:
                     slice_quote = _stable_slice(quote)
-                equity = slice_quote + engine.position.size * current_price
-                old_peak = float(engine.peak_equity or 0.0)
-                dummy_split = float(
-                    getattr(self, "_constructor_balance_split", None)
-                    or (
-                        (getattr(self, "initial_balance", 0.0) or 0.0)
-                        / max(1, len(self.pairs) or 1)
-                    )
-                )
-                engine.balance = slice_quote
-                engine.initial_balance = equity
-                # PR-B / B3: never rebase a *real* peak downward on re-seed
-                # / resume. The constructor `--balance` split is not a real
-                # peak: live accounts with no USD cash used to inherit it,
-                # print DD 100%, and arm the 15% BUY halt on tick 1.
-                if (
-                    not self.paper
-                    and slice_quote <= 0.0
-                    and engine.position.size <= 0
-                    and old_peak <= dummy_split + 1e-9
-                ):
-                    engine.peak_equity = 0.0
+                # A seed is a capital flow (see _reseed_engine_cash): the
+                # drawdown fraction carries over, so a restart cannot erase
+                # a loss (PR-B / B3) and a smaller pool cannot invent one.
+                equity = self._reseed_engine_cash(engine, slice_quote, current_price)
+                if not self.paper and equity <= 0.0:
                     print(
                         f"  [HYDRA] {pair}: unfunded {quote} pool — engine "
-                        f"cash $0 (sizer will refuse BUYs). Not a drawdown; "
-                        f"peak cleared of constructor --balance placeholder."
+                        f"cash $0 (sizer will refuse BUYs). Not a drawdown."
                     )
-                else:
-                    engine.peak_equity = max(old_peak, equity)
                 # Always tradable: with a zero pool the sizer sizes entries
                 # to 0 (balance < costmin) but held inventory stays sellable.
                 engine.tradable = True
@@ -5196,12 +5343,7 @@ class HydraAgent:
             if os.environ.get("HYDRA_BRIDGE_TRADING") != "1":
                 engine.exit_only = True
                 has_position = engine.position.size > 0
-                equity = engine.position.size * current_price
-                engine.balance = 0.0
-                engine.initial_balance = equity if equity > 0 else 0.0
-                engine.peak_equity = max(
-                    float(engine.peak_equity or 0.0), engine.initial_balance,
-                )
+                self._reseed_engine_cash(engine, 0.0, current_price)
                 engine.tradable = has_position  # exit path stays open until flat
                 state_label = "draining position" if has_position else "signal-only"
                 print(f"  [HYDRA] {pair}: {state_label} — bridge trading off "
@@ -5215,15 +5357,9 @@ class HydraAgent:
             if self.paper:
                 if quote in prices and prices[quote] > 0:
                     balance_quote = per_pair_usd / prices[quote]
-                    equity = balance_quote + engine.position.size * current_price
-                    engine.balance = balance_quote
-                    engine.initial_balance = equity
-                    engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
                 else:
-                    equity = per_pair_usd + engine.position.size * current_price
-                    engine.balance = per_pair_usd
-                    engine.initial_balance = equity
-                    engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
+                    balance_quote = per_pair_usd
+                self._reseed_engine_cash(engine, balance_quote, current_price)
                 engine.tradable = True
                 continue
 
@@ -5231,10 +5367,7 @@ class HydraAgent:
             real_quote = self._get_real_quote_balance(quote) or 0.0
             costmin = PositionSizer.MIN_COST.get(quote, 0.0)
             if real_quote > costmin:
-                equity = real_quote + engine.position.size * current_price
-                engine.balance = real_quote
-                engine.initial_balance = equity
-                engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
+                equity = self._reseed_engine_cash(engine, real_quote, current_price)
                 engine.tradable = True
                 print(f"  [HYDRA] {pair}: tradable — real balance {real_quote:.8f} {quote} "
                       f"(equity {equity:.8f})")
@@ -5242,13 +5375,7 @@ class HydraAgent:
                 # Informational-only: engine ticks normally, surfaces
                 # regime + signal for confluence, but _maybe_execute
                 # short-circuits so no placement is attempted.
-                equity = engine.position.size * current_price
-                engine.balance = 0.0
-                engine.initial_balance = equity if equity > 0 else 0.0
-                engine.peak_equity = max(
-                    float(engine.peak_equity or 0.0),
-                    engine.initial_balance,
-                )
+                self._reseed_engine_cash(engine, 0.0, current_price)
                 engine.tradable = False
                 print(f"  [HYDRA] {pair}: informational-only — no {quote} held "
                       f"(balance {real_quote:.8f}, costmin {costmin})")
@@ -5266,7 +5393,19 @@ class HydraAgent:
         Stable-quoted pairs (USD/USDC/USDT) are skipped because their
         tradability depends on the shared tradable USD pool, not on
         holding a specific currency.
+
+        Cash written onto or taken off a book here is a capital flow, as
+        in ``_set_engine_balances``: the engine keeps its drawdown fraction
+        and the portfolio peak is rescaled by the net flow.
         """
+        reseeds = any(p.split("/")[1] not in STABLE_QUOTES for p in self.pairs)
+        books_before = self._books_equity_usd(strict=False) if reseeds else None
+        self._refresh_tradable_flags_inner()
+        if reseeds:
+            self._rebase_portfolio_peak_for_flow(
+                books_before, self._books_equity_usd(strict=False))
+
+    def _refresh_tradable_flags_inner(self) -> None:
         for pair in self.pairs:
             engine = self.engines[pair]
             quote = pair.split("/")[1]
@@ -5296,11 +5435,9 @@ class HydraAgent:
             should_be_tradable = real_quote > costmin
             if should_be_tradable and not engine.tradable:
                 current_price = engine.prices[-1] if engine.prices else 0
-                equity = real_quote + engine.position.size * current_price
-                engine.balance = real_quote
-                engine.initial_balance = equity
-                # PR-B / B3: preserve historical peak across re-activation.
-                engine.peak_equity = max(float(engine.peak_equity or 0.0), equity)
+                # PR-B / B3: the drawdown fraction carries across the
+                # re-activation; the cash that arrived is a flow, not a gain.
+                equity = self._reseed_engine_cash(engine, real_quote, current_price)
                 # Do NOT zero max_drawdown — economic peak memory must remain.
                 engine.equity_history = []
                 engine.tradable = True
@@ -5628,7 +5765,13 @@ class HydraAgent:
               f"{min_size} — wrote off {written:.8f}")
 
     def _note_portfolio_equity(self, total_usd: float) -> None:
-        """Arm the portfolio buy halt on current drawdown, before orders."""
+        """Arm the portfolio buy halt on current drawdown, before orders.
+
+        `total_usd` is the engine-book equity (`_books_equity_usd`), not the
+        Kraken account total. The account total counted coins no engine
+        held and every deposit or withdrawal, so a fall in the operator's
+        own BTC, or cash leaving the account, blocked every BUY.
+        """
         if total_usd <= 0:
             return
         if total_usd > self._portfolio_peak_usd:
@@ -5657,9 +5800,11 @@ class HydraAgent:
         )
         if ws_bal:
             self._cached_balance = ws_bal
-        bal = getattr(self, "_cached_balance", {}) or {}
-        breakdown = self._compute_balance_usd(bal) if bal else {}
-        self._note_portfolio_equity(float(breakdown.get("total_usd") or 0.0))
+        # None: a held position has no price yet. Skip rather than count it
+        # as worth nothing, which would read as a breach and stick.
+        books_equity = self._books_equity_usd()
+        if books_equity is not None:
+            self._note_portfolio_equity(books_equity)
 
     def _publish_tick_state(self, tick: int, all_states: dict, elapsed: float) -> None:
         """Refresh pair books and broadcast. Drops `_pre_trade_snapshot` first."""
@@ -5748,16 +5893,14 @@ class HydraAgent:
             "total_usd": 0, "tradable_usd": 0, "staked_usd": 0, "assets": []
         }
 
-        # v2.16.2: portfolio-level drawdown tracking. Uses total_usd so a
-        # coordinated dip across all pairs (or a forex swing) is captured
-        # rather than buried under the max-of-per-pair aggregation the
-        # dashboard used to do. Zero totals (balance fetch failed) are
-        # skipped so we never register a spurious 100% drawdown.
-        total_usd_live = float(balance_usd.get("total_usd") or 0.0)
-        if total_usd_live > 0:
-            if total_usd_live > self._portfolio_peak_usd:
-                self._portfolio_peak_usd = total_usd_live
-            self._note_portfolio_equity(total_usd_live)
+        # Portfolio-level drawdown: a coordinated dip across all pairs, which
+        # the max-of-per-pair aggregation buried. Read from the engine books,
+        # as in _arm_portfolio_before_orders; `balance_usd` above is the
+        # whole account and is display only. An unpriced position (None) or
+        # empty books are skipped so they never register as a drawdown.
+        books_equity = self._books_equity_usd()
+        if books_equity is not None:
+            self._note_portfolio_equity(books_equity)
 
         pairs_data = {}
         for pair, state in all_states.items():
@@ -6215,7 +6358,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.34.4",
+            "version": "2.34.5",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

@@ -1619,6 +1619,12 @@ class HydraEngine:
         # True only when this halt was armed by an unfilled buy whose
         # pre-trade book was still under 15%. A real breach stays False.
         self._halt_from_unfilled_buy = False
+        # Set by an operator reset: the breaker's peak is re-based to the
+        # equity at the first mark after it (see _rebase_peak_if_pending).
+        self._peak_rebase_pending = False
+        # Counts operator resets. A position snapshot taken in an earlier
+        # epoch must not put that epoch's peak back (restore_position).
+        self._peak_epoch = 0
         self.gross_profit = 0.0
         self.gross_loss = 0.0
 
@@ -2012,6 +2018,7 @@ class HydraEngine:
                            the signal before committing to a trade.
         """
         self.tick_count += 1
+        self._rebase_peak_if_pending()
 
         if self.halted:
             # PR-A: breaker stops new risk but must not freeze inventory.
@@ -2136,9 +2143,9 @@ class HydraEngine:
         # recovered account back at its old peak — which made the one
         # documented escape hatch a no-op and left new BUYs dead for good.
         # `halted` is still sticky once tripped (only the explicit operator
-        # reset clears it), so this does not auto-resume mid-session; it only
-        # means the reset re-arms when the account is *still* underwater,
-        # which is what restore_runtime already claims.
+        # reset clears it), so this does not auto-resume mid-session. The
+        # reset also re-bases `peak_equity` (see _rebase_peak_if_pending),
+        # so this arms again on a further 15% from the reset point.
         if self.tradable and drawdown >= self.CIRCUIT_BREAKER_PCT:
             self.halted = True
             self.halt_reason = (
@@ -2176,6 +2183,40 @@ class HydraEngine:
             return 0.0
         equity = self.balance + self.position.size * price
         return (self.peak_equity - equity) / self.peak_equity * 100.0
+
+    def _rebase_peak_if_pending(self, final: bool = True) -> None:
+        """Start the drawdown epoch an operator reset asked for.
+
+        A breaker halt flattens the book, so what is left is cash sitting
+        15% or more under the old peak. Cash cannot recover and BUYs are
+        blocked while halted, so a reset that kept the old peak re-halted
+        on the next tick and could never take effect. The reset therefore
+        moves the peak to the equity at the reset; `max_drawdown` is not
+        touched and stays as the record. The breaker arms again on a
+        further 15% from that point.
+
+        The epoch starts at the first tick after the reset (`final`), on
+        that tick's price, not on the last price in the snapshot: the
+        agent may have been down for days, and boot reconciliation can
+        still change the book before then. Until that tick, restore sets
+        the peak to the snapshot's equity so nothing reads the old one. A
+        flat book is its cash; a held position with no price yet waits.
+        The pending mark is saved with the snapshot.
+        """
+        if not getattr(self, "_peak_rebase_pending", False):
+            return
+        if self.position.size > 0:
+            price = self.prices[-1] if self.prices else 0.0
+            if not math.isfinite(price) or price <= 0:
+                return
+            equity = self.balance + self.position.size * price
+        else:
+            equity = self.balance
+        if not math.isfinite(equity):
+            return
+        self.peak_equity = max(0.0, equity)
+        if final:
+            self._peak_rebase_pending = False
 
     def release_unfilled_buy_halt(self) -> bool:
         """Clear a breaker halt when the restored book is back under 15%.
@@ -2911,6 +2952,8 @@ class HydraEngine:
             "tradable": self.tradable,
             # A cancelled sleeve re-size must not count as done.
             "sleeve_sized_day": getattr(self, "_sleeve_sized_day", None),
+            # Which drawdown epoch `peak_equity` above belongs to.
+            "peak_epoch": getattr(self, "_peak_epoch", 0),
         }
 
     def restore_position(self, snap: Dict[str, Any]) -> None:
@@ -2926,7 +2969,11 @@ class HydraEngine:
         self.trades = self.trades[:snap["trades_len"]]
         # Restore analytics state that tick() may have updated before rollback
         self.equity_history = self.equity_history[:snap["equity_history_len"]]
-        self.peak_equity = snap["peak_equity"]
+        # A snapshot taken before an operator reset holds the peak that
+        # reset retired. Putting it back re-halted the engine on the next
+        # tick, undoing the reset. Snapshots without the mark are epoch 0.
+        if snap.get("peak_epoch", 0) == getattr(self, "_peak_epoch", 0):
+            self.peak_equity = snap["peak_equity"]
         self.max_drawdown = snap["max_drawdown"]
         self.gross_profit = snap["gross_profit"]
         self.gross_loss = snap["gross_loss"]
@@ -3195,6 +3242,8 @@ class HydraEngine:
             "halted": self.halted,
             "halt_reason": self.halt_reason,
             "halt_from_unfilled_buy": bool(self._halt_from_unfilled_buy),
+            "peak_rebase_pending": bool(getattr(self, "_peak_rebase_pending", False)),
+            "peak_epoch": int(getattr(self, "_peak_epoch", 0) or 0),
             "gross_profit": self.gross_profit,
             "gross_loss": self.gross_loss,
             "equity_history": self.equity_history[-500:],
@@ -3280,22 +3329,33 @@ class HydraEngine:
         #
         # HYDRA_RESET_CIRCUIT_BREAKER=1 is that way out — a deliberate,
         # explicit operator act, read once at resume. It clears the halt flag
-        # ONLY; peak_equity and max_drawdown are untouched above, so the
-        # drawdown record is preserved and the breaker re-arms immediately if
-        # the account is still underwater. Auto-clearing on resume would silently
-        # re-enable risk after a breach, which is the one thing the breaker exists
-        # to prevent.
+        # and starts a new drawdown epoch: the peak moves to the equity at the
+        # reset (below, once the book can be marked). max_drawdown is
+        # untouched above and stays as the record. Keeping the old peak made
+        # the reset a no-op after every real breach: the halt flattens the
+        # book, the cash left is still 15% under that peak, and the next tick
+        # re-halted. Auto-clearing on resume would silently re-enable risk
+        # after a breach, which is the one thing the breaker exists to prevent.
         self.halted = bool(snapshot.get("halted", False))
         self.halt_reason = str(snapshot.get("halt_reason", ""))
         # Absent on snapshots from before this mark existed: stay sticky.
         self._halt_from_unfilled_buy = bool(snapshot.get("halt_from_unfilled_buy", False))
+        self._peak_rebase_pending = snapshot.get("peak_rebase_pending") is True
+        try:
+            self._peak_epoch = max(0, int(snapshot.get("peak_epoch") or 0))
+        except (TypeError, ValueError):
+            self._peak_epoch = 0
         if self.halted and os.environ.get("HYDRA_RESET_CIRCUIT_BREAKER") == "1":
             print(f"  [ENGINE] {self.asset}: circuit breaker CLEARED by "
                   f"HYDRA_RESET_CIRCUIT_BREAKER=1 (was: {self.halt_reason[:60]}). "
-                  f"Drawdown history preserved; breaker re-arms on the next breach.")
+                  f"New drawdown epoch: peak {self.peak_equity:.2f} is re-based to "
+                  f"current equity; max drawdown {self.max_drawdown:.2f}% stays on "
+                  f"record. The breaker arms again 15% below the new peak.")
             self.halted = False
             self.halt_reason = ""
             self._halt_from_unfilled_buy = False
+            self._peak_rebase_pending = True
+            self._peak_epoch += 1
         elif self.halted:
             print(f"  [ENGINE] {self.asset}: RESUMED STILL HALTED — new BUYs "
                   f"blocked, SELL/flatten still allowed. Reason: "
@@ -3372,6 +3432,9 @@ class HydraEngine:
                 f"{dropped_candles} malformed candle row(s) from snapshot",
                 file=sys.stderr,
             )
+        # Prices are back. Until the first tick marks the new epoch, hold the
+        # peak at the snapshot's equity so nothing reads the retired one.
+        self._rebase_peak_if_pending(final=False)
 
     def _candle_status(self) -> str:
         """Check if the latest candle is still forming or closed."""

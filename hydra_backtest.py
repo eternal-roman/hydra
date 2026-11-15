@@ -50,7 +50,7 @@ from hydra_engine import (
     session_confidence_delta,
 )
 
-HYDRA_VERSION = "2.34.4"
+HYDRA_VERSION = "2.34.5"
 
 # Reasonable defaults; enforced at config construction and runtime.
 DEFAULT_MAX_TICKS = 200_000

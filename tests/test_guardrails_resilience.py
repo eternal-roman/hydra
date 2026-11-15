@@ -106,20 +106,44 @@ class TestCircuitBreakerResumeReset:
         assert eng.halt_reason == ""
 
     def test_reset_does_not_erase_drawdown_record(self, monkeypatch):
-        """The escape hatch clears the FLAG only. Peak equity and max drawdown
-        must survive, so the breaker re-arms immediately if still underwater."""
+        """The escape hatch keeps max drawdown as the record and starts a new
+        epoch at the current equity.
+
+        It used to keep the peak as well, "so the breaker re-arms
+        immediately if still underwater". A halt flattens the book, so the
+        book is always cash still underwater: the reset re-armed on the
+        next tick every time and could not take effect."""
         monkeypatch.setenv("HYDRA_RESET_CIRCUIT_BREAKER", "1")
         eng = HydraEngine(initial_balance=1000, asset="BTC/USD")
         snap = {
             "halted": True,
             "halt_reason": "drawdown 15.2% >= 15.0%",
+            "balance": 1272.0,
             "peak_equity": 1500.0,
             "max_drawdown": 15.2,
         }
         eng.restore_runtime(snap)
         assert eng.halted is False
-        assert eng.peak_equity == 1500.0
         assert eng.max_drawdown == 15.2
+        assert eng.peak_equity == 1272.0
+
+    def test_resume_without_reset_keeps_the_peak(self, monkeypatch):
+        """Negative control: only the operator reset moves the peak."""
+        monkeypatch.delenv("HYDRA_RESET_CIRCUIT_BREAKER", raising=False)
+        eng = HydraEngine(initial_balance=1000, asset="BTC/USD")
+        eng.restore_runtime({"halted": True, "halt_reason": "x", "balance": 1272.0,
+                             "peak_equity": 1500.0, "max_drawdown": 15.2})
+        assert eng.halted is True
+        assert eng.peak_equity == 1500.0
+
+    def test_reset_leaves_an_engine_that_is_not_halted_alone(self, monkeypatch):
+        """The env var clears a halt. It does not forgive a drawdown that
+        never reached the breaker."""
+        monkeypatch.setenv("HYDRA_RESET_CIRCUIT_BREAKER", "1")
+        eng = HydraEngine(initial_balance=1000, asset="BTC/USD")
+        eng.restore_runtime({"halted": False, "balance": 1350.0,
+                             "peak_equity": 1500.0, "max_drawdown": 10.0})
+        assert eng.peak_equity == 1500.0
 
     def test_env_set_to_other_value_does_not_clear(self, monkeypatch):
         """Negative control: only the exact opt-in string clears the halt."""
