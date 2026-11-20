@@ -1,0 +1,447 @@
+{
+  "purpose": "Re-score heartbeat after the resolve_idx labeler fix. A checkpoint at or after the resolving candle is dropped. Historical PASS AUCs in HONEST_FINDINGS predate this fix.",
+  "weights_written": false,
+  "enabled_tiers_in_replay": [
+    0,
+    1
+  ],
+  "promote_auc": 0.7,
+  "pairs": {
+    "BTC/USD": {
+      "n_trades": 4793798,
+      "n_candles": 3986,
+      "n_events": 69,
+      "n_clean": 69,
+      "n_tainted": 0,
+      "n_dropped_resolved_by_bounce3": 34,
+      "n_scored_bounce3": 35,
+      "scored_reversal": 16,
+      "scored_fake": 19,
+      "n_vectors": 35,
+      "tier0_mean_auc": {
+        "bounce+1": 0.4833,
+        "bounce+2": 0.4833,
+        "bounce+3": 0.3833
+      },
+      "tier01_mean_auc": {
+        "bounce+1": 0.5083,
+        "bounce+2": 0.3417,
+        "bounce+3": 0.3833
+      },
+      "tier0_walk_forward": [
+        {
+          "fold": 3,
+          "train_range": "2026-04-23..2026-06-01",
+          "test_range": "2026-06-04..2026-06-20",
+          "train_n": 21,
+          "test_n": 7,
+          "no_overlap": true,
+          "auc_bounce1": 0.3,
+          "auc_bounce2": 0.3,
+          "auc_bounce3": 0.1,
+          "weights": {
+            "clv": 0.0537,
+            "ofi": 0.0227,
+            "ofi_momentum": 0.8579,
+            "range_atr": 0.1448,
+            "vol_z": -0.026
+          }
+        },
+        {
+          "fold": 4,
+          "train_range": "2026-04-23..2026-06-20",
+          "test_range": "2026-06-27..2026-07-17",
+          "train_n": 28,
+          "test_n": 7,
+          "no_overlap": true,
+          "auc_bounce1": 0.6667,
+          "auc_bounce2": 0.6667,
+          "auc_bounce3": 0.6667,
+          "weights": {
+            "clv": -0.3425,
+            "ofi": 0.0018,
+            "ofi_momentum": 0.602,
+            "range_atr": 0.1631,
+            "vol_z": -0.0677
+          }
+        }
+      ],
+      "tier01_walk_forward": [
+        {
+          "fold": 3,
+          "train_range": "2026-04-23..2026-06-01",
+          "test_range": "2026-06-04..2026-06-20",
+          "train_n": 21,
+          "test_n": 7,
+          "no_overlap": true,
+          "auc_bounce1": 0.1,
+          "auc_bounce2": 0.1,
+          "auc_bounce3": 0.1,
+          "weights": {
+            "clv": -0.2926,
+            "ofi": -0.0188,
+            "ofi_momentum": 0.6635,
+            "range_atr": 0.3571,
+            "vol_z": 0.0296,
+            "aggressor_run": -0.2872,
+            "flow_persistence": -0.1523,
+            "size_skew": -0.0032,
+            "vwap_dev": 0.3895,
+            "wick_absorption": -0.3746
+          }
+        },
+        {
+          "fold": 4,
+          "train_range": "2026-04-23..2026-06-20",
+          "test_range": "2026-06-27..2026-07-17",
+          "train_n": 28,
+          "test_n": 7,
+          "no_overlap": true,
+          "auc_bounce1": 0.9167,
+          "auc_bounce2": 0.5833,
+          "auc_bounce3": 0.6667,
+          "weights": {
+            "clv": -0.5743,
+            "ofi": 0.2421,
+            "ofi_momentum": 0.4915,
+            "range_atr": 0.2859,
+            "vol_z": -0.0526,
+            "aggressor_run": -0.0771,
+            "flow_persistence": -0.139,
+            "size_skew": -0.2647,
+            "vwap_dev": 0.5963,
+            "wick_absorption": 0.0321
+          }
+        }
+      ],
+      "seconds": 156.6
+    },
+    "ETH/USD": {
+      "n_trades": 2060433,
+      "n_candles": 3984,
+      "n_events": 77,
+      "n_clean": 77,
+      "n_tainted": 0,
+      "n_dropped_resolved_by_bounce3": 38,
+      "n_scored_bounce3": 39,
+      "scored_reversal": 17,
+      "scored_fake": 22,
+      "n_vectors": 39,
+      "tier0_mean_auc": {
+        "bounce+1": 0.4584,
+        "bounce+2": 0.575,
+        "bounce+3": 0.6333
+      },
+      "tier01_mean_auc": {
+        "bounce+1": 0.475,
+        "bounce+2": 0.55,
+        "bounce+3": 0.55
+      },
+      "tier0_walk_forward": [
+        {
+          "fold": 3,
+          "train_range": "2026-04-21..2026-06-01",
+          "test_range": "2026-06-01..2026-06-17",
+          "train_n": 21,
+          "test_n": 7,
+          "no_overlap": true,
+          "auc_bounce1": 0.4167,
+          "auc_bounce2": 0.5833,
+          "auc_bounce3": 0.6667,
+          "weights": {
+            "clv": 0.6046,
+            "ofi": -0.21,
+            "ofi_momentum": 0.282,
+            "range_atr": -0.0486,
+            "vol_z": -0.0413
+          }
+        },
+        {
+          "fold": 4,
+          "train_range": "2026-04-21..2026-06-17",
+          "test_range": "2026-06-19..2026-07-17",
+          "train_n": 28,
+          "test_n": 11,
+          "no_overlap": true,
+          "auc_bounce1": 0.5,
+          "auc_bounce2": 0.5667,
+          "auc_bounce3": 0.6,
+          "weights": {
+            "clv": 0.4908,
+            "ofi": -0.1866,
+            "ofi_momentum": 0.552,
+            "range_atr": -0.0299,
+            "vol_z": -0.0545
+          }
+        }
+      ],
+      "tier01_walk_forward": [
+        {
+          "fold": 3,
+          "train_range": "2026-04-21..2026-06-01",
+          "test_range": "2026-06-01..2026-06-17",
+          "train_n": 21,
+          "test_n": 7,
+          "no_overlap": true,
+          "auc_bounce1": 0.25,
+          "auc_bounce2": 0.3333,
+          "auc_bounce3": 0.3333,
+          "weights": {
+            "clv": 0.8197,
+            "ofi": -0.2201,
+            "ofi_momentum": -0.3619,
+            "range_atr": 0.3445,
+            "vol_z": -0.1418,
+            "aggressor_run": -0.6691,
+            "flow_persistence": 0.1348,
+            "size_skew": 0.3896,
+            "vwap_dev": 0.4958,
+            "wick_absorption": -0.2712
+          }
+        },
+        {
+          "fold": 4,
+          "train_range": "2026-04-21..2026-06-17",
+          "test_range": "2026-06-19..2026-07-17",
+          "train_n": 28,
+          "test_n": 11,
+          "no_overlap": true,
+          "auc_bounce1": 0.7,
+          "auc_bounce2": 0.7667,
+          "auc_bounce3": 0.7667,
+          "weights": {
+            "clv": 0.7179,
+            "ofi": -0.0371,
+            "ofi_momentum": 0.4887,
+            "range_atr": 0.2143,
+            "vol_z": -0.2637,
+            "aggressor_run": -0.3312,
+            "flow_persistence": 0.2434,
+            "size_skew": 0.2713,
+            "vwap_dev": 0.3547,
+            "wick_absorption": 0.192
+          }
+        }
+      ],
+      "seconds": 65.9
+    },
+    "SOL/USD": {
+      "n_trades": 1841495,
+      "n_candles": 2161,
+      "n_events": 80,
+      "n_clean": 80,
+      "n_tainted": 0,
+      "n_dropped_resolved_by_bounce3": 37,
+      "n_scored_bounce3": 43,
+      "scored_reversal": 19,
+      "scored_fake": 24,
+      "n_vectors": 43,
+      "tier0_mean_auc": {
+        "bounce+1": 0.369,
+        "bounce+2": 0.3869,
+        "bounce+3": 0.4202
+      },
+      "tier01_mean_auc": {
+        "bounce+1": 0.5476,
+        "bounce+2": 0.6143,
+        "bounce+3": 0.6655
+      },
+      "tier0_walk_forward": [
+        {
+          "fold": 3,
+          "train_range": "2026-04-21..2026-06-05",
+          "test_range": "2026-06-06..2026-06-24",
+          "train_n": 24,
+          "test_n": 8,
+          "no_overlap": true,
+          "auc_bounce1": 0.6667,
+          "auc_bounce2": 0.6667,
+          "auc_bounce3": 0.7333,
+          "weights": {
+            "clv": 1.0345,
+            "ofi": 0.6331,
+            "ofi_momentum": -0.066,
+            "range_atr": -0.2177,
+            "vol_z": 0.0798
+          }
+        },
+        {
+          "fold": 4,
+          "train_range": "2026-04-21..2026-06-24",
+          "test_range": "2026-06-27..2026-07-17",
+          "train_n": 32,
+          "test_n": 11,
+          "no_overlap": true,
+          "auc_bounce1": 0.0714,
+          "auc_bounce2": 0.1071,
+          "auc_bounce3": 0.1071,
+          "weights": {
+            "clv": 0.7637,
+            "ofi": 0.6885,
+            "ofi_momentum": 0.1309,
+            "range_atr": -0.1515,
+            "vol_z": 0.0915
+          }
+        }
+      ],
+      "tier01_walk_forward": [
+        {
+          "fold": 3,
+          "train_range": "2026-04-21..2026-06-05",
+          "test_range": "2026-06-06..2026-06-24",
+          "train_n": 24,
+          "test_n": 8,
+          "no_overlap": true,
+          "auc_bounce1": 0.6667,
+          "auc_bounce2": 0.8,
+          "auc_bounce3": 0.8667,
+          "weights": {
+            "clv": 0.6997,
+            "ofi": 0.4516,
+            "ofi_momentum": 0.4405,
+            "range_atr": -0.484,
+            "vol_z": 0.3061,
+            "aggressor_run": 1.0582,
+            "flow_persistence": 0.1264,
+            "size_skew": -0.1914,
+            "vwap_dev": -0.2072,
+            "wick_absorption": -0.1463
+          }
+        },
+        {
+          "fold": 4,
+          "train_range": "2026-04-21..2026-06-24",
+          "test_range": "2026-06-27..2026-07-17",
+          "train_n": 32,
+          "test_n": 11,
+          "no_overlap": true,
+          "auc_bounce1": 0.4286,
+          "auc_bounce2": 0.4286,
+          "auc_bounce3": 0.4643,
+          "weights": {
+            "clv": 0.522,
+            "ofi": 0.6129,
+            "ofi_momentum": 0.5202,
+            "range_atr": -0.3431,
+            "vol_z": 0.2816,
+            "aggressor_run": 0.9803,
+            "flow_persistence": -0.0984,
+            "size_skew": 0.0597,
+            "vwap_dev": -0.1767,
+            "wick_absorption": 0.0315
+          }
+        }
+      ],
+      "seconds": 59.2
+    },
+    "ZEC/USD": {
+      "n_trades": 1488833,
+      "n_candles": 2161,
+      "n_events": 75,
+      "n_clean": 75,
+      "n_tainted": 0,
+      "n_dropped_resolved_by_bounce3": 29,
+      "n_scored_bounce3": 46,
+      "scored_reversal": 20,
+      "scored_fake": 26,
+      "n_vectors": 46,
+      "tier0_mean_auc": {
+        "bounce+1": 0.4166,
+        "bounce+2": 0.4375,
+        "bounce+3": 0.375
+      },
+      "tier01_mean_auc": {
+        "bounce+1": 0.4028,
+        "bounce+2": 0.4236,
+        "bounce+3": 0.382
+      },
+      "tier0_walk_forward": [
+        {
+          "fold": 3,
+          "train_range": "2026-04-23..2026-06-10",
+          "test_range": "2026-06-12..2026-06-27",
+          "train_n": 27,
+          "test_n": 9,
+          "no_overlap": true,
+          "auc_bounce1": 0.5,
+          "auc_bounce2": 0.5,
+          "auc_bounce3": 0.5,
+          "weights": {
+            "clv": -0.1743,
+            "ofi": -0.5257,
+            "ofi_momentum": 0.4487,
+            "range_atr": -0.2439,
+            "vol_z": -0.1225
+          }
+        },
+        {
+          "fold": 4,
+          "train_range": "2026-04-23..2026-06-27",
+          "test_range": "2026-06-27..2026-07-18",
+          "train_n": 36,
+          "test_n": 10,
+          "no_overlap": true,
+          "auc_bounce1": 0.3333,
+          "auc_bounce2": 0.375,
+          "auc_bounce3": 0.25,
+          "weights": {
+            "clv": -0.025,
+            "ofi": -0.2829,
+            "ofi_momentum": 0.1012,
+            "range_atr": -0.0044,
+            "vol_z": -0.0911
+          }
+        }
+      ],
+      "tier01_walk_forward": [
+        {
+          "fold": 3,
+          "train_range": "2026-04-23..2026-06-10",
+          "test_range": "2026-06-12..2026-06-27",
+          "train_n": 27,
+          "test_n": 9,
+          "no_overlap": true,
+          "auc_bounce1": 0.5556,
+          "auc_bounce2": 0.5556,
+          "auc_bounce3": 0.5556,
+          "weights": {
+            "clv": 0.238,
+            "ofi": -0.1373,
+            "ofi_momentum": 0.5352,
+            "range_atr": -0.2819,
+            "vol_z": -0.4398,
+            "aggressor_run": -0.0659,
+            "flow_persistence": -0.4742,
+            "size_skew": -0.341,
+            "vwap_dev": -0.3445,
+            "wick_absorption": 0.5549
+          }
+        },
+        {
+          "fold": 4,
+          "train_range": "2026-04-23..2026-06-27",
+          "test_range": "2026-06-27..2026-07-18",
+          "train_n": 36,
+          "test_n": 10,
+          "no_overlap": true,
+          "auc_bounce1": 0.25,
+          "auc_bounce2": 0.2917,
+          "auc_bounce3": 0.2083,
+          "weights": {
+            "clv": 0.2973,
+            "ofi": 0.0543,
+            "ofi_momentum": 0.2047,
+            "range_atr": 0.1307,
+            "vol_z": -0.3025,
+            "aggressor_run": -0.2243,
+            "flow_persistence": -0.2206,
+            "size_skew": -0.4201,
+            "vwap_dev": -0.0413,
+            "wick_absorption": 0.4827
+          }
+        }
+      ],
+      "seconds": 50.3
+    }
+  }
+}
