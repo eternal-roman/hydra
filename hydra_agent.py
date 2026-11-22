@@ -5138,7 +5138,7 @@ class HydraAgent:
         held none of the quote currency. That phantom balance caused the
         engine to size and attempt orders it could never actually place,
         triggering a loop of `PLACEMENT_FAILED: insufficient_{quote}_balance`
-        entries (see v2.11.0 CHANGELOG).
+        entries (see v2.11.0 in `git show v2.30.0:CHANGELOG.md`).
 
         Fixed policy:
           • Balance = real exchange holding of the quote currency (not a
