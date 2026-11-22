@@ -7,7 +7,7 @@ Zero logic drift: reuses engine math verbatim; only I/O is mocked (candles from
 a CandleSource instead of a WS stream, SimulatedFiller instead of Kraken REST
 placement).
 
-See docs/BACKTEST_SPEC.md for the full architecture and invariants.
+See docs/BACKTEST.md for the full architecture and invariants.
 
 Public API:
     from hydra_backtest import BacktestRunner, BacktestConfig

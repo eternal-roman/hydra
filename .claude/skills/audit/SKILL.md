@@ -27,7 +27,7 @@ category, description, suggested fix.
 ## Severity rubric
 
 **HIGH** — fix immediately:
-- Violation of backtest safety invariants I1-I12 (`docs/BACKTEST_SPEC.md` §3; enforcement in §9)
+- Violation of backtest safety invariants I1-I12 (`docs/BACKTEST.md` §3; enforcement in §9)
 - Limit-post-only rule violated (any market-order path)
 - 2 s rate-limit floor violated
 - 15 % circuit-breaker bypassed

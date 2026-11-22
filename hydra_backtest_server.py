@@ -8,7 +8,7 @@ Wires Phase 1-4 backtest infrastructure into the live agent process:
   * `mount_backtest_routes` — registers inbound WS handlers on an
     augmented DashboardBroadcaster (type-discriminated JSON messages).
 
-See docs/BACKTEST_SPEC.md §6.6 and invariants I1-I6, I11.
+See docs/BACKTEST.md §6.6 and invariants I1-I6, I11.
 
 Live-safety guarantees
 ----------------------
@@ -505,7 +505,7 @@ def mount_backtest_routes(
     reply dict that the broadcaster sends back over the WS channel (as a
     JSON-encoded `{type, ...reply}` message).
 
-    Registered message types (see docs/BACKTEST_SPEC.md §5.6):
+    Registered message types (see docs/BACKTEST.md §5.6):
       backtest_start           — run a backtest from the dashboard
       backtest_cancel          — cancel a queued/running experiment
       experiment_list_request  — "list_experiments via WS" for UI

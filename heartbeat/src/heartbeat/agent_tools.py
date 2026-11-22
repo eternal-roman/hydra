@@ -16,7 +16,7 @@ use ``unknown_tool`` / ``invalid_arguments``. Unexpected exceptions map
 to ``tool_error`` so agents never see a traceback as the response body.
 
 **No order path.** Tools only expose dataset requirements, batch
-indicator runs, and interpretation text. See ``AGENT.md``.
+indicator runs, and interpretation text. See the agent contract in ``heartbeat/README.md``.
 """
 
 from __future__ import annotations
@@ -291,5 +291,5 @@ def call_tool(name: str, arguments: Optional[Mapping[str, Any]] = None) -> dict:
         return _err(
             "tool_error",
             f"{type(exc).__name__}: {exc}",
-            hint="see heartbeat AGENT.md; check path/rows/symbol/tf types",
+            hint="see the heartbeat README agent contract; check path/rows/symbol/tf types",
         )

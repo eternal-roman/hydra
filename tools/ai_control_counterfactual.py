@@ -21,7 +21,7 @@ It answers the *testable* core of rails vs deregulation:
   Q3. Where did rails block trades that would have helped or hurt?
 
 Product defaults live in HydraEngine (hold_through=True); this tool only
-replays. Spec: docs/HOLD_THROUGH.md.
+replays. Spec: docs/TRADE_PLAN.md.
 
 Usage:
   python tools/ai_control_counterfactual.py
