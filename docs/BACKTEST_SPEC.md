@@ -14,7 +14,7 @@
 > (Phase 11) were archived in v2.26.0 — fully built and CI-tested but never
 > wired into production (`reviewer=None`; shadow validator never
 > instantiated). Sections describing them below are design history, not
-> current behavior. See CHANGELOG v2.26.0.
+> current behavior. See v2.26.0 in `git show v2.30.0:CHANGELOG.md`.
 
 ---
 
