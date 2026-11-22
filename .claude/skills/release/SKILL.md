@@ -1,14 +1,15 @@
 ---
 name: release
 description: Run a Hydra release end-to-end. Use when the user says /release, asks to cut a release, bump version, ship a release, or tag a new version. Walks audit -> tests -> version bump -> PR -> CI green -> merge -> signed tag verification.
+model: sonnet
 ---
 
 # Release
 
 You are running a release. Steps:
 
-1. Run full test suite + typecheck + lint
-2. Grep for current version string across repo, bump everywhere
+1. Run the CI-equivalent checks in Step 1 below
+2. Align the seven code sites `scripts/check_release_alignment.py` prints, then bump
 3. Create PR with summary of changes
 4. Wait for CI green (poll gh pr checks)
 5. Merge PR
@@ -34,7 +35,7 @@ The CI gate is `.github/workflows/ci.yml`. Mirror it locally:
 There is no separate typecheck/lint gate today; if `ruff` is installed locally,
 run `ruff check .` as a courtesy.
 
-### Step 2 expansion (version sites — 7 lockstep)
+### Step 2 expansion (version sites)
 
 **Rule 5 (Operating Rules) is binding here.** Before bumping, run:
 
@@ -54,7 +55,7 @@ this grep was skipped; v2.11.0→v2.14.2 shipped without `gh release
 create`, leaving v2.10.11 as GitHub's "Latest" — detected by
 `--check-gh-release`.
 
-Canonical sites:
+The script's `collect()` is the list. These seven code sites move together:
 
 1. `CHANGELOG.md` — new `## [X.Y.Z]` section header
 2. `dashboard/package.json` — `"version"` field
@@ -62,13 +63,16 @@ Canonical sites:
 4. `dashboard/src/App.jsx` — footer string `HYDRA vX.Y.Z`
 5. `hydra_agent.py` — `_export_competition_results()` `"version"` field
 6. `hydra_backtest.py` — `HYDRA_VERSION = "X.Y.Z"` (stamps every BacktestResult)
-7. Git tag — `git tag -s vX.Y.Z` after merge
+7. `CLAUDE.md` — `**Version pin:** vX.Y.Z`
+
+The git tag is Step 6. The GitHub Release is Step 8. They are not code sites.
 
 ### Step 3 expansion (PR)
 
-Use a HEREDOC for the PR body so newlines render correctly. Summary should
-reference: changes per CHANGELOG, any safety-invariant impact (I1-I12),
-and any version-stamped artifacts (BacktestResult, dashboard footer).
+Pass the PR body through a quoted heredoc or `--body-file` so newlines
+render. The body names the changelog changes, any
+safety-invariant impact (I1-I12), and version-stamped artifacts
+(BacktestResult, dashboard footer, CLAUDE.md pin).
 
 ### Step 4 expansion (CI poll)
 
@@ -94,7 +98,7 @@ A pushed signed tag alone does NOT produce a GitHub Release — the
 still shows the last *published* release as "Latest". Publish explicitly:
 
 ```bash
-gh release create vX.Y.Z --verify-tag --notes-from-tag --title "vX.Y.Z — <summary>"
+gh release create vX.Y.Z --verify-tag --notes-from-tag --title "vX.Y.Z — summary"
 ```
 
 Then verify with `gh release view vX.Y.Z` (must not error) and
@@ -111,9 +115,10 @@ Final gate — must exit 0:
 python scripts/check_release_alignment.py --check-tag --check-gh-release
 ```
 
-This re-enumerates all 7 code sites + the tag at HEAD + the latest
-published GitHub Release, and fails loudly on any drift. Run it as the
-last action of the release; if it fails, fix before declaring done.
+This re-enumerates the seven code sites, checks that tag `vX.Y.Z` points
+at HEAD, and checks the latest published GitHub Release. `--check-tag`
+does not verify the signature. `git tag -v` in Step 7 does that. Run
+this command last. If it fails, fix that before declaring done.
 
 ## Pre-flight ask
 

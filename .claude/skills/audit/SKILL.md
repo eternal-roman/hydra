@@ -8,7 +8,9 @@ description: Run a comprehensive Hydra codebase audit. Use when the user says /a
 You are running a Hydra codebase audit. The pattern below has previously
 caught 7+ bugs per session that single-pass review missed.
 
-## Partitions (spawn 7 parallel Task agents, subagent_type: explore)
+## Partitions
+
+Spawn seven subagents in parallel with the Agent tool, one partition each. Use the default general-purpose type: `Explore` locates code but does not review it.
 
 1. Engine + tuner: `hydra_engine.py`, `hydra_tuner.py`
 2. Agent + streams: `hydra_agent.py` + the `BaseStream` subclasses
@@ -16,7 +18,7 @@ caught 7+ bugs per session that single-pass review missed.
 3. AI layer: `hydra_brain.py`
 4. Backtest platform: `hydra_backtest*.py`, `hydra_experiments.py`
 5. Companion subsystem: `hydra_companions/` package + soul JSONs
-6. Dashboard: `dashboard/src/App.jsx` (single-file React)
+6. Dashboard: `dashboard/src/App.jsx`, `dashboard/src/components/`, `dashboard/src/liveDisplay.js`, `dashboard/src/theme.js`
 7. Tests: `tests/` + `tests/live_harness/`
 
 Each agent should return a structured findings list with: file:line, severity,
@@ -73,7 +75,7 @@ Produce an `AUDIT_<date>.md` file at the repo root summarizing:
 ## Operating Rules invoked
 
 This skill invokes §Operating Rules in CLAUDE.md:
-- Rule 1 (parallel Task agents) — partition sweep
+- Rule 1 (parallel subagents) — partition sweep
 - Rule 3 (verify claims with actual commands) — every "fixed" claim
   must be backed by a re-run of the relevant test or grep
 - Rule 4 (two-phase self-audit) — mandatory before declaring done
