@@ -83,7 +83,7 @@ Restart the agent to apply; `HYDRA_TREND_SLEEVE=1` / `0` overrides the evidence.
 
 | Source | Purpose |
 |--------|---------|
-| `.env` / `.env.example` | API keys and `HYDRA_*` kill switches ([`docs/ENV_FLAGS.md`](docs/ENV_FLAGS.md)) |
+| `.env` / `.env.example` | API keys and `HYDRA_*` kill switches ([`docs/REFERENCE.md`](docs/REFERENCE.md#env-flags-kill-switches-and-opt-ins)) |
 | `--pairs` / `--quote` / `HYDRA_QUOTE` | Pairs. `--quote` only changes the `--pairs auto` fallback quote |
 | `--demo` / `--paper` / `--resume` / `--mode` | Offline demo, paper, snapshot resume, Kelly mode |
 | `python hydra_auth.py create-user` / `reset-password` | Dashboard login (create never overwrites) |
@@ -102,7 +102,7 @@ Candle/Ticker WS → per pair, one of:
         ↳ parallel: S3 QI ± shadow | heartbeat P(up) surface  (never orders)
 ```
 
-Backtests replay `HydraEngine` (and the coordinator); the AI brain is not on the backtest path. File-by-file roles: [`docs/MODULES.md`](docs/MODULES.md).
+Backtests replay `HydraEngine` (and the coordinator); the AI brain is not on the backtest path. File-by-file roles: [`docs/REFERENCE.md`](docs/REFERENCE.md#modules).
 
 ## Testing
 
@@ -129,10 +129,9 @@ Harness modes are `smoke`, `mock`, `validate` and `live` (explicit flag); see [`
 |-----|----------|
 | [`CLAUDE.md`](CLAUDE.md) | Agent rules and cross-cutting invariants |
 | [`SKILL.md`](SKILL.md) | Trading formulas and risk rules |
-| [`docs/MODULES.md`](docs/MODULES.md) · [`ENV_FLAGS.md`](docs/ENV_FLAGS.md) · [`STATE_FILES.md`](docs/STATE_FILES.md) | Modules, env flags, state-file owners |
-| [`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md) | The plan Hydra trades, the evidence behind each rule, the per-session routine |
-| [`docs/HOLD_THROUGH.md`](docs/HOLD_THROUGH.md) | Hold-through rails |
-| [`docs/BACKTEST.md`](docs/BACKTEST.md) · [`BACKTEST_SPEC.md`](docs/BACKTEST_SPEC.md) | Backtest runbook; design archive (code wins on defaults) |
+| [`docs/REFERENCE.md`](docs/REFERENCE.md) | Modules, env flags, state-file owners |
+| [`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md) | The plan each pair trades (trend sleeve or hold-through rails), the evidence behind each rule, the per-session routine |
+| [`docs/BACKTEST.md`](docs/BACKTEST.md) | Backtest runbook and design archive (code wins on defaults) |
 | [`docs/COMPANION_SPEC.md`](docs/COMPANION_SPEC.md) | Companion system |
 | [`heartbeat/README.md`](heartbeat/README.md) · [`HONEST_FINDINGS.md`](heartbeat/HONEST_FINDINGS.md) | Order-flow posterior and the evidence ledger |
 | [`research/`](research/) | Papers and promoted study data |

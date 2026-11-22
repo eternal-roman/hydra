@@ -4,7 +4,7 @@ HYDRA Backtest — Advanced Metrics (Phase 2 of v2.10.0 backtest platform).
 
 Institutional-grade robustness analytics for backtest results. Pure Python
 stdlib (no numpy/scipy) so the engine's "zero dependencies" stance extends
-to the metrics layer. See docs/BACKTEST_SPEC.md §6.2.
+to the metrics layer. See docs/BACKTEST.md §6.2.
 
 Functions
 ---------
@@ -269,7 +269,7 @@ def monte_carlo_resample(
     used to annualize with `annualization_factor(candle_interval_min)`, i.e.
     sqrt(BARS per year) — 93.6 on 60m bars — applied to one return per TRADE.
     A mundane 42-trade series came back with a Sharpe CI of roughly
-    [25.4, 31.5]. `docs/BACKTEST_SPEC.md` makes `mc_ci_lower_positive`
+    [25.4, 31.5]. `docs/BACKTEST.md` makes `mc_ci_lower_positive`
     (`mc_ci_95[0] > 0`) one of seven rigor gates for auto-apply eligibility,
     and at a ~93x inflation that gate could never bind for any strategy with a
     non-degenerate profit series.

@@ -4,7 +4,7 @@ HYDRA Backtest — Agent Tool API (Phase 4 of v2.10.0 backtest platform).
 
 Anthropic-compatible tool schemas + `BacktestToolDispatcher` so brain agents
 (Analyst, Risk Manager) can run backtests mid-deliberation via tool-use.
-See docs/BACKTEST_SPEC.md §6.4.
+See docs/BACKTEST.md §6.4.
 
 Public surface
 --------------

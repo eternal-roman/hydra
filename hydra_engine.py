@@ -6,7 +6,7 @@ Portable pure-Python. No dependencies beyond standard library + json.
 
 Default product rails (hold-through, kill HYDRA_HOLD_THROUGH=0): TREND_UP BUY
 ≥0.65, force-flatten TREND_DOWN, ride mid-UP except extreme overbought.
-See docs/HOLD_THROUGH.md. Friction gate / 15% CB / Kelly unchanged.
+See docs/TRADE_PLAN.md. Friction gate / 15% CB / Kelly unchanged.
 
 Usage:
     from hydra_engine import HydraEngine
@@ -1507,7 +1507,7 @@ class HydraEngine:
 
     # Hold-through rails (default ON, all pairs). Kill: HYDRA_HOLD_THROUGH=0.
     # BUY_MIN ≈ tape p90 of TREND_UP BUY conf. Flatten floor is display-only.
-    # Mid-TREND_UP exit: extreme-overbought reason only (docs/HOLD_THROUGH.md).
+    # Mid-TREND_UP exit: extreme-overbought reason only (docs/TRADE_PLAN.md).
     HOLD_THROUGH_BUY_MIN_CONF = 0.65
     # Daily trend-ensemble overlay parameters (see constructor comment).
     TREND_SMA_DAYS = 200
@@ -2420,7 +2420,7 @@ class HydraEngine:
         daily_long = self.daily_trend_long()
         # A dump is usually labelled VOLATILE (ATR/BB spike checked first), so
         # the downtrend underneath it has to be tested directly or the
-        # "bag-holding dumps" rail never fires in one (docs/HOLD_THROUGH.md).
+        # "bag-holding dumps" rail never fires in one (docs/TRADE_PLAN.md).
         downtrend = regime == Regime.TREND_DOWN or (
             regime == Regime.VOLATILE
             and RegimeDetector.trend_down(self.prices, self.trend_ema_ratio)

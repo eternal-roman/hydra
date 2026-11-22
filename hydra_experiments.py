@@ -7,7 +7,7 @@ adds the persistent *experiment* concept — a named hypothesis, its backtest
 result, optional AI review, and searchable metadata. Backed by flat JSON
 in `.hydra-experiments/` (gitignored).
 
-See docs/BACKTEST_SPEC.md §5.4, §6.3.
+See docs/BACKTEST.md §5.4, §6.3.
 
 Public API
 ----------

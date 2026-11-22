@@ -12,7 +12,7 @@ description: >
 
 # HYDRA — Regime-Adaptive Trading Agent for Kraken CLI
 
-The trading formulas and risk rules. Invariants are in `CLAUDE.md`; module roles in `docs/MODULES.md`.
+The trading formulas and risk rules. Invariants are in `CLAUDE.md`; module roles in `docs/REFERENCE.md`.
 
 ## Overview
 
@@ -201,7 +201,7 @@ END LOOP
 8. **Fill true-up**: Engine books exchange `avg_fill_price` on FILLED/PARTIAL (not candle close)
 9. **Quant R2**: Extreme negative funding force_holds **BUY** (bounce-chase), never spot **SELL** (long close)
 10. **Friction gate (entries)**: BUY skipped when strategy-implied move cannot clear ~2× round-trip friction (SKIP, not BLOCK). Kill: `HYDRA_FRICTION_GATE_DISABLED=1`
-11. **Hold-through (default on)**: TREND_UP BUY ≥0.65; flatten TREND_DOWN; ride mid-UP except extreme overbought. Kill: `HYDRA_HOLD_THROUGH=0`. See `docs/HOLD_THROUGH.md`.
+11. **Hold-through (default on)**: TREND_UP BUY ≥0.65; flatten TREND_DOWN; ride mid-UP except extreme overbought. Kill: `HYDRA_HOLD_THROUGH=0`. See `docs/TRADE_PLAN.md`.
 12. **QFE (R11)**: Exit-only, profit-only SELL through force_hold when engine already wants SELL, unrealized P&L ≥ `QFE_MIN_PROFIT_PCT` (1.0%), and no deterministic squeeze catalyst; never opens a position; LLM `crowded_short` alone does not veto
 
 ## Indicator Reference
