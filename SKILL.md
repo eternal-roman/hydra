@@ -1,26 +1,18 @@
-<!-- CLAUDE.md is the current authoritative reference. This file is the
-     agent-readable trading spec (frontmatter + English narrative);
-     formulas and pair lists are kept current, but architecture detail
-     (AI brain, self-tuning, reconciler, snapshots, companions) lives in
-     CLAUDE.md, not here. -->
 ---
 name: hydra-regime-trader
 description: >
-  HYDRA (Hyper-adaptive Dynamic Regime-switching Universal Agent) is an autonomous
-  crypto trading agent for Kraken CLI that detects market regimes and switches between
-  four strategies: Momentum, Mean Reversion, Grid, and Defensive, all gated by a
-  daily trend-ensemble overlay (v2.28). Trades BTC/USD, ETH/USD, and ZEC/USD by
-  default (v2.29 — independent pairs, no triangle; explicit SOL pairs restore the
-  legacy triangle with its SOL/BTC bridge signal-only; USDC/USDT
-  variants and --pairs auto portfolio discovery available)
-  using limit post-only orders. Use when: (1) running a live
-  trading session via Kraken CLI (WSL), (2) analyzing current market regime from OHLC
-  data, (3) generating trade signals with quarter-Kelly position sizing, (4) monitoring
-  performance via the React dashboard. Requires kraken-cli installed in WSL. NOT for:
-  non-Kraken exchanges, DeFi/on-chain trading, or strategies outside the HYDRA framework.
+  HYDRA is a crypto trading agent for Kraken CLI. It detects the market regime and
+  switches among Momentum, Mean Reversion, Grid and Defensive strategies, gated by a
+  daily trend-ensemble overlay, and places limit post-only orders. Default pairs are
+  BTC/USD, ETH/USD and ZEC/USD. Use when running a Kraken CLI (WSL) trading session,
+  reading the regime from OHLC data, generating signals with Kelly sizing, or
+  monitoring the React dashboard. Requires kraken-cli in WSL. Not for other exchanges,
+  DeFi or strategies outside HYDRA.
 ---
 
 # HYDRA — Regime-Adaptive Trading Agent for Kraken CLI
+
+The trading formulas and risk rules. Invariants are in `CLAUDE.md`; module roles in `docs/MODULES.md`.
 
 ## Overview
 
@@ -190,14 +182,7 @@ LOOP every {tick_interval}:
          e. LOG trade with timestamp, price, reason, confidence, strategy
     8. LOG current state: regime, strategy, signal, position, equity (+ heartbeat P(up) if status file present)
 
-  COMPUTE portfolio metrics:
-    - Total equity = cash + sum(position_value)
-    - P&L % = (equity - initial) / initial * 100
-    - Max drawdown = max historical peak-to-trough
-    - Win rate = wins / (wins + losses)
-    - Sharpe estimate from rolling returns
-
-  PRINT status summary
+  COMPUTE portfolio metrics (see Performance Metrics) and PRINT a status summary
 
   IF current_drawdown >= 15%:          # equity vs peak this tick, not the record high
     BLOCK new BUYs only; still allow SELL to flatten
@@ -206,7 +191,7 @@ END LOOP
 
 ## Risk Management Rules
 
-1. **Circuit Breaker (per engine)**: Halt **new BUYs** when the *current* drawdown (equity vs peak this tick) reaches 15%; **SELL still allowed** (flatten inventory). Sticky across `--resume`; only `HYDRA_RESET_CIRCUIT_BREAKER=1` clears it. The reset starts a new drawdown epoch: the peak moves to the equity at the first tick after it, `max_drawdown` stays as the record, and the breaker arms again 15% below the new peak. A balance seed is a capital flow, not a result: the peak is rescaled so the drawdown fraction carries over, so a withdrawal is not a loss and a deposit does not erase one. The portfolio breaker applies the same 15% to the engine books (quote cash plus positions the engines hold), not to the whole Kraken account, and also sticky-blocks BUYs.
+1. **Circuit Breaker (per engine)**: Halt **new BUYs** when the *current* drawdown (equity vs peak this tick) reaches 15%; **SELL still allowed** (flatten inventory). Sticky across `--resume`; only `HYDRA_RESET_CIRCUIT_BREAKER=1` clears it, starting a new drawdown epoch 15% below the new peak. Deposits and withdrawals are capital flows, not results. The portfolio breaker applies the same 15% to the engine books, not the whole Kraken account.
 2. **Dead Man's Switch**: Always run `kraken order cancel-after 60` before live orders
 3. **Position Limits**: No single position notional > max_position_pct of equity (30%/40%), applied after brain size_multiplier
 4. **Trade Threshold**: Entries only when confidence ≥ 0.65; exits do not use this floor
@@ -238,37 +223,3 @@ END LOOP
 - **Profit Factor** (gross profit / gross loss)
 - **Trades per Hour** (activity level)
 - **Regime Detection Accuracy** (compare detected vs. retrospective)
-
-## Example operator session
-
-```
-> Install kraken-cli, then run HYDRA in paper mode on BTC/USD for 10 minutes.
-> Use 60-minute OHLC candles (product default). Start with $10,000 paper balance.
-> Print a status update every 60 seconds showing:
->   - Current regime and strategy
->   - Signal (action, confidence, reason)
->   - Position and unrealized P&L
->   - Total equity and drawdown
->   - Heartbeat P(up) if status surface is live
-> At the end, print a full performance report with all metrics.
-```
-
-## File Structure
-
-```
-hydra/
-├── SKILL.md              # This file — trading spec (agent-readable)
-├── README.md / CLAUDE.md # Overview + authoritative invariants index
-├── hydra_engine.py       # Indicators, regime, signals, sizing, hold-through
-├── hydra_agent.py        # Live loop (Kraken CLI, WS, execution, journal)
-├── hydra_brain.py        # Optional AI (Analyst + RM + Grok)
-├── hydra_quant_rules.py  # R1–R11 deterministic rules + QFE
-├── hydra_flywheel.py     # Paper allocator only (no live orders)
-├── tools/                # Research: history, flywheel validation, causal retest
-├── tests/                # pytest + live-execution harness
-└── dashboard/            # React + Vite UI
-```
-
-## License
-
-MIT

@@ -4,111 +4,60 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-**Regime-adaptive Kraken spot trading agent** — detects trending / ranging / volatile markets, switches among Momentum, Mean Reversion, Grid, and Defensive strategies, and places **limit post-only** orders only. Live React dashboard included.
+**Regime-adaptive Kraken spot trading agent.** It detects trending, ranging and volatile markets, switches among Momentum, Mean Reversion, Grid and Defensive strategies, and places **limit post-only** orders only. A live React dashboard is included.
 
-> **Not financial advice.** Experimental research software. The **live engine path is capital-preservation rails** (hold-through, daily trend overlay, friction, 15% BUY-only CB) — **not a proven growth-alpha claim**. Research surfaces (S3 shadow book, heartbeat P(up)) are display/shadow only until bakeoffs clear; they never place orders. Crypto trading can lose money.
+> **Not financial advice.** Experimental research software; crypto trading can lose money, and neither backtests nor rails are guarantees. The live engine path is **capital-preservation rails** (hold-through, daily trend overlay, friction, a 15% BUY-only breaker), not a proven growth-alpha claim. Research surfaces (the S3 shadow book, heartbeat P(up)) display and shadow only; they never place orders.
 
 ## Highlights
 
-- **Evidence-gated daily trend sleeve** (the strategy with the best evidence here): long while
-  the daily trend ensemble (SMA200, EMA20/100, Donchian 55/20) holds on completed closes, flat
-  otherwise, sized to a volatility target and re-sized monthly. A pair trades it only after a
-  pre-registered gate passes on **your own** history (`run_strategy_gate.bat`); every pair card
-  shows its trade plan — the exact daily close that flips it, and where the breaker sits.
-  See [`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md)
-- **Regime switching** on pure-Python indicators (Wilder RSI/ATR, Bollinger, MACD, EMAs)
-- **Spot-only** execution — default `BTC/USD` + `ETH/USD` + `ZEC/USD` (v2.29, independent pairs;
-  explicit SOL pairs restore the legacy triangle, bridge signal-only). `--pairs auto` seeds the
-  cores and adds a satellite per held Kraken asset (USDC-preferred quote when funded, USD fallback)
-- **Limit post-only** — never market; 2s REST floor; 15% drawdown **blocks new BUYs** (SELL flatten still allowed)
-- **AI quant pipeline** (optional): Market Quant + Risk Manager + Grok + R1–R11 rules
-- **Hold-through rails** (default on; `HYDRA_HOLD_THROUGH=0` off): TREND_UP entries ≥0.65 conf, flatten downs, ride mid-trends — defense + capture discipline, **not** a profit claim
-- **Daily trend-ensemble overlay** (default on; `HYDRA_TREND_OVERLAY=0` off): sma200/ema20x100/
-  don55 on daily closes gate entries, flatten on regime flip, vol-target conviction sizing —
-  evidence-gated on real tape (`.hydra-flywheel/trend_overlay_gate.json`); 1h candles default
-- **Research stack**: backtests, walk-forward, paper flywheel (no live flywheel orders), tools under `tools/`
-- **S3 bounce surface** (read-only QI; shadow with `HYDRA_S3_STRATEGY=1`, default off — no orders)
-- **Heartbeat P(up)** (optional separate `heartbeat run`; dashboard sparkline; kill `HYDRA_HEARTBEAT_SURFACE=0` — no orders)
-- **Companions** (chat/proposals; live execution opt-in, default off)
+- **Evidence-gated daily trend sleeve**, the strategy with the best evidence here. A pair trades it only after a pre-registered gate passes on **your own** history; see [What Hydra trades](#what-hydra-trades-and-how-to-prove-it).
+- **Regime switching** on pure-Python indicators (Wilder RSI/ATR, Bollinger, MACD, EMAs).
+- **Pairs:** `BTC/USD`, `ETH/USD`, `ZEC/USD` by default, each independent. `--pairs auto` seeds those cores in your funded stable quote and adds a satellite per other held Kraken asset. Explicit SOL pairs restore the legacy triangle, with the bridge signal-only.
+- **Hold-through rails** (default on, `HYDRA_HOLD_THROUGH=0` off): TREND_UP entries at ≥0.65 confidence, flatten downs, ride mid-trends. Defense and capture discipline, not a profit claim.
+- **Daily trend-ensemble overlay** (default on, `HYDRA_TREND_OVERLAY=0` off): SMA200, EMA20×100 and Donchian 55 on daily closes gate entries, flatten on a regime flip and size by volatility target. Gated on real tape (`.hydra-flywheel/trend_overlay_gate.json`).
+- **AI quant pipeline** (optional): Market Quant, Risk Manager, Grok, and the deterministic R1–R11 rules.
+- **Research stack:** backtests, walk-forward, a paper flywheel (never live orders), the S3 bounce surface (shadow with `HYDRA_S3_STRATEGY=1`) and the heartbeat P(up) sparkline (`HYDRA_HEARTBEAT_SURFACE=0` off). None of them places orders.
+- **Companions:** chat and proposals; live execution is opt-in.
 
 ## Safety (non-negotiable)
 
 | Rule | Detail |
 |------|--------|
-| Spot only | No futures/margin/options orders placed |
-| Limit post-only | `--type limit --oflags post` |
+| Spot only | No futures, margin or options orders |
+| Limit post-only | `--type limit --oflags post`, never market |
 | Rate limit | ≥ 2s between Kraken REST calls |
-| Drawdown | 15% max → **no new BUYs**; inventory SELL still allowed |
+| Drawdown | 15% → **no new BUYs**; inventory SELL still allowed |
 | Companion live | `HYDRA_COMPANION_LIVE_EXECUTION` default **off** |
-| Hold-through | `HYDRA_HOLD_THROUGH` default **on** (`=0` off) |
+| Hold-through | `HYDRA_HOLD_THROUGH` default **on** |
 
 ## Quick start
 
-### Zero-deps offline demo (no API keys, no WSL)
-
-Clone and verify the stack without Kraken, keys, or Node:
-
 ```bash
-git clone https://github.com/eternal-roman/hydra.git
-cd hydra
-
+git clone https://github.com/eternal-roman/hydra.git && cd hydra
 pip install -r requirements.txt
 
-# Engine synthetic walk (stdlib only)
-python hydra_engine.py
-
-# Backtest on synthetic series
-python hydra_backtest.py
-
-# Full agent loop offline — synthetic candles, paper fills, WS :8765
+# Offline, no keys, no WSL: synthetic candles, paper fills, WS :8765
 python hydra_agent.py --demo --duration 30 --balance 1000
-
-# Paper flywheel report (local ledger; empty history → cash-only targets)
-python hydra_flywheel.py --report
+python hydra_engine.py              # engine synthetic walk (stdlib only)
+python hydra_backtest.py            # backtest on a synthetic series
+python hydra_flywheel.py --report   # paper flywheel report
 ```
 
-`--demo` never calls kraken-cli or loads API keys. Use it to confirm the
-download works before installing WSL or provisioning keys.
+`--demo` never calls kraken-cli or loads API keys.
 
-### Requirements (live / paper)
-
-- Python **3.11+**
-- Node.js **18+** (dashboard only)
-- WSL Ubuntu with [kraken-cli](https://github.com/krakenfx/kraken-cli) (`kraken --version` → 0.4.1+)
-- Kraken API keys for **live** trading (spot trade; **no withdraw**)
-- **Paper** still needs WSL + kraken-cli (public OHLC + `kraken paper`); no trade keys required for market data
-
-### Install (dashboard + live)
+**Paper and live** need WSL Ubuntu with [kraken-cli](https://github.com/krakenfx/kraken-cli) 0.4.1+ (paper uses public OHLC and `kraken paper`, no keys). Live also needs Kraken API keys with spot trade and **no withdraw**. The dashboard needs Node.js 18+.
 
 ```bash
-git clone https://github.com/eternal-roman/hydra.git
-cd hydra
-
-pip install -r requirements.txt
-cp .env.example .env   # fill keys for live only; never commit .env
-
+cp .env.example .env                    # keys for live only; never commit .env
 cd dashboard && npm install && cd ..
-```
 
-### Run
+python hydra_agent.py --mode competition --paper              # paper
+python hydra_agent.py --balance 100                           # live: BTC/USD, ETH/USD, ZEC/USD
+python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD         # live: legacy SOL triangle
+cd dashboard && npm run dev             # http://localhost:3000 → ws://127.0.0.1:8765
 
-```bash
-# Offline first-run (recommended after clone)
-python hydra_agent.py --demo --duration 30
-
-# Paper via kraken-cli (no real money; needs WSL)
-python hydra_agent.py --mode competition --paper
-
-# Live (requires keys + kraken-cli)
-python hydra_agent.py --balance 100                         # BTC/USD, ETH/USD, ZEC/USD
-python hydra_agent.py --pairs SOL/USD,SOL/BTC,BTC/USD       # legacy SOL triangle
-
-# Dashboard: http://localhost:3000  →  agent WS ws://127.0.0.1:8765
-cd dashboard && npm run dev
-
-# Windows launchers
-start_all.bat              # agent + dashboard
-start_hydra.bat            # production: --pairs auto --mode competition --resume
+start_all.bat                           # Windows: agent + dashboard
+start_hydra.bat                         # production: --pairs auto --mode competition --resume
 ```
 
 ### What Hydra trades, and how to prove it
@@ -117,8 +66,8 @@ Each pair runs one of two strategies, decided by evidence at start-up:
 
 | Strategy | When | What it does |
 |---|---|---|
-| Daily trend sleeve | its pre-registered gate PASSED, significantly, on your data for that asset | Long-or-flat on the daily trend, vol-targeted, re-sized every 30 days; no LLM or rule vetoes |
-| 1h rails engine | otherwise (the default with no gate result) | Capital preservation; in practice it almost never trades |
+| Daily trend sleeve | Its pre-registered gate PASSED, significantly, on your data for that asset | Long-or-flat on the daily trend ensemble (SMA200, EMA20/100, Donchian 55/20) on completed closes, vol-targeted, re-sized every 30 days; no LLM or rule vetoes |
+| 1h rails engine | Otherwise (the default with no gate result) | Capital preservation; in practice it almost never trades |
 
 ```bash
 run_strategy_gate.bat                             # Windows: refresh history, run the gate, show the result
@@ -128,27 +77,18 @@ python tools/trend_sleeve_gate.py --engine        # the pre-registered test (min
 python -m hydra_strategy_gate                     # what Hydra will trade, per pair
 ```
 
-Restart the agent to apply. `HYDRA_TREND_SLEEVE=1` / `0` overrides the evidence.
-Re-run the gate quarterly: results older than 180 days switch `auto` back off.
-The gate needs 5+ years of daily history per asset; build the store once from
-Kraken's trade-history archive (`python -m tools.bootstrap_history --zip <archive.zip>`),
-or every pair reports `INSUFFICIENT_DATA` and stays on the 1h engine.
-The rules, the evidence behind each one, and the per-session routine are in
-[`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md). It is not a money machine: the sleeve
-earns when crypto trends up and holds cash otherwise.
+Restart the agent to apply; `HYDRA_TREND_SLEEVE=1` / `0` overrides the evidence. Re-run the gate quarterly: results older than 180 days switch `auto` back off. The gate needs 5+ years of daily history per asset. Build the store once from Kraken's trade-history archive (`python -m tools.bootstrap_history --zip <archive.zip>`), or every pair reports `INSUFFICIENT_DATA` and stays on the 1h engine. Every pair card shows its trade plan: the daily close that flips it and where the breaker sits. The rules and the evidence behind each are in [`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md). It is not a money machine: the sleeve earns when crypto trends up and holds cash otherwise.
 
 ### Config
 
 | Source | Purpose |
 |--------|---------|
-| `.env` / `.env.example` | API keys, kill switches (`HYDRA_*`) |
-| `--pairs` / `--quote` / `HYDRA_QUOTE` | Pairs (default BTC/ETH/ZEC USD). `--quote` only changes `--pairs auto` fallback quote |
+| `.env` / `.env.example` | API keys and `HYDRA_*` kill switches ([`docs/ENV_FLAGS.md`](docs/ENV_FLAGS.md)) |
+| `--pairs` / `--quote` / `HYDRA_QUOTE` | Pairs. `--quote` only changes the `--pairs auto` fallback quote |
 | `--demo` / `--paper` / `--resume` / `--mode` | Offline demo, paper, snapshot resume, Kelly mode |
-| `python hydra_auth.py create-user` / `reset-password` | Dashboard login (insert-only create; reset does not recreate) |
+| `python hydra_auth.py create-user` / `reset-password` | Dashboard login (create never overwrites) |
 
-Full flag and env tables: [`CLAUDE.md`](CLAUDE.md) · trading spec: [`SKILL.md`](SKILL.md)
-
-## Architecture (short)
+## Architecture
 
 ```
 Candle/Ticker WS → per pair, one of:
@@ -162,89 +102,56 @@ Candle/Ticker WS → per pair, one of:
         ↳ parallel: S3 QI ± shadow | heartbeat P(up) surface  (never orders)
 ```
 
-**Backtests** replay `HydraEngine` (+ coordinator). Full AI brain is not on the Phase-1 backtest path.
+Backtests replay `HydraEngine` (and the coordinator); the AI brain is not on the backtest path. File-by-file roles: [`docs/MODULES.md`](docs/MODULES.md).
 
 ## Testing
 
-CI runs on every PR to `main` (Python 3.11–3.12 + dashboard build + mock harness).
+CI runs on every PR to `main`: Python 3.11 and 3.12, the dashboard build, and the smoke and mock harness.
 
 ```bash
-# Full suite (preferred)
 python -m pytest tests/ -q
-
-# Safety / money-path packs
-python -m pytest tests/test_flywheel.py tests/test_friction_fee.py tests/test_hold_through.py -v
-
-# Execution path (mandatory for placement changes)
-python tests/live_harness/harness.py --mode smoke
-python tests/live_harness/harness.py --mode mock
-
-# Dashboard
+python tests/live_harness/harness.py --mode mock    # mandatory for placement changes
 cd dashboard && npm run build
 ```
 
-Harness: `smoke` · `mock` (**36** scenarios in CI) · `validate` · `live` (explicit flag). See [`tests/live_harness/README.md`](tests/live_harness/README.md).
+Harness modes are `smoke`, `mock`, `validate` and `live` (explicit flag); see [`tests/live_harness/README.md`](tests/live_harness/README.md).
 
-## Project layout
+## Security
 
-| Path | Role |
-|------|------|
-| `hydra_engine.py` | Indicators, regime, signals, sizing, hold-through rails |
-| `hydra_agent.py` | Live loop, orders, journal, resume |
-| `hydra_brain.py` / `hydra_quant_rules.py` | AI + deterministic rules |
-| `hydra_flywheel.py` | Paper multi-sleeve allocator (CLI only) |
-| `tools/` | History refresh, flywheel research, causal counterfactuals |
-| `hydra_companions/` | Chat / proposals / optional live executor |
-| `dashboard/` | React + Vite UI |
-| `tests/` | Unit + harness |
-| `docs/` | Backtest + companion specs |
-| `.github/` | CI, Dependabot, CODEOWNERS |
-
-## Dependabot & security
-
-- **Dependabot** weekly updates: pip (`requirements.txt`), npm (`dashboard/`), GitHub Actions
-- **Secret scanning** + **push protection** enabled on the repo
-- Report vulnerabilities **privately** via [Security Advisories](https://github.com/eternal-roman/hydra/security/advisories/new) — see [`SECURITY.md`](SECURITY.md)
-- Secrets stay local: `.env`, `hydra_*_token.json`, `hydra_auth_state.json`, `*.db` (all gitignored)
-- Dashboard WS binds loopback and authenticates **both directions**: a socket receives no account state until it presents the per-process token (or a JWT in production mode)
-- Kraken credentials reach WSL through the environment (`WSLENV`), never through `wsl` argv
+- Report vulnerabilities privately via [Security Advisories](https://github.com/eternal-roman/hydra/security/advisories/new); see [`SECURITY.md`](SECURITY.md).
+- Secrets stay local and gitignored: `.env`, `hydra_*_token.json`, `hydra_auth_state.json`, `*.db`.
+- The dashboard WS binds loopback and authenticates **both directions**: a socket gets no account state until it presents the per-process token (or a JWT in production mode).
+- Kraken credentials reach WSL through `WSLENV`, never through `wsl` argv.
 
 ## Docs
 
 | Doc | Contents |
 |-----|----------|
-| [`CHANGELOG.md`](CHANGELOG.md) | Version history |
-| [`CLAUDE.md`](CLAUDE.md) | Agent/dev invariants, env flags, module index |
-| [`SKILL.md`](SKILL.md) | Trading formulas + risk rules |
-| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting |
-| [`docs/BACKTEST.md`](docs/BACKTEST.md) | Backtest runbook |
-| [`docs/BACKTEST_SPEC.md`](docs/BACKTEST_SPEC.md) | Backtest design archive (defaults: code wins) |
-| [`docs/COMPANION_SPEC.md`](docs/COMPANION_SPEC.md) | Companion system |
+| [`CLAUDE.md`](CLAUDE.md) | Agent rules and cross-cutting invariants |
+| [`SKILL.md`](SKILL.md) | Trading formulas and risk rules |
+| [`docs/MODULES.md`](docs/MODULES.md) · [`ENV_FLAGS.md`](docs/ENV_FLAGS.md) · [`STATE_FILES.md`](docs/STATE_FILES.md) | Modules, env flags, state-file owners |
 | [`docs/TRADE_PLAN.md`](docs/TRADE_PLAN.md) | The plan Hydra trades, the evidence behind each rule, the per-session routine |
-| [`docs/HOLD_THROUGH.md`](docs/HOLD_THROUGH.md) | Hold-through rails (default on) |
-| [`heartbeat/README.md`](heartbeat/README.md) · [`HONEST_FINDINGS.md`](heartbeat/HONEST_FINDINGS.md) | Order-flow posterior + evidence ledger |
-| [`research/`](research/) | Formal papers + promoted study data |
+| [`docs/HOLD_THROUGH.md`](docs/HOLD_THROUGH.md) | Hold-through rails |
+| [`docs/BACKTEST.md`](docs/BACKTEST.md) · [`BACKTEST_SPEC.md`](docs/BACKTEST_SPEC.md) | Backtest runbook; design archive (code wins on defaults) |
+| [`docs/COMPANION_SPEC.md`](docs/COMPANION_SPEC.md) | Companion system |
+| [`heartbeat/README.md`](heartbeat/README.md) · [`HONEST_FINDINGS.md`](heartbeat/HONEST_FINDINGS.md) | Order-flow posterior and the evidence ledger |
+| [`research/`](research/) | Papers and promoted study data |
+| [`CHANGELOG.md`](CHANGELOG.md) | Version history |
 
 ## Troubleshooting
 
 | Issue | Fix |
 |-------|-----|
-| Want a no-keys smoke test | `python hydra_agent.py --demo --duration 30` |
 | A pair never trades | It is on the 1h rails engine; the `[STRATEGY]` boot line and the pair card say why. Run `run_strategy_gate.bat` |
-| `kraken: command not found` | Install kraken-cli in WSL; `source ~/.cargo/env` — or use `--demo` |
-| Wrong WSL distro | `wsl -l -v` → set `HYDRA_WSL_DISTRO` |
-| Port 3000 taken | Vite uses `strictPort` — free the port |
+| No trades on the rails engine | Hold-through blocks non-TREND_UP BUYs; min confidence is 0.65; friction may skip thin entries. `HYDRA_HOLD_THROUGH=0` gives the raw engine |
+| `kraken: command not found` | Install kraken-cli in WSL and `source ~/.cargo/env`, or use `--demo` |
+| Wrong WSL distro | `wsl -l -v`, then set `HYDRA_WSL_DISTRO` |
+| Paper mode idle, 0 ticks | Needs working kraken-cli OHLC; use `--demo` without WSL |
+| Port 3000 taken | Vite uses `strictPort`: free the port |
 | Port 8765 taken | Launchers refuse to start. Free the port or pass `--ws-port` |
-| Dashboard disconnected | Agent hosts `ws://127.0.0.1:8765` (not `localhost`/IPv6). `--demo` works offline |
-| Forgot dashboard password | `python hydra_auth.py reset-password <user>` (`create-user` will not overwrite) |
-| Dashboard connects then shows nothing | WS auth failed — the UI must be served by the same agent process that wrote `hydra_ws_token.json`. Unauthenticated sockets get no state and are closed after `HYDRA_WS_AUTH_GRACE_S` (default 10s) |
-| No trades | Hold-through blocks non-TREND_UP BUYs; min_conf 0.65; friction may skip thin entries |
-| Paper mode idle / 0 ticks | Needs working kraken-cli OHLC; use `--demo` without WSL |
-| Want raw engine (no rails) | `HYDRA_HOLD_THROUGH=0` |
-
-## Disclaimer
-
-Experimental research software, **not** financial advice. Backtests are not promises of profit. Use least-privilege API keys. Safety rails are not guarantees.
+| Dashboard disconnected | The agent hosts `ws://127.0.0.1:8765` (not `localhost`/IPv6) |
+| Dashboard connects, then shows nothing | WS auth failed: the UI must be served by the agent process that wrote `hydra_ws_token.json`. Unauthenticated sockets get no state and close after `HYDRA_WS_AUTH_GRACE_S` (default 10s) |
+| Forgot dashboard password | `python hydra_auth.py reset-password <user>` |
 
 ## License
 
