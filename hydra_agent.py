@@ -6443,7 +6443,7 @@ class HydraAgent:
 
         results = {
             "agent": "HYDRA",
-            "version": "2.34.5",
+            "version": "2.34.6",
             "mode": self.mode,
             "paper": self.paper,
             "timestamp_start": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat() if self.start_time else None,

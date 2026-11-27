@@ -337,11 +337,7 @@ class TestEnsureHealthyRestart:
             assert rc.calls == 1, "first restart suppressed by a 0.0 sentinel"
         finally:
             rc.restore()
-            if es._reader_thread is not None:
-                try:
-                    es._reader_thread.stop()
-                except Exception:
-                    pass
+            es._reader_thread.stop()
 
     def test_cooldown_suppresses_second_restart(self):
         es = _make_stream_with_fake_proc(rc=137)

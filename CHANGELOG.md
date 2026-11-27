@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [2.34.6] — 2026-11-27
 
 ### Fixed
 
@@ -18,6 +18,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   down for up to 30s. The sentinel is now `-inf`. It also made three
   `TestEnsureHealthyRestart` tests fail on fast-booting CI runners; a regression
   test pins the 5s-uptime case.
+
+Verified: `pytest tests/` **1800 passed, 2 skipped** (live-API-key tests); every
+`engine-tests` CI step; `harness --mode smoke` OK and `--mode mock` **36/36**;
+stream tests **38/38** under a simulated 5s uptime (3 failed before the fix);
+`hydra_engine.py` demo exit 0; dashboard `npm ci && npm run build` exit 0.
 
 ---
 
