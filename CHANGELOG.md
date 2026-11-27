@@ -15,9 +15,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which counts from boot. On a host up for less than `RESTART_COOLDOWN_S` (30s), a
   fresh CI runner or a PC that autostarts Hydra, the never-attempted first restart
   read as "inside the cooldown", so a dead execution/balance/market stream stayed
-  down for up to 30s. The sentinel is now `-inf`. It also made three
-  `TestEnsureHealthyRestart` tests fail on fast-booting CI runners; a regression
-  test pins the 5s-uptime case.
+  down for up to 30s. The sentinel is now `-inf`. #278 fixed the same clock
+  assumption in the `TestEnsureHealthyRestart` tests, which backdated to `0.0` and
+  failed on fast-booting CI runners; this fixes the production default it shared,
+  and a regression test pins the 5s-uptime case with no backdating.
 
 Verified: `pytest tests/` **1800 passed, 2 skipped** (live-API-key tests); every
 `engine-tests` CI step; `harness --mode smoke` OK and `--mode mock` **36/36**;
