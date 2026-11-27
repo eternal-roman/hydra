@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.34.7] — 2026-11-27
+
+### Changed
+
+- **`openai` floor is 3.58.0** (`requirements.txt`: `openai>=3.58.0,<4.0`, was `>=3.43.0`, #276). The `openai` client is how `hydra_brain.py` and `hydra_companions/providers.py` reach OpenAI and xAI (`base_url=https://api.x.ai/v1`). No Hydra code changed; a fresh install now resolves a client at least as new as the one CI tests. The trading path, the safety invariants and the state files are untouched.
+
+Verified: CI green on #276 (both Engine Tests, Dashboard Build, Watermark Gate, CodeQL) and on `main` after it merged.
+
+---
+
 ## [2.34.6] — 2026-11-27
 
 ### Fixed

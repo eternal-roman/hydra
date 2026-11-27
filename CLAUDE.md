@@ -22,7 +22,7 @@ Each was earned by a documented past failure; breaking one is a regression bug, 
 - **`--pairs auto`** (`discover_portfolio_pairs`) seeds the cores in the *funded* stable quote, plus one satellite per other held asset.
 - **Bridge is signal-only by default:** with an explicit SOL triangle, the SOL/BTC engines run `exit_only` drain (zero trades in 1y and a Sharpe drag on real 1h tape — `.hydra-flywheel/bridge_isolation.json`); `HYDRA_BRIDGE_TRADING=1` opts back in.
 - **Candles default 60m:** the hold-through rails and friction hurdle are calibrated on 1h tape. Resume drops candle history on an interval mismatch and remaps same-base stable keys, never a global quote flip.
-- **Version pin:** v2.34.6
+- **Version pin:** v2.34.7
 
 ## Defaults
 
