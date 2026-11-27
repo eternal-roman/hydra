@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Stream auto-restart on a freshly booted host.** `BaseStream._last_restart_attempt`
+  started at `0.0` while `ensure_healthy()` compares it with `time.monotonic()`,
+  which counts from boot. On a host up for less than `RESTART_COOLDOWN_S` (30s), a
+  fresh CI runner or a PC that autostarts Hydra, the never-attempted first restart
+  read as "inside the cooldown", so a dead execution/balance/market stream stayed
+  down for up to 30s. The sentinel is now `-inf`. It also made three
+  `TestEnsureHealthyRestart` tests fail on fast-booting CI runners; a regression
+  test pins the 5s-uptime case.
+
+---
+
 ## [2.34.5] — 2026-11-14
 
 ### Fixed
