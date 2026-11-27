@@ -306,8 +306,9 @@ class TestEnsureHealthyRestart:
 
     def test_unhealthy_triggers_restart(self):
         es = _make_stream_with_fake_proc(rc=137)
-        # Drain the cooldown by setting last attempt far in the past
-        es._last_restart_attempt = 0.0
+        # Put the last attempt one second past the cooldown. A literal 0.0 is
+        # only "far in the past" when the host has been up > RESTART_COOLDOWN_S.
+        es._last_restart_attempt = time.monotonic() - es.RESTART_COOLDOWN_S - 1
         rc = _RestartCounter(es)
         rc.install()
         try:
@@ -323,9 +324,25 @@ class TestEnsureHealthyRestart:
                 except Exception:
                     pass
 
+    def test_first_restart_fires_on_freshly_booted_host(self):
+        """time.monotonic() counts from boot. On a host up for less than
+        RESTART_COOLDOWN_S (a fresh CI runner, a PC that autostarts Hydra),
+        a never-attempted restart must still fire, using the constructor's
+        default sentinel and no test backdating."""
+        es = _make_stream_with_fake_proc(rc=137)
+        rc = _RestartCounter(es)
+        rc.install()
+        try:
+            with patch("hydra_streams.time.monotonic", return_value=5.0):
+                es.ensure_healthy()
+            assert rc.calls == 1, "first restart suppressed by a 0.0 sentinel"
+        finally:
+            rc.restore()
+            es._reader_thread.stop()
+
     def test_cooldown_suppresses_second_restart(self):
         es = _make_stream_with_fake_proc(rc=137)
-        es._last_restart_attempt = 0.0
+        es._last_restart_attempt = time.monotonic() - es.RESTART_COOLDOWN_S - 1
         rc = _RestartCounter(es, restart_makes_healthy=False)
         rc.install()
         try:
@@ -348,7 +365,7 @@ class TestEnsureHealthyRestart:
 
     def test_cooldown_expiry_allows_new_restart(self):
         es = _make_stream_with_fake_proc(rc=137)
-        es._last_restart_attempt = 0.0
+        es._last_restart_attempt = time.monotonic() - es.RESTART_COOLDOWN_S - 1
         rc = _RestartCounter(es, restart_makes_healthy=False)
         rc.install()
         try:
@@ -445,11 +462,12 @@ class TestRestartStatePreservation:
             pair="SOL/USDC", side="BUY", placed_amount=1.0,
             engine_ref="<engine>", pre_trade_snapshot={"size": 0},
         )
-        es._last_restart_attempt = 0.0
+        es._last_restart_attempt = time.monotonic() - es.RESTART_COOLDOWN_S - 1
         rc = _RestartCounter(es)
         rc.install()
         try:
             es.ensure_healthy()
+            assert rc.calls == 1, "restart must actually run for this test to mean anything"
             assert "ORDER_ABC" in es._known_orders
             assert es._userref_to_order_id.get(12345) == "ORDER_ABC"
             entry = es._known_orders["ORDER_ABC"]
