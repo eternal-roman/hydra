@@ -324,6 +324,22 @@ class TestEnsureHealthyRestart:
                 except Exception:
                     pass
 
+    def test_first_restart_fires_on_freshly_booted_host(self):
+        """time.monotonic() counts from boot. On a host up for less than
+        RESTART_COOLDOWN_S (a fresh CI runner, a PC that autostarts Hydra),
+        a never-attempted restart must still fire, using the constructor's
+        default sentinel and no test backdating."""
+        es = _make_stream_with_fake_proc(rc=137)
+        rc = _RestartCounter(es)
+        rc.install()
+        try:
+            with patch("hydra_streams.time.monotonic", return_value=5.0):
+                es.ensure_healthy()
+            assert rc.calls == 1, "first restart suppressed by a 0.0 sentinel"
+        finally:
+            rc.restore()
+            es._reader_thread.stop()
+
     def test_cooldown_suppresses_second_restart(self):
         es = _make_stream_with_fake_proc(rc=137)
         es._last_restart_attempt = time.monotonic() - es.RESTART_COOLDOWN_S - 1

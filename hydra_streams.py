@@ -77,7 +77,10 @@ class BaseStream:
         self._lock = threading.Lock()
         self._shutdown = threading.Event()
         self._reader_exit_reason: Optional[str] = None
-        self._last_restart_attempt: float = 0.0
+        # -inf, not 0.0: time.monotonic() counts from boot, so on a host up
+        # for less than RESTART_COOLDOWN_S a 0.0 sentinel reads as "just
+        # restarted" and suppresses the first auto-restart of a dead stream.
+        self._last_restart_attempt: float = float("-inf")
         self._restart_count: int = 0
 
     def _build_cmd(self) -> str:
